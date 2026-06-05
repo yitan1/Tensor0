@@ -1,0 +1,12 @@
+[workspace]
+members = ["crates/tensor0-core", "crates/tensor0-py"]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+version = "0.0.0"
+license = "MIT"
+
+[workspace.dependencies]
+ndarray = "0.17"
+numpy = "0.28"

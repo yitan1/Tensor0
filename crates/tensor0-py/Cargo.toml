@@ -1,0 +1,14 @@
+[package]
+name = "tensor0-py"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "tensor0_py"
+crate-type = ["cdylib"]
+
+[dependencies]
+numpy = { workspace = true }
+pyo3 = { version = "0.28", features = ["extension-module"] }
+tensor0-core = { path = "../tensor0-core" }
