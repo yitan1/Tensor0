@@ -4,6 +4,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 
 from jax import Array
+from jax import tree_util as _tree_util
 import jax.numpy as jnp
 from jax.typing import DTypeLike
 
@@ -86,3 +87,24 @@ def _packed_sector_values(
 
 def _space_dim(space: _native.ElementarySpace) -> int:
     return sum(dim for _sector, dim in space.sectors)
+
+
+def _sectorvector_flatten(
+    vector: SectorVector,
+) -> tuple[tuple[object, ...], _native.ElementarySpace]:
+    return (vector.storage.data,), vector.space
+
+
+def _sectorvector_unflatten(
+    aux_data: _native.ElementarySpace,
+    children: tuple[object, ...],
+) -> SectorVector:
+    (data,) = children
+    return SectorVector(aux_data, data)
+
+
+_tree_util.register_pytree_node(
+    SectorVector,
+    _sectorvector_flatten,
+    _sectorvector_unflatten,
+)

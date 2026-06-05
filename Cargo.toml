@@ -6,6 +6,7 @@ resolver = "2"
 edition = "2021"
 version = "0.0.0"
 license = "MIT"
+description = "Rust core and Python extension support for Tensor0"
 
 [workspace.dependencies]
 ndarray = "0.17"

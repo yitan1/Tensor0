@@ -3,6 +3,7 @@ name = "tensor0-py"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+description.workspace = true
 
 [lib]
 name = "tensor0_py"
