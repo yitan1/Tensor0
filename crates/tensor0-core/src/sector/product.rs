@@ -6,12 +6,12 @@ use smallvec::smallvec;
 use crate::error::{Result, Tensor0Error};
 
 use super::fermion_parity::FermionParity;
-use super::ordering::product_sort_index;
+use super::product_ordering::{product_indices_at, product_sort_index};
 use super::su2::SU2Irrep;
 use super::u1::U1Irrep;
 use super::{
-    BraidingStyle, EncodedSectorValue, FusionStyle, Sector, SectorCardinality, SectorSpec,
-    SectorTuple, SortKey,
+    require_width, BraidingStyle, EncodedSectorValue, FusionStyle, Sector, SectorCardinality,
+    SectorSpec, SectorTuple, SortKey,
 };
 
 /// Typed product sector whose component order is part of the Rust type.
@@ -112,6 +112,10 @@ impl<T: SectorTuple> Sector for ProductSector<T> {
     fn sort_index(&self) -> Result<u128> {
         self.sectors.sort_index()
     }
+
+    fn value_at(index: u128) -> Result<Self> {
+        Ok(ProductSector::new(T::value_at(index)?))
+    }
 }
 
 impl<T: SectorTuple> Ord for ProductSector<T> {
@@ -131,7 +135,8 @@ macro_rules! impl_sector_tuple {
         impl<$($name: Sector),+> SectorTuple for ($($name,)+) {
             fn sector_spec() -> SectorSpec {
                 let components = vec![$($name::sector_spec()),+];
-                SectorSpec::product(components.clone()).unwrap_or(SectorSpec::Product { components })
+                SectorSpec::product(components)
+                    .expect("product sector tuple has at least two canonical component specs")
             }
 
             fn encoded_width() -> usize {
@@ -246,7 +251,7 @@ macro_rules! impl_sector_tuple {
             }
 
             fn sort_key(&self) -> SortKey {
-                let indices = [$(infallible_sort_index(&self.$index)),+];
+                let indices = [$(sort_index_or_max(&self.$index)),+];
                 sort_key_from_indices(&indices)
             }
 
@@ -255,6 +260,14 @@ macro_rules! impl_sector_tuple {
                 let caps = [$(cardinality_cap($name::cardinality()?)),+];
                 product_sort_index(&indices, &caps)
             }
+
+            fn value_at(index: u128) -> Result<Self> {
+                let caps = [$(cardinality_cap($name::cardinality()?)),+];
+                let indices = product_indices_at(index, &caps)?;
+                Ok((
+                    $($name::value_at(indices[$index])?,)+
+                ))
+            }
         }
     };
 }
@@ -262,6 +275,28 @@ macro_rules! impl_sector_tuple {
 impl_sector_tuple!(A: 0, B: 1);
 impl_sector_tuple!(A: 0, B: 1, C: 2);
 impl_sector_tuple!(A: 0, B: 1, C: 2, D: 3);
+
+fn decode_component<I: Sector>(value: &[i64], offset: &mut usize) -> Result<I> {
+    let width = I::encoded_width();
+    let decoded = I::decode_value(&value[*offset..*offset + width])?;
+    *offset += width;
+    Ok(decoded)
+}
+
+fn extend_encoded_outputs(
+    prefixes: Vec<EncodedSectorValue>,
+    component_outputs: Vec<EncodedSectorValue>,
+) -> Vec<EncodedSectorValue> {
+    let mut outputs = Vec::new();
+    for prefix in &prefixes {
+        for component_output in &component_outputs {
+            let mut output = prefix.clone();
+            output.extend_from_slice(component_output);
+            outputs.push(output);
+        }
+    }
+    outputs
+}
 
 fn kron_all_array4<I>(tensors: I) -> Result<Array4<f64>>
 where
@@ -299,39 +334,6 @@ fn checked_usize_mul(left: usize, right: usize, context: &str) -> Result<usize> 
             "sector symbol integer arithmetic overflowed in {context}",
         ))
     })
-}
-
-fn require_width(value: &[i64], expected: usize) -> Result<()> {
-    if value.len() == expected {
-        Ok(())
-    } else {
-        Err(Tensor0Error::BadSectorWidth {
-            expected,
-            actual: value.len(),
-        })
-    }
-}
-
-fn decode_component<I: Sector>(value: &[i64], offset: &mut usize) -> Result<I> {
-    let width = I::encoded_width();
-    let decoded = I::decode_value(&value[*offset..*offset + width])?;
-    *offset += width;
-    Ok(decoded)
-}
-
-fn extend_encoded_outputs(
-    prefixes: Vec<EncodedSectorValue>,
-    component_outputs: Vec<EncodedSectorValue>,
-) -> Vec<EncodedSectorValue> {
-    let mut outputs = Vec::new();
-    for prefix in &prefixes {
-        for component_output in &component_outputs {
-            let mut output = prefix.clone();
-            output.extend_from_slice(component_output);
-            outputs.push(output);
-        }
-    }
-    outputs
 }
 
 fn combine_fusion_style(styles: &[FusionStyle]) -> FusionStyle {
@@ -382,7 +384,7 @@ fn braiding_style_priority(style: BraidingStyle) -> u8 {
     }
 }
 
-fn infallible_sort_index<I: Sector>(value: &I) -> u128 {
+fn sort_index_or_max<I: Sector>(value: &I) -> u128 {
     value.sort_index().unwrap_or(u128::MAX)
 }
 

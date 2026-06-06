@@ -3,7 +3,8 @@ use smallvec::smallvec;
 use crate::error::{Result, Tensor0Error};
 
 use super::{
-    BraidingStyle, EncodedSectorValue, FusionStyle, Sector, SectorCardinality, SectorSpec, SortKey,
+    require_width, BraidingStyle, EncodedSectorValue, FusionStyle, Sector, SectorCardinality,
+    SectorSpec, SortKey,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -93,15 +94,12 @@ impl Sector for FermionParity {
     fn sort_index(&self) -> Result<u128> {
         Ok(self.value as u128)
     }
-}
 
-fn require_width(value: &[i64], expected: usize) -> Result<()> {
-    if value.len() == expected {
-        Ok(())
-    } else {
-        Err(Tensor0Error::BadSectorWidth {
-            expected,
-            actual: value.len(),
-        })
+    fn value_at(index: u128) -> Result<Self> {
+        if index < 2 {
+            FermionParity::new(index as i64)
+        } else {
+            Err(Tensor0Error::SectorIndexOverflow)
+        }
     }
 }

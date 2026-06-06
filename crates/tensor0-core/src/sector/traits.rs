@@ -1,7 +1,9 @@
+use std::marker::PhantomData;
+
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 
-use crate::error::Result;
+use crate::error::{Result, Tensor0Error};
 use ndarray::Array4;
 
 use super::SectorSpec;
@@ -39,6 +41,13 @@ pub enum SectorCardinality {
     Infinite,
 }
 
+/// Lazy enumeration of sector values in dense `sort_index` order.
+pub struct SectorValues<I: Sector> {
+    next: u128,
+    end: Option<u128>,
+    _marker: PhantomData<I>,
+}
+
 /// TensorKit-like behavior interface for a concrete typed sector family.
 pub trait Sector: Clone + Eq + Ord + std::hash::Hash + Sized + 'static {
     fn sector_spec() -> SectorSpec;
@@ -74,6 +83,11 @@ pub trait Sector: Clone + Eq + Ord + std::hash::Hash + Sized + 'static {
     }
     fn sort_key(&self) -> SortKey;
     fn sort_index(&self) -> Result<u128>;
+    fn value_at(index: u128) -> Result<Self>;
+
+    fn values() -> Result<SectorValues<Self>> {
+        SectorValues::new()
+    }
 }
 
 /// Delegation layer for typed product sector component tuples.
@@ -96,6 +110,41 @@ pub trait SectorTuple: Clone + Eq + Ord + std::hash::Hash + Sized + 'static {
     fn fusion_tensor(a: &Self, b: &Self, c: &Self) -> Result<Array4<f64>>;
     fn sort_key(&self) -> SortKey;
     fn sort_index(&self) -> Result<u128>;
+    fn value_at(index: u128) -> Result<Self>;
+}
+
+impl<I: Sector> SectorValues<I> {
+    pub fn new() -> Result<Self> {
+        let end = match I::cardinality()? {
+            SectorCardinality::Finite(size) => Some(size),
+            SectorCardinality::Infinite => None,
+        };
+        Ok(SectorValues {
+            next: 0,
+            end,
+            _marker: PhantomData,
+        })
+    }
+}
+
+impl<I: Sector> Iterator for SectorValues<I> {
+    type Item = Result<I>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.end.is_some_and(|end| self.next >= end) {
+            return None;
+        }
+
+        let index = self.next;
+        self.next = match self.next.checked_add(1) {
+            Some(next) => next,
+            None => {
+                self.end = Some(self.next);
+                return Some(Err(Tensor0Error::SectorIndexOverflow));
+            }
+        };
+        Some(I::value_at(index))
+    }
 }
 
 fn unique_fusion_f_symbol<I: Sector>(a: &I, b: &I, c: &I, d: &I, e: &I, f: &I) -> Result<f64> {

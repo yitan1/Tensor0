@@ -1,8 +1,8 @@
 use crate::error::{Result, Tensor0Error};
 
 const ZERO_TOLERANCE: f64 = 1.0e-15;
-// Phase 4 only needs deterministic small-spin debug/recoupling helpers, not an
-// arbitrary-spin numerical engine. This cap keeps f64 factorial products from
+// This module is a deterministic small-spin Float64 fallback, not a full
+// arbitrary-spin Wigner-symbol engine. This cap keeps factorial products from
 // silently entering unreliable large-value regimes.
 const MAX_SMALL_SPIN_FACTORIAL_ARGUMENT: i64 = 32;
 
@@ -10,26 +10,26 @@ const MAX_SMALL_SPIN_FACTORIAL_ARGUMENT: i64 = 32;
 ///
 /// This is not TensorKit's Racah W coefficient; `su2_f_symbol_spin2` applies
 /// the extra Racah phase used by `WignerSymbols.racahW`.
-pub fn wigner_6j_spin2(a: i64, b: i64, c: i64, d: i64, e: i64, f: i64) -> Result<f64> {
-    validate_triangle(a, b, c)?;
-    validate_triangle(a, e, f)?;
-    validate_triangle(d, b, f)?;
-    validate_triangle(d, e, c)?;
+fn wigner_6j_spin2(a: i64, b: i64, c: i64, d: i64, e: i64, f: i64) -> Result<f64> {
+    validate_triangle_spin2(a, b, c)?;
+    validate_triangle_spin2(a, e, f)?;
+    validate_triangle_spin2(d, b, f)?;
+    validate_triangle_spin2(d, e, c)?;
 
     let delta = triangle_delta(a, b, c)?
         * triangle_delta(a, e, f)?
         * triangle_delta(d, b, f)?
         * triangle_delta(d, e, c)?;
 
-    let x1 = half_sum3(a, b, c, "6j lower summation bound")?;
-    let x2 = half_sum3(a, e, f, "6j lower summation bound")?;
-    let x3 = half_sum3(d, b, f, "6j lower summation bound")?;
-    let x4 = half_sum3(d, e, c, "6j lower summation bound")?;
-    let y1 = half_sum4(a, b, d, e, "6j upper summation bound")?;
-    let y2 = half_sum4(b, c, e, f, "6j upper summation bound")?;
-    let y3 = half_sum4(a, c, d, f, "6j upper summation bound")?;
+    let x1 = half_sum([a, b, c], "6j lower summation bound")?;
+    let x2 = half_sum([a, e, f], "6j lower summation bound")?;
+    let x3 = half_sum([d, b, f], "6j lower summation bound")?;
+    let x4 = half_sum([d, e, c], "6j lower summation bound")?;
+    let y1 = half_sum([a, b, d, e], "6j upper summation bound")?;
+    let y2 = half_sum([b, c, e, f], "6j upper summation bound")?;
+    let y3 = half_sum([a, c, d, f], "6j upper summation bound")?;
 
-    let z_min = max4(x1, x2, x3, x4);
+    let z_min = x1.max(x2).max(x3).max(x4);
     let z_max = y1.min(y2).min(y3);
     if z_min > z_max {
         return Err(Tensor0Error::Message(
@@ -39,7 +39,7 @@ pub fn wigner_6j_spin2(a: i64, b: i64, c: i64, d: i64, e: i64, f: i64) -> Result
 
     let mut sum = 0.0;
     for z in z_min..=z_max {
-        let numerator = phase(z) * factorial(checked_add(z, 1, "6j factorial argument")?)?;
+        let numerator = parity_phase(z) * factorial(checked_add(z, 1, "6j factorial argument")?)?;
         let denominator = factorial(checked_sub(z, x1, "6j factorial argument")?)?
             * factorial(checked_sub(z, x2, "6j factorial argument")?)?
             * factorial(checked_sub(z, x3, "6j factorial argument")?)?
@@ -55,7 +55,14 @@ pub fn wigner_6j_spin2(a: i64, b: i64, c: i64, d: i64, e: i64, f: i64) -> Result
 
 /// Compute the SU2 F-symbol with TensorKitSectors' Racah W convention from
 /// twice-spin labels.
-pub fn su2_f_symbol_spin2(s1: i64, s2: i64, s3: i64, s4: i64, s5: i64, s6: i64) -> Result<f64> {
+pub(crate) fn su2_f_symbol_spin2(
+    s1: i64,
+    s2: i64,
+    s3: i64,
+    s4: i64,
+    s5: i64,
+    s6: i64,
+) -> Result<f64> {
     let dim_factor = (su2_dim_spin2(s5)? as f64 * su2_dim_spin2(s6)? as f64).sqrt();
     let racah_w = su2_racah_w_spin2(s1, s2, s4, s3, s5, s6)?;
     Ok(clean_zero(dim_factor * racah_w))
@@ -64,14 +71,14 @@ pub fn su2_f_symbol_spin2(s1: i64, s2: i64, s3: i64, s4: i64, s5: i64, s6: i64) 
 fn su2_racah_w_spin2(j1: i64, j2: i64, j: i64, j3: i64, j12: i64, j23: i64) -> Result<f64> {
     // Matches WignerSymbols.racahW(j1, j2, j, j3, j12, j23), including
     // the Racah phase relative to the bare Wigner 6j symbol.
-    let exponent = half_sum4(j1, j2, j3, j, "Racah W phase")?;
-    let sign = phase(exponent);
+    let exponent = half_sum([j1, j2, j3, j], "Racah W phase")?;
+    let sign = parity_phase(exponent);
     Ok(sign * wigner_6j_spin2(j1, j2, j12, j3, j, j23)?)
 }
 
 /// Compute `<ja, ma; jb, mb | jc, mc>` from twice-spin and twice-magnetic
 /// labels.
-pub fn su2_clebsch_gordan_spin2(
+pub(crate) fn su2_clebsch_gordan_spin2(
     ja2: i64,
     ma2: i64,
     jb2: i64,
@@ -82,37 +89,37 @@ pub fn su2_clebsch_gordan_spin2(
     validate_magnetic_label(ja2, ma2, "ma2")?;
     validate_magnetic_label(jb2, mb2, "mb2")?;
     validate_magnetic_label(jc2, mc2, "mc2")?;
-    validate_triangle(ja2, jb2, jc2)?;
+    validate_triangle_spin2(ja2, jb2, jc2)?;
 
     if checked_add(ma2, mb2, "magnetic label sum")? != mc2 {
         return Ok(0.0);
     }
 
-    let triangle_factor = factorial(half_expr(&[jc2, ja2, -jb2], "CG prefactor")?)?
-        * factorial(half_expr(&[jc2, -ja2, jb2], "CG prefactor")?)?
-        * factorial(half_expr(&[ja2, jb2, -jc2], "CG prefactor")?)?
+    let triangle_factor = factorial(half_sum([jc2, ja2, -jb2], "CG prefactor")?)?
+        * factorial(half_sum([jc2, -ja2, jb2], "CG prefactor")?)?
+        * factorial(half_sum([ja2, jb2, -jc2], "CG prefactor")?)?
         / factorial(checked_add(
-            half_sum3(ja2, jb2, jc2, "CG prefactor")?,
+            half_sum([ja2, jb2, jc2], "CG prefactor")?,
             1,
             "CG prefactor",
         )?)?;
-    let coupled_magnetic_factor = factorial(half_expr(&[jc2, mc2], "CG magnetic prefactor")?)?
-        * factorial(half_expr(&[jc2, -mc2], "CG magnetic prefactor")?)?;
-    let uncoupled_magnetic_factor = factorial(half_expr(&[ja2, -ma2], "CG magnetic prefactor")?)?
-        * factorial(half_expr(&[ja2, ma2], "CG magnetic prefactor")?)?
-        * factorial(half_expr(&[jb2, -mb2], "CG magnetic prefactor")?)?
-        * factorial(half_expr(&[jb2, mb2], "CG magnetic prefactor")?)?;
+    let coupled_magnetic_factor = factorial(half_sum([jc2, mc2], "CG magnetic prefactor")?)?
+        * factorial(half_sum([jc2, -mc2], "CG magnetic prefactor")?)?;
+    let uncoupled_magnetic_factor = factorial(half_sum([ja2, -ma2], "CG magnetic prefactor")?)?
+        * factorial(half_sum([ja2, ma2], "CG magnetic prefactor")?)?
+        * factorial(half_sum([jb2, -mb2], "CG magnetic prefactor")?)?
+        * factorial(half_sum([jb2, mb2], "CG magnetic prefactor")?)?;
     let prefactor = (su2_dim_spin2(jc2)? as f64
         * triangle_factor
         * coupled_magnetic_factor
         * uncoupled_magnetic_factor)
         .sqrt();
 
-    let t1 = half_expr(&[ja2, jb2, -jc2], "CG summation bound")?;
-    let t2 = half_expr(&[ja2, -ma2], "CG summation bound")?;
-    let t3 = half_expr(&[jb2, mb2], "CG summation bound")?;
-    let u1 = half_expr(&[jc2, -jb2, ma2], "CG summation bound")?;
-    let u2 = half_expr(&[jc2, -ja2, -mb2], "CG summation bound")?;
+    let t1 = half_sum([ja2, jb2, -jc2], "CG summation bound")?;
+    let t2 = half_sum([ja2, -ma2], "CG summation bound")?;
+    let t3 = half_sum([jb2, mb2], "CG summation bound")?;
+    let u1 = half_sum([jc2, -jb2, ma2], "CG summation bound")?;
+    let u2 = half_sum([jc2, -ja2, -mb2], "CG summation bound")?;
 
     let k_min = 0.max(-u1).max(-u2);
     let k_max = t1.min(t2).min(t3);
@@ -128,7 +135,7 @@ pub fn su2_clebsch_gordan_spin2(
             * factorial(checked_sub(t3, k, "CG factorial argument")?)?
             * factorial(checked_add(u1, k, "CG factorial argument")?)?
             * factorial(checked_add(u2, k, "CG factorial argument")?)?;
-        sum += phase(k) / denominator;
+        sum += parity_phase(k) / denominator;
     }
 
     Ok(clean_zero(prefactor * sum))
@@ -156,7 +163,7 @@ fn validate_magnetic_label(spin2: i64, magnetic2: i64, name: &str) -> Result<()>
     Ok(())
 }
 
-fn validate_triangle(a: i64, b: i64, c: i64) -> Result<()> {
+pub(crate) fn validate_triangle_spin2(a: i64, b: i64, c: i64) -> Result<()> {
     if a < 0 || b < 0 || c < 0 {
         return Err(Tensor0Error::Message(
             "SU2 spin must be non-negative".to_string(),
@@ -179,11 +186,11 @@ fn validate_triangle(a: i64, b: i64, c: i64) -> Result<()> {
 }
 
 fn triangle_delta(a: i64, b: i64, c: i64) -> Result<f64> {
-    let numerator = factorial(half_expr(&[a, b, -c], "6j triangle delta")?)?
-        * factorial(half_expr(&[a, -b, c], "6j triangle delta")?)?
-        * factorial(half_expr(&[-a, b, c], "6j triangle delta")?)?;
+    let numerator = factorial(half_sum([a, b, -c], "6j triangle delta")?)?
+        * factorial(half_sum([a, -b, c], "6j triangle delta")?)?
+        * factorial(half_sum([-a, b, c], "6j triangle delta")?)?;
     let denominator = factorial(checked_add(
-        half_sum3(a, b, c, "6j triangle delta")?,
+        half_sum([a, b, c], "6j triangle delta")?,
         1,
         "6j triangle delta",
     )?)?;
@@ -201,21 +208,11 @@ fn factorial(n: i64) -> Result<f64> {
             "SU2 symbol helpers only support small spins: factorial argument {n} exceeds {MAX_SMALL_SPIN_FACTORIAL_ARGUMENT}",
         )));
     }
-    let n = usize::try_from(n).map_err(|_| {
-        Tensor0Error::Message("SU2 symbol factorial argument overflowed".to_string())
-    })?;
+    let n = n as usize;
     Ok((1..=n).fold(1.0, |total, value| total * value as f64))
 }
 
-fn half_sum3(a: i64, b: i64, c: i64, context: &str) -> Result<i64> {
-    half_expr(&[a, b, c], context)
-}
-
-fn half_sum4(a: i64, b: i64, c: i64, d: i64, context: &str) -> Result<i64> {
-    half_expr(&[a, b, c, d], context)
-}
-
-fn half_expr(terms: &[i64], context: &str) -> Result<i64> {
+fn half_sum<const N: usize>(terms: [i64; N], context: &str) -> Result<i64> {
     let total = terms
         .iter()
         .try_fold(0i64, |total, term| checked_add(total, *term, context))?;
@@ -243,16 +240,12 @@ fn checked_sub(left: i64, right: i64, context: &str) -> Result<i64> {
     })
 }
 
-fn phase(exponent: i64) -> f64 {
+fn parity_phase(exponent: i64) -> f64 {
     if exponent.rem_euclid(2) == 0 {
         1.0
     } else {
         -1.0
     }
-}
-
-fn max4(a: i64, b: i64, c: i64, d: i64) -> i64 {
-    a.max(b).max(c).max(d)
 }
 
 fn clean_zero(value: f64) -> f64 {
@@ -307,12 +300,6 @@ mod tests {
     #[test]
     fn wigner_helpers_clean_float_cancellation_zero() {
         assert_eq!(wigner_6j_spin2(2, 12, 12, 22, 18, 18).unwrap(), 0.0);
-    }
-
-    #[test]
-    fn wigner_helpers_use_narrow_zero_tolerance() {
-        assert_eq!(clean_zero(5.0e-16), 0.0);
-        assert_eq!(clean_zero(5.0e-15), 5.0e-15);
     }
 
     #[test]

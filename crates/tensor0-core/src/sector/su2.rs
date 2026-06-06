@@ -5,8 +5,12 @@ use smallvec::smallvec;
 
 use crate::error::{Result, Tensor0Error};
 
+use super::wigner_symbols::{
+    su2_clebsch_gordan_spin2, su2_f_symbol_spin2, validate_triangle_spin2,
+};
 use super::{
-    BraidingStyle, EncodedSectorValue, FusionStyle, Sector, SectorCardinality, SectorSpec, SortKey,
+    require_width, BraidingStyle, EncodedSectorValue, FusionStyle, Sector, SectorCardinality,
+    SectorSpec, SortKey,
 };
 
 /// SU(2) irrep stored as twice-spin.
@@ -29,61 +33,6 @@ impl SU2Irrep {
     pub fn spin2_value(&self) -> i64 {
         self.spin2
     }
-}
-
-pub(crate) fn su2_f_symbol(
-    s1: SU2Irrep,
-    s2: SU2Irrep,
-    s3: SU2Irrep,
-    s4: SU2Irrep,
-    s5: SU2Irrep,
-    s6: SU2Irrep,
-) -> Result<f64> {
-    if SU2Irrep::n_symbol(&s1, &s2, &s5) == 0
-        || SU2Irrep::n_symbol(&s5, &s3, &s4) == 0
-        || SU2Irrep::n_symbol(&s2, &s3, &s6) == 0
-        || SU2Irrep::n_symbol(&s1, &s6, &s4) == 0
-    {
-        return Ok(0.0);
-    }
-
-    super::wigner_symbols::su2_f_symbol_spin2(
-        s1.spin2_value(),
-        s2.spin2_value(),
-        s3.spin2_value(),
-        s4.spin2_value(),
-        s5.spin2_value(),
-        s6.spin2_value(),
-    )
-}
-
-pub(crate) fn su2_fusiontensor(a: SU2Irrep, b: SU2Irrep, c: SU2Irrep) -> Result<Array4<f64>> {
-    let ja2 = a.spin2_value();
-    let jb2 = b.spin2_value();
-    let jc2 = c.spin2_value();
-    validate_fusion_channel_spin2(ja2, jb2, jc2)?;
-
-    let dim_a = su2_dim_spin2(ja2)?;
-    let dim_b = su2_dim_spin2(jb2)?;
-    let dim_c = su2_dim_spin2(jc2)?;
-
-    let mut tensor = Array4::zeros((dim_a, dim_b, dim_c, 1));
-    for kc in 0..dim_c {
-        for kb in 0..dim_b {
-            for ka in 0..dim_a {
-                tensor[[ka, kb, kc, 0]] = super::wigner_symbols::su2_clebsch_gordan_spin2(
-                    ja2,
-                    ja2 - 2 * ka as i64,
-                    jb2,
-                    jb2 - 2 * kb as i64,
-                    jc2,
-                    jc2 - 2 * kc as i64,
-                )?;
-            }
-        }
-    }
-
-    Ok(tensor)
 }
 
 impl Sector for SU2Irrep {
@@ -158,7 +107,7 @@ impl Sector for SU2Irrep {
     }
 
     fn fusion_tensor(a: &Self, b: &Self, c: &Self) -> Result<Array4<f64>> {
-        su2_fusiontensor(*a, *b, *c)
+        su2_fusion_tensor(*a, *b, *c)
     }
 
     fn sort_key(&self) -> SortKey {
@@ -167,6 +116,11 @@ impl Sector for SU2Irrep {
 
     fn sort_index(&self) -> Result<u128> {
         Ok(self.spin2 as u128)
+    }
+
+    fn value_at(index: u128) -> Result<Self> {
+        let spin2 = i64::try_from(index).map_err(|_| Tensor0Error::SectorIndexOverflow)?;
+        SU2Irrep::spin2(spin2)
     }
 }
 
@@ -182,41 +136,63 @@ impl PartialOrd for SU2Irrep {
     }
 }
 
+fn su2_f_symbol(
+    s1: SU2Irrep,
+    s2: SU2Irrep,
+    s3: SU2Irrep,
+    s4: SU2Irrep,
+    s5: SU2Irrep,
+    s6: SU2Irrep,
+) -> Result<f64> {
+    if SU2Irrep::n_symbol(&s1, &s2, &s5) == 0
+        || SU2Irrep::n_symbol(&s5, &s3, &s4) == 0
+        || SU2Irrep::n_symbol(&s2, &s3, &s6) == 0
+        || SU2Irrep::n_symbol(&s1, &s6, &s4) == 0
+    {
+        return Ok(0.0);
+    }
+
+    su2_f_symbol_spin2(
+        s1.spin2_value(),
+        s2.spin2_value(),
+        s3.spin2_value(),
+        s4.spin2_value(),
+        s5.spin2_value(),
+        s6.spin2_value(),
+    )
+}
+
+fn su2_fusion_tensor(a: SU2Irrep, b: SU2Irrep, c: SU2Irrep) -> Result<Array4<f64>> {
+    let ja2 = a.spin2_value();
+    let jb2 = b.spin2_value();
+    let jc2 = c.spin2_value();
+    validate_triangle_spin2(ja2, jb2, jc2)?;
+
+    let dim_a = su2_dim_spin2(ja2)?;
+    let dim_b = su2_dim_spin2(jb2)?;
+    let dim_c = su2_dim_spin2(jc2)?;
+
+    let mut tensor = Array4::zeros((dim_a, dim_b, dim_c, 1));
+    for kc in 0..dim_c {
+        for kb in 0..dim_b {
+            for ka in 0..dim_a {
+                tensor[[ka, kb, kc, 0]] = su2_clebsch_gordan_spin2(
+                    ja2,
+                    ja2 - 2 * ka as i64,
+                    jb2,
+                    jb2 - 2 * kb as i64,
+                    jc2,
+                    jc2 - 2 * kc as i64,
+                )?;
+            }
+        }
+    }
+
+    Ok(tensor)
+}
+
 fn su2_dim_spin2(spin2: i64) -> Result<usize> {
     let spin2 = usize::try_from(spin2)
         .map_err(|_| Tensor0Error::Message("SU2 spin must be non-negative".to_string()))?;
     Ok(spin2 + 1)
-}
-
-fn validate_fusion_channel_spin2(a: i64, b: i64, c: i64) -> Result<()> {
-    if a < 0 || b < 0 || c < 0 {
-        return Err(Tensor0Error::Message(
-            "SU2 spin must be non-negative".to_string(),
-        ));
-    }
-    let ab = a + b;
-    let ac = a + c;
-    let bc = b + c;
-    if ab < c || ac < b || bc < a {
-        return Err(Tensor0Error::Message(
-            "SU2 labels do not satisfy the triangle condition".to_string(),
-        ));
-    }
-    if (ab + c).rem_euclid(2) != 0 {
-        return Err(Tensor0Error::Message(
-            "SU2 labels do not satisfy the triangle parity condition".to_string(),
-        ));
-    }
-    Ok(())
-}
-
-fn require_width(value: &[i64], expected: usize) -> Result<()> {
-    if value.len() == expected {
-        Ok(())
-    } else {
-        Err(Tensor0Error::BadSectorWidth {
-            expected,
-            actual: value.len(),
-        })
-    }
 }

@@ -3,8 +3,8 @@ use smallvec::smallvec;
 use crate::error::{Result, Tensor0Error};
 
 use super::{
-    BraidingStyle, EncodedSectorValue, FusionStyle, GroupSpec, Sector, SectorCardinality,
-    SectorSpec, SortKey,
+    require_width, BraidingStyle, EncodedSectorValue, FusionStyle, GroupSpec, Sector,
+    SectorCardinality, SectorSpec, SortKey,
 };
 
 /// Irrep value for the cyclic group Z_N.
@@ -102,16 +102,15 @@ impl<const N: usize> Sector for ZNIrrep<N> {
     fn sort_index(&self) -> Result<u128> {
         Ok(self.value as u128)
     }
-}
 
-fn require_width(value: &[i64], expected: usize) -> Result<()> {
-    if value.len() == expected {
-        Ok(())
-    } else {
-        Err(Tensor0Error::BadSectorWidth {
-            expected,
-            actual: value.len(),
-        })
+    fn value_at(index: u128) -> Result<Self> {
+        let n = modulus::<N>()? as u128;
+        if index < n {
+            let value = i64::try_from(index).map_err(|_| Tensor0Error::SectorIndexOverflow)?;
+            ZNIrrep::new(value)
+        } else {
+            Err(Tensor0Error::SectorIndexOverflow)
+        }
     }
 }
 

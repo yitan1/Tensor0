@@ -5,7 +5,8 @@ use smallvec::smallvec;
 use crate::error::{Result, Tensor0Error};
 
 use super::{
-    BraidingStyle, EncodedSectorValue, FusionStyle, Sector, SectorCardinality, SectorSpec, SortKey,
+    require_width, BraidingStyle, EncodedSectorValue, FusionStyle, Sector, SectorCardinality,
+    SectorSpec, SortKey,
 };
 
 /// U(1) irrep stored as TensorKit-compatible twice-charge.
@@ -96,6 +97,10 @@ impl Sector for U1Irrep {
     fn sort_index(&self) -> Result<u128> {
         Ok(u1_sort_index(self.charge2))
     }
+
+    fn value_at(index: u128) -> Result<Self> {
+        U1Irrep::charge2(u1_charge2_at(index)?)
+    }
 }
 
 impl Ord for U1Irrep {
@@ -110,21 +115,30 @@ impl PartialOrd for U1Irrep {
     }
 }
 
-fn require_width(value: &[i64], expected: usize) -> Result<()> {
-    if value.len() == expected {
-        Ok(())
-    } else {
-        Err(Tensor0Error::BadSectorWidth {
-            expected,
-            actual: value.len(),
-        })
-    }
-}
-
 fn u1_sort_index(charge2: i64) -> u128 {
     if charge2 > 0 {
         (charge2 as u128).saturating_mul(2).saturating_sub(1)
     } else {
         (-(charge2 as i128) as u128).saturating_mul(2)
+    }
+}
+
+fn u1_charge2_at(index: u128) -> Result<i64> {
+    if index == 0 {
+        return Ok(0);
+    }
+    if index % 2 == 1 {
+        let charge2 = index / 2 + 1;
+        return i64::try_from(charge2).map_err(|_| Tensor0Error::SectorIndexOverflow);
+    }
+
+    let magnitude = index / 2;
+    if magnitude == (i64::MAX as u128) + 1 {
+        Ok(i64::MIN)
+    } else {
+        let magnitude = i64::try_from(magnitude).map_err(|_| Tensor0Error::SectorIndexOverflow)?;
+        magnitude
+            .checked_neg()
+            .ok_or(Tensor0Error::SectorIndexOverflow)
     }
 }

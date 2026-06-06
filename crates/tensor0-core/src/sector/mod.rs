@@ -2,11 +2,12 @@
 
 use std::collections::BTreeSet;
 
+use crate::error::{Result, Tensor0Error};
+
 mod fermion_parity;
-mod ordering;
 mod product;
+mod product_ordering;
 mod spec;
-mod spec_rules;
 mod su2;
 mod traits;
 mod u1;
@@ -21,7 +22,8 @@ pub use product::{
 pub use spec::{GroupSpec, SectorSpec};
 pub use su2::SU2Irrep;
 pub use traits::{
-    BraidingStyle, EncodedSectorValue, FusionStyle, Sector, SectorCardinality, SectorTuple, SortKey,
+    BraidingStyle, EncodedSectorValue, FusionStyle, Sector, SectorCardinality, SectorTuple,
+    SectorValues, SortKey,
 };
 pub use u1::U1Irrep;
 pub use zn::{Z2Irrep, Z3Irrep, Z4Irrep, ZNIrrep};
@@ -42,5 +44,16 @@ pub(crate) fn fusion_sectors<I: Sector>(sectors: &[I]) -> Vec<I> {
             }
             outputs.into_iter().collect()
         }
+    }
+}
+
+fn require_width(value: &[i64], expected: usize) -> Result<()> {
+    if value.len() == expected {
+        Ok(())
+    } else {
+        Err(Tensor0Error::BadSectorWidth {
+            expected,
+            actual: value.len(),
+        })
     }
 }
