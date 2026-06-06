@@ -37,11 +37,9 @@ pub(crate) enum HomSpaceInner {
 macro_rules! build_hom_from_products {
     ($variant:ident, $sector:ty, $codomain:expr, $domain:expr) => {{
         match ($codomain, $domain) {
-            (ProductSpaceInner::$variant(codomain), ProductSpaceInner::$variant(domain)) => {
-                CoreHomSpace::<$sector>::new(codomain, domain)
-                    .map(HomSpaceInner::$variant)
-                    .map_err(core_err)
-            }
+            (ProductSpaceInner::$variant(codomain), ProductSpaceInner::$variant(domain)) => Ok(
+                HomSpaceInner::$variant(CoreHomSpace::<$sector>::new(codomain, domain)),
+            ),
             _ => Err(PyValueError::new_err(
                 "hom product spaces must have the same sector family",
             )),
@@ -68,8 +66,9 @@ macro_rules! visible_leg_hom {
 macro_rules! visible_legs_hom {
     ($variant:ident, $hom:expr) => {
         $hom.visible_legs()
-            .map(|spaces| spaces.into_iter().map(GradedSpaceInner::$variant).collect())
-            .map_err(core_err)
+            .into_iter()
+            .map(GradedSpaceInner::$variant)
+            .collect()
     };
 }
 
@@ -122,20 +121,14 @@ impl PyHomSpace {
 
     #[getter]
     fn visible_legs(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        spaces_tuple(py, self.inner.visible_legs()?)
-    }
-
-    #[getter]
-    fn fingerprint(&self) -> u128 {
-        self.inner.fingerprint()
+        spaces_tuple(py, self.inner.visible_legs())
     }
 
     #[getter]
     fn static_key(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let codomain_keys = space_static_keys_tuple(py, self.inner.codomain_spaces())?;
         let domain_keys = space_static_keys_tuple(py, self.inner.domain_spaces())?;
-        let key =
-            ("hom", codomain_keys, domain_keys, self.inner.fingerprint()).into_pyobject(py)?;
+        let key = ("hom", codomain_keys, domain_keys).into_pyobject(py)?;
         Ok(key.into_any().unbind())
     }
 
@@ -255,22 +248,6 @@ impl HomSpaceInner {
         }
     }
 
-    fn fingerprint(&self) -> u128 {
-        match self {
-            HomSpaceInner::U1Irrep(hom) => hom.fingerprint(),
-            HomSpaceInner::SU2Irrep(hom) => hom.fingerprint(),
-            HomSpaceInner::FermionParity(hom) => hom.fingerprint(),
-            HomSpaceInner::Z2Irrep(hom) => hom.fingerprint(),
-            HomSpaceInner::Z3Irrep(hom) => hom.fingerprint(),
-            HomSpaceInner::Z4Irrep(hom) => hom.fingerprint(),
-            HomSpaceInner::U1IrrepFermionParity(hom) => hom.fingerprint(),
-            HomSpaceInner::FermionParityU1Irrep(hom) => hom.fingerprint(),
-            HomSpaceInner::U1SU2Irrep(hom) => hom.fingerprint(),
-            HomSpaceInner::FermionParitySU2Irrep(hom) => hom.fingerprint(),
-            HomSpaceInner::FermionParityU1SU2Irrep(hom) => hom.fingerprint(),
-        }
-    }
-
     fn permute(&self, p_codomain: &[usize], p_domain: &[usize]) -> PyResult<HomSpaceInner> {
         match self {
             HomSpaceInner::U1Irrep(hom) => permute_hom!(U1Irrep, hom, p_codomain, p_domain),
@@ -367,7 +344,7 @@ impl HomSpaceInner {
         }
     }
 
-    fn visible_legs(&self) -> PyResult<Vec<GradedSpaceInner>> {
+    fn visible_legs(&self) -> Vec<GradedSpaceInner> {
         match self {
             HomSpaceInner::U1Irrep(hom) => visible_legs_hom!(U1Irrep, hom),
             HomSpaceInner::SU2Irrep(hom) => visible_legs_hom!(SU2Irrep, hom),

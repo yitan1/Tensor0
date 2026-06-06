@@ -1,7 +1,6 @@
 use std::collections::BTreeSet;
 
 use crate::error::{Result, Tensor0Error};
-use crate::fingerprint::fingerprint;
 use crate::fusion_tree::{enumerate_fusion_trees, FusionTree};
 use crate::sector::{fusion_sectors, FusionStyle, Sector};
 
@@ -17,16 +16,15 @@ pub(crate) struct ProductSectorTuple<I: Sector> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProductSpace<I: Sector> {
     factors: Vec<GradedSpace<I>>,
-    fingerprint: u128,
 }
 
 impl<I: Sector> ProductSpace<I> {
-    pub fn new(factors: Vec<GradedSpace<I>>) -> Result<Self> {
-        let fingerprint = fingerprint(&product_spec::<I>(&factors, 0))?;
-        Ok(ProductSpace {
-            factors,
-            fingerprint,
-        })
+    pub fn new(factors: Vec<GradedSpace<I>>) -> Self {
+        ProductSpace { factors }
+    }
+
+    pub fn one() -> Self {
+        ProductSpace::new(vec![])
     }
 
     pub fn from_spec(spec: ProductSpaceSpec) -> Result<Self> {
@@ -44,15 +42,31 @@ impl<I: Sector> ProductSpace<I> {
             .into_iter()
             .map(GradedSpace::<I>::from_spec)
             .collect::<Result<Vec<_>>>()?;
-        ProductSpace::new(factors)
+        Ok(ProductSpace::new(factors))
     }
 
     pub fn to_spec(&self) -> ProductSpaceSpec {
-        product_spec(&self.factors, self.fingerprint)
+        product_spec(&self.factors)
     }
 
     pub fn factors(&self) -> &[GradedSpace<I>] {
         &self.factors
+    }
+
+    pub fn len(&self) -> usize {
+        self.factors.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.factors.is_empty()
+    }
+
+    pub fn get(&self, index: usize) -> Option<&GradedSpace<I>> {
+        self.factors.get(index)
+    }
+
+    pub fn iter(&self) -> std::slice::Iter<'_, GradedSpace<I>> {
+        self.factors.iter()
     }
 
     pub fn dims(&self) -> Vec<usize> {
@@ -60,8 +74,9 @@ impl<I: Sector> ProductSpace<I> {
     }
 
     pub fn dim(&self) -> usize {
-        self.dims()
-            .into_iter()
+        self.factors
+            .iter()
+            .map(GradedSpace::dim)
             .try_fold(1usize, |total, dim| {
                 total
                     .checked_mul(dim)
@@ -85,19 +100,36 @@ impl<I: Sector> ProductSpace<I> {
     }
 
     pub fn sector_dim(&self, sectors: &[I]) -> Option<usize> {
-        self.sector_dims(sectors).map(|dims| {
-            dims.into_iter()
+        if sectors.len() != self.factors.len() {
+            return None;
+        }
+
+        Some(
+            self.factors
+                .iter()
+                .zip(sectors)
+                .map(|(factor, sector)| factor.sector_dim(sector))
                 .try_fold(1usize, |total, dim| {
                     total
                         .checked_mul(dim)
                         .ok_or("product sector dimension overflowed")
                 })
-                .expect("product sector dimension overflowed")
-        })
+                .expect("product sector dimension overflowed"),
+        )
     }
 
-    pub fn fingerprint(&self) -> u128 {
-        self.fingerprint
+    pub fn dual(&self) -> Self {
+        let factors = self
+            .factors
+            .iter()
+            .rev()
+            .map(GradedSpace::dual)
+            .collect::<Vec<_>>();
+        ProductSpace::new(factors)
+    }
+
+    pub fn fuse(&self) -> Result<GradedSpace<I>> {
+        fuse_product_space(self)
     }
 
     pub(crate) fn block_sectors(&self) -> Result<Vec<I>> {
@@ -195,11 +227,10 @@ pub fn fuse_product_space<I: Sector>(product: &ProductSpace<I>) -> Result<Graded
     Ok(fused)
 }
 
-fn product_spec<I: Sector>(factors: &[GradedSpace<I>], fingerprint: u128) -> ProductSpaceSpec {
+fn product_spec<I: Sector>(factors: &[GradedSpace<I>]) -> ProductSpaceSpec {
     ProductSpaceSpec {
         sector_spec: I::sector_spec(),
         factors: factors.iter().map(GradedSpace::to_spec).collect(),
-        fingerprint,
     }
 }
 

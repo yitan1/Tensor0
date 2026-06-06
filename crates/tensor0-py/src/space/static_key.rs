@@ -9,14 +9,7 @@ use super::graded::{GradedSpaceInner, PyElementarySpace};
 pub(super) fn space_static_key(py: Python<'_>, inner: &GradedSpaceInner) -> PyResult<Py<PyAny>> {
     let sector_key = sector_spec_static_key(py, &inner.sector_spec())?;
     let sectors = inner.sectors_py(py)?;
-    let key = (
-        "space",
-        sector_key,
-        sectors,
-        inner.is_dual(),
-        inner.fingerprint(),
-    )
-        .into_pyobject(py)?;
+    let key = ("space", sector_key, sectors, inner.is_dual()).into_pyobject(py)?;
     Ok(key.into_any().unbind())
 }
 

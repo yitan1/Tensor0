@@ -40,9 +40,9 @@ pub(crate) enum ProductSpaceInner {
 macro_rules! build_product_space {
     ($variant:ident, $sector:ty, $spaces:expr) => {{
         let factors = collect_product_factors!($variant, $spaces)?;
-        ProductSpace::<$sector>::new(factors)
-            .map(ProductSpaceInner::$variant)
-            .map_err(core_err)
+        Ok(ProductSpaceInner::$variant(ProductSpace::<$sector>::new(
+            factors,
+        )))
     }};
 }
 
@@ -97,11 +97,6 @@ impl PyProductSpace {
     #[getter]
     fn spaces(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         spaces_tuple(py, self.inner.spaces())
-    }
-
-    #[getter]
-    fn fingerprint(&self) -> u128 {
-        self.inner.fingerprint()
     }
 
     fn __len__(&self) -> usize {
@@ -296,22 +291,6 @@ impl ProductSpaceInner {
             ProductSpaceInner::U1SU2Irrep(product) => product.factors().len(),
             ProductSpaceInner::FermionParitySU2Irrep(product) => product.factors().len(),
             ProductSpaceInner::FermionParityU1SU2Irrep(product) => product.factors().len(),
-        }
-    }
-
-    fn fingerprint(&self) -> u128 {
-        match self {
-            ProductSpaceInner::U1Irrep(product) => product.fingerprint(),
-            ProductSpaceInner::SU2Irrep(product) => product.fingerprint(),
-            ProductSpaceInner::FermionParity(product) => product.fingerprint(),
-            ProductSpaceInner::Z2Irrep(product) => product.fingerprint(),
-            ProductSpaceInner::Z3Irrep(product) => product.fingerprint(),
-            ProductSpaceInner::Z4Irrep(product) => product.fingerprint(),
-            ProductSpaceInner::U1IrrepFermionParity(product) => product.fingerprint(),
-            ProductSpaceInner::FermionParityU1Irrep(product) => product.fingerprint(),
-            ProductSpaceInner::U1SU2Irrep(product) => product.fingerprint(),
-            ProductSpaceInner::FermionParitySU2Irrep(product) => product.fingerprint(),
-            ProductSpaceInner::FermionParityU1SU2Irrep(product) => product.fingerprint(),
         }
     }
 

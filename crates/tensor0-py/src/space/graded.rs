@@ -74,19 +74,14 @@ impl PyElementarySpace {
     }
 
     #[getter]
-    fn fingerprint(&self) -> u128 {
-        self.inner.fingerprint()
-    }
-
-    #[getter]
     fn static_key(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         space_static_key(py, &self.inner)
     }
 
-    fn dual(&self) -> PyResult<PyElementarySpace> {
-        Ok(PyElementarySpace {
-            inner: self.inner.dual()?,
-        })
+    fn dual(&self) -> PyElementarySpace {
+        PyElementarySpace {
+            inner: self.inner.dual(),
+        }
     }
 
     fn __eq__(&self, other: PyRef<'_, PyElementarySpace>) -> bool {
@@ -147,68 +142,27 @@ impl GradedSpaceInner {
         }
     }
 
-    pub(super) fn fingerprint(&self) -> u128 {
+    pub(super) fn dual(&self) -> GradedSpaceInner {
         match self {
-            GradedSpaceInner::U1Irrep(space) => space.fingerprint(),
-            GradedSpaceInner::SU2Irrep(space) => space.fingerprint(),
-            GradedSpaceInner::FermionParity(space) => space.fingerprint(),
-            GradedSpaceInner::Z2Irrep(space) => space.fingerprint(),
-            GradedSpaceInner::Z3Irrep(space) => space.fingerprint(),
-            GradedSpaceInner::Z4Irrep(space) => space.fingerprint(),
-            GradedSpaceInner::U1IrrepFermionParity(space) => space.fingerprint(),
-            GradedSpaceInner::FermionParityU1Irrep(space) => space.fingerprint(),
-            GradedSpaceInner::U1SU2Irrep(space) => space.fingerprint(),
-            GradedSpaceInner::FermionParitySU2Irrep(space) => space.fingerprint(),
-            GradedSpaceInner::FermionParityU1SU2Irrep(space) => space.fingerprint(),
-        }
-    }
-
-    pub(super) fn dual(&self) -> PyResult<GradedSpaceInner> {
-        match self {
-            GradedSpaceInner::U1Irrep(space) => space
-                .dual()
-                .map(GradedSpaceInner::U1Irrep)
-                .map_err(core_err),
-            GradedSpaceInner::SU2Irrep(space) => space
-                .dual()
-                .map(GradedSpaceInner::SU2Irrep)
-                .map_err(core_err),
-            GradedSpaceInner::FermionParity(space) => space
-                .dual()
-                .map(GradedSpaceInner::FermionParity)
-                .map_err(core_err),
-            GradedSpaceInner::Z2Irrep(space) => space
-                .dual()
-                .map(GradedSpaceInner::Z2Irrep)
-                .map_err(core_err),
-            GradedSpaceInner::Z3Irrep(space) => space
-                .dual()
-                .map(GradedSpaceInner::Z3Irrep)
-                .map_err(core_err),
-            GradedSpaceInner::Z4Irrep(space) => space
-                .dual()
-                .map(GradedSpaceInner::Z4Irrep)
-                .map_err(core_err),
-            GradedSpaceInner::U1IrrepFermionParity(space) => space
-                .dual()
-                .map(GradedSpaceInner::U1IrrepFermionParity)
-                .map_err(core_err),
-            GradedSpaceInner::FermionParityU1Irrep(space) => space
-                .dual()
-                .map(GradedSpaceInner::FermionParityU1Irrep)
-                .map_err(core_err),
-            GradedSpaceInner::U1SU2Irrep(space) => space
-                .dual()
-                .map(GradedSpaceInner::U1SU2Irrep)
-                .map_err(core_err),
-            GradedSpaceInner::FermionParitySU2Irrep(space) => space
-                .dual()
-                .map(GradedSpaceInner::FermionParitySU2Irrep)
-                .map_err(core_err),
-            GradedSpaceInner::FermionParityU1SU2Irrep(space) => space
-                .dual()
-                .map(GradedSpaceInner::FermionParityU1SU2Irrep)
-                .map_err(core_err),
+            GradedSpaceInner::U1Irrep(space) => GradedSpaceInner::U1Irrep(space.dual()),
+            GradedSpaceInner::SU2Irrep(space) => GradedSpaceInner::SU2Irrep(space.dual()),
+            GradedSpaceInner::FermionParity(space) => GradedSpaceInner::FermionParity(space.dual()),
+            GradedSpaceInner::Z2Irrep(space) => GradedSpaceInner::Z2Irrep(space.dual()),
+            GradedSpaceInner::Z3Irrep(space) => GradedSpaceInner::Z3Irrep(space.dual()),
+            GradedSpaceInner::Z4Irrep(space) => GradedSpaceInner::Z4Irrep(space.dual()),
+            GradedSpaceInner::U1IrrepFermionParity(space) => {
+                GradedSpaceInner::U1IrrepFermionParity(space.dual())
+            }
+            GradedSpaceInner::FermionParityU1Irrep(space) => {
+                GradedSpaceInner::FermionParityU1Irrep(space.dual())
+            }
+            GradedSpaceInner::U1SU2Irrep(space) => GradedSpaceInner::U1SU2Irrep(space.dual()),
+            GradedSpaceInner::FermionParitySU2Irrep(space) => {
+                GradedSpaceInner::FermionParitySU2Irrep(space.dual())
+            }
+            GradedSpaceInner::FermionParityU1SU2Irrep(space) => {
+                GradedSpaceInner::FermionParityU1SU2Irrep(space.dual())
+            }
         }
     }
 

@@ -1,25 +1,39 @@
+use std::collections::BTreeMap;
+
 use crate::error::{Result, Tensor0Error};
-use crate::fingerprint::fingerprint;
 use crate::sector::Sector;
 
 use super::spec::{ElementarySpaceSpec, SectorDimSpec};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GradedSpace<I: Sector> {
-    dims: Vec<(I, usize)>,
+    sector_dims: Vec<(I, usize)>,
     is_dual: bool,
-    fingerprint: u128,
 }
 
 impl<I: Sector> GradedSpace<I> {
-    pub fn new(dims: Vec<(I, usize)>, is_dual: bool) -> Result<Self> {
-        let mut dims = dims
+    pub fn zero(is_dual: bool) -> Self {
+        GradedSpace {
+            sector_dims: vec![],
+            is_dual,
+        }
+    }
+
+    pub fn unit() -> Self {
+        GradedSpace {
+            sector_dims: vec![(I::unit(), 1)],
+            is_dual: false,
+        }
+    }
+
+    pub fn new(sector_dims: Vec<(I, usize)>, is_dual: bool) -> Result<Self> {
+        let mut sector_dims = sector_dims
             .into_iter()
             .filter(|(_, dim)| *dim != 0)
             .collect::<Vec<_>>();
 
-        dims.sort_by(|left, right| left.0.cmp(&right.0));
-        for window in dims.windows(2) {
+        sector_dims.sort_by(|left, right| left.0.cmp(&right.0));
+        for window in sector_dims.windows(2) {
             if window[0].0 == window[1].0 {
                 return Err(Tensor0Error::Message(
                     "sector appears multiple times".to_string(),
@@ -27,11 +41,9 @@ impl<I: Sector> GradedSpace<I> {
             }
         }
 
-        let fingerprint = fingerprint(&elementary_spec::<I>(&dims, is_dual, 0))?;
         Ok(GradedSpace {
-            dims,
+            sector_dims,
             is_dual,
-            fingerprint,
         })
     }
 
@@ -45,30 +57,31 @@ impl<I: Sector> GradedSpace<I> {
             });
         }
 
-        let dims = spec
+        let sector_dims = spec
             .sectors
             .into_iter()
             .map(|sector_dim| Ok((I::decode_value(&sector_dim.sector)?, sector_dim.dim)))
             .collect::<Result<Vec<_>>>()?;
-        GradedSpace::new(dims, spec.is_dual)
+        GradedSpace::new(sector_dims, spec.is_dual)
     }
 
     pub fn to_spec(&self) -> ElementarySpaceSpec {
-        elementary_spec(&self.dims, self.is_dual, self.fingerprint)
+        elementary_spec(&self.sector_dims, self.is_dual)
     }
 
-    pub fn dual(&self) -> Result<Self> {
-        let is_dual = !self.is_dual;
-        let fingerprint = fingerprint(&elementary_spec::<I>(&self.dims, is_dual, 0))?;
-        Ok(GradedSpace {
-            dims: self.dims.clone(),
-            is_dual,
-            fingerprint,
-        })
+    pub fn dual(&self) -> Self {
+        GradedSpace {
+            sector_dims: self.sector_dims.clone(),
+            is_dual: !self.is_dual,
+        }
+    }
+
+    pub fn is_dual(&self) -> bool {
+        self.is_dual
     }
 
     pub fn sectors(&self) -> Vec<(I, usize)> {
-        self.dims
+        self.sector_dims
             .iter()
             .map(|(sector, dim)| {
                 let sector = if self.is_dual {
@@ -87,19 +100,35 @@ impl<I: Sector> GradedSpace<I> {
         } else {
             sector.clone()
         };
-        self.dims
+        self.sector_dims
             .binary_search_by(|(stored_sector, _)| stored_sector.cmp(&key))
-            .map(|index| self.dims[index].1)
+            .map(|index| self.sector_dims[index].1)
             .unwrap_or(0)
+    }
+
+    pub fn has_sector(&self, sector: &I) -> bool {
+        self.sector_dim(sector) != 0
+    }
+
+    pub fn reduced_dim(&self) -> usize {
+        self.sector_dims
+            .iter()
+            .map(|(_, dim)| *dim)
+            .try_fold(0usize, |total, dim| {
+                total
+                    .checked_add(dim)
+                    .ok_or("graded space reduced dimension overflowed")
+            })
+            .expect("graded space reduced dimension overflowed")
     }
 
     pub fn dim(&self) -> usize {
         self.sectors()
             .into_iter()
-            .map(|(sector, _)| {
+            .map(|(sector, dim)| {
                 sector
                     .quantum_dim()
-                    .checked_mul(self.sector_dim(&sector))
+                    .checked_mul(dim)
                     .expect("graded space dimension overflowed")
             })
             .try_fold(0usize, |total, dim| {
@@ -110,12 +139,29 @@ impl<I: Sector> GradedSpace<I> {
             .expect("graded space dimension overflowed")
     }
 
-    pub fn is_dual(&self) -> bool {
-        self.is_dual
-    }
+    pub fn direct_sum(&self, rhs: &Self) -> Result<Self> {
+        if self.is_dual() != rhs.is_dual() {
+            return Err(Tensor0Error::Message(
+                "direct sum must have the same dual flag".to_string(),
+            ));
+        }
 
-    pub fn fingerprint(&self) -> u128 {
-        self.fingerprint
+        let is_dual = self.is_dual();
+        let mut visible_sector_dims = BTreeMap::<I, usize>::new();
+        for (sector, dim) in self.sectors().into_iter().chain(rhs.sectors()) {
+            let entry = visible_sector_dims.entry(sector).or_insert(0);
+            *entry = entry.checked_add(dim).ok_or_else(|| {
+                Tensor0Error::Message("direct sum dimension overflowed".to_string())
+            })?;
+        }
+        let sector_dims = visible_sector_dims
+            .into_iter()
+            .map(|(sector, dim)| {
+                let sector = if is_dual { sector.dual() } else { sector };
+                (sector, dim)
+            })
+            .collect();
+        GradedSpace::new(sector_dims, is_dual)
     }
 }
 
@@ -130,7 +176,7 @@ pub fn infimum_space<I: Sector>(
     }
 
     let is_dual = left.is_dual();
-    let dims = left
+    let sector_dims = left
         .sectors()
         .into_iter()
         .filter_map(|(sector, left_dim)| {
@@ -143,17 +189,39 @@ pub fn infimum_space<I: Sector>(
             Some((stored_sector, dim))
         })
         .collect::<Vec<_>>();
-    GradedSpace::new(dims, is_dual)
+    GradedSpace::new(sector_dims, is_dual)
 }
 
-fn elementary_spec<I: Sector>(
-    dims: &[(I, usize)],
-    is_dual: bool,
-    fingerprint: u128,
-) -> ElementarySpaceSpec {
+pub fn supremum_space<I: Sector>(
+    left: &GradedSpace<I>,
+    right: &GradedSpace<I>,
+) -> Result<GradedSpace<I>> {
+    if left.is_dual() != right.is_dual() {
+        return Err(Tensor0Error::Message(
+            "supremum spaces must have the same dual flag".to_string(),
+        ));
+    }
+
+    let is_dual = left.is_dual();
+    let mut visible_sector_dims = BTreeMap::<I, usize>::new();
+    for (sector, dim) in left.sectors().into_iter().chain(right.sectors()) {
+        let entry = visible_sector_dims.entry(sector).or_insert(0);
+        *entry = (*entry).max(dim);
+    }
+    let sector_dims = visible_sector_dims
+        .into_iter()
+        .map(|(sector, dim)| {
+            let sector = if is_dual { sector.dual() } else { sector };
+            (sector, dim)
+        })
+        .collect();
+    GradedSpace::new(sector_dims, is_dual)
+}
+
+fn elementary_spec<I: Sector>(sector_dims: &[(I, usize)], is_dual: bool) -> ElementarySpaceSpec {
     ElementarySpaceSpec {
         sector_spec: I::sector_spec(),
-        sectors: dims
+        sectors: sector_dims
             .iter()
             .map(|(sector, dim)| SectorDimSpec {
                 sector: sector.encode_value().to_vec(),
@@ -161,6 +229,5 @@ fn elementary_spec<I: Sector>(
             })
             .collect(),
         is_dual,
-        fingerprint,
     }
 }
