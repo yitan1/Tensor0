@@ -317,10 +317,6 @@ impl HomSpaceInner {
     }
 
     fn visible_leg(&self, index: usize) -> PyResult<GradedSpaceInner> {
-        if index >= self.numind() {
-            return Err(PyIndexError::new_err("visible index out of range"));
-        }
-
         match self {
             HomSpaceInner::U1Irrep(hom) => visible_leg_hom!(U1Irrep, hom, index),
             HomSpaceInner::SU2Irrep(hom) => visible_leg_hom!(SU2Irrep, hom, index),

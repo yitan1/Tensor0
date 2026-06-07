@@ -15,15 +15,11 @@ pub(crate) fn parse_sector_dims(
     expected_width: usize,
 ) -> PyResult<Vec<(Vec<i64>, usize)>> {
     let items = sectors
-        .extract::<Vec<(Vec<i64>, i64)>>()
-        .map_err(|_| PyTypeError::new_err("sectors must be normalized sector items"))?;
+        .try_iter()
+        .map_err(|_| normalized_sector_items_error())?;
 
     items
-        .into_iter()
-        .map(|(sector, dim)| {
-            require_width(sector.len(), expected_width)?;
-            Ok((sector, parse_dim(dim)?))
-        })
+        .map(|item| parse_sector_dim_item(&item?, expected_width))
         .collect()
 }
 
@@ -130,7 +126,35 @@ fn require_width(actual: usize, expected: usize) -> PyResult<()> {
     }
 }
 
-fn parse_dim(dim: i64) -> PyResult<usize> {
+fn parse_sector_dim_item(
+    item: &Bound<'_, PyAny>,
+    expected_width: usize,
+) -> PyResult<(Vec<i64>, usize)> {
+    let item = item
+        .cast::<PyTuple>()
+        .map_err(|_| normalized_sector_items_error())?;
+    if item.len() != 2 {
+        return Err(normalized_sector_items_error());
+    }
+
+    let sector = item.get_item(0)?;
+    sector
+        .cast::<PyTuple>()
+        .map_err(|_| normalized_sector_items_error())?;
+    let sector = sector_key_from_py(&sector)?;
+    require_width(sector.len(), expected_width)?;
+
+    let dim = parse_dim_from_py(&item.get_item(1)?)?;
+    Ok((sector, dim))
+}
+
+fn parse_dim_from_py(value: &Bound<'_, PyAny>) -> PyResult<usize> {
+    if value.extract::<bool>().is_ok() {
+        return Err(sector_dim_type_error());
+    }
+    let dim = value
+        .extract::<i64>()
+        .map_err(|_| sector_dim_type_error())?;
     usize::try_from(dim).map_err(|_| PyValueError::new_err("sector dimension must be non-negative"))
 }
 
@@ -143,4 +167,12 @@ fn sector_key_part_from_py(value: &Bound<'_, PyAny>) -> PyResult<Option<i64>> {
 
 fn sector_key_type_error() -> PyErr {
     PyTypeError::new_err("sector key must be an int or a tuple of ints")
+}
+
+fn sector_dim_type_error() -> PyErr {
+    PyTypeError::new_err("sector dimension must be an int")
+}
+
+fn normalized_sector_items_error() -> PyErr {
+    PyTypeError::new_err("sectors must be normalized sector items")
 }

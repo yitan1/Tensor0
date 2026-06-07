@@ -97,7 +97,6 @@ def _transform_new(
         p_codomain + p_domain,
         transformer,
         alpha=1.0,
-        beta=0.0,
     )
     return TensorMap(dst_space, dst_data)
 
@@ -184,10 +183,8 @@ def _add_transform(
     transformer: _native.TreeTransformer,
     *,
     alpha: object = 1.0,
-    beta: object = 0.0,
 ) -> Array:
     result = jnp.asarray(dst_data)
-    result = result * jnp.asarray(beta, dtype=result.dtype)
     source = jnp.asarray(src_data)
     alpha_value = jnp.asarray(alpha, dtype=result.dtype)
 

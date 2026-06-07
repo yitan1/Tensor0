@@ -262,6 +262,15 @@ fn build_graded_space<I: Sector>(
     GradedSpace::<I>::new(dims, is_dual).map_err(core_err)
 }
 
+fn build_graded_space_variant<I: Sector>(
+    sectors: &Bound<'_, PyAny>,
+    is_dual: bool,
+    wrap: fn(GradedSpace<I>) -> GradedSpaceInner,
+) -> PyResult<GradedSpaceInner> {
+    let dims = parse_sector_dims(sectors, I::encoded_width())?;
+    build_graded_space::<I>(dims, is_dual).map(wrap)
+}
+
 fn graded_space_from_spec(
     spec: CoreSectorSpec,
     sectors: &Bound<'_, PyAny>,
@@ -270,64 +279,55 @@ fn graded_space_from_spec(
     match spec {
         CoreSectorSpec::Irrep {
             group: GroupSpec::U1,
-        } => {
-            let dims = parse_sector_dims(sectors, U1Irrep::encoded_width())?;
-            build_graded_space::<U1Irrep>(dims, is_dual).map(GradedSpaceInner::U1Irrep)
-        }
+        } => build_graded_space_variant::<U1Irrep>(sectors, is_dual, GradedSpaceInner::U1Irrep),
         CoreSectorSpec::Irrep {
             group: GroupSpec::SU2,
-        } => {
-            let dims = parse_sector_dims(sectors, SU2Irrep::encoded_width())?;
-            build_graded_space::<SU2Irrep>(dims, is_dual).map(GradedSpaceInner::SU2Irrep)
-        }
-        CoreSectorSpec::FermionParity => {
-            let dims = parse_sector_dims(sectors, FermionParity::encoded_width())?;
-            build_graded_space::<FermionParity>(dims, is_dual).map(GradedSpaceInner::FermionParity)
-        }
+        } => build_graded_space_variant::<SU2Irrep>(sectors, is_dual, GradedSpaceInner::SU2Irrep),
+        CoreSectorSpec::FermionParity => build_graded_space_variant::<FermionParity>(
+            sectors,
+            is_dual,
+            GradedSpaceInner::FermionParity,
+        ),
         CoreSectorSpec::Irrep {
             group: GroupSpec::ZN { n: 2 },
-        } => {
-            let dims = parse_sector_dims(sectors, Z2Irrep::encoded_width())?;
-            build_graded_space::<Z2Irrep>(dims, is_dual).map(GradedSpaceInner::Z2Irrep)
-        }
+        } => build_graded_space_variant::<Z2Irrep>(sectors, is_dual, GradedSpaceInner::Z2Irrep),
         CoreSectorSpec::Irrep {
             group: GroupSpec::ZN { n: 3 },
-        } => {
-            let dims = parse_sector_dims(sectors, Z3Irrep::encoded_width())?;
-            build_graded_space::<Z3Irrep>(dims, is_dual).map(GradedSpaceInner::Z3Irrep)
-        }
+        } => build_graded_space_variant::<Z3Irrep>(sectors, is_dual, GradedSpaceInner::Z3Irrep),
         CoreSectorSpec::Irrep {
             group: GroupSpec::ZN { n: 4 },
-        } => {
-            let dims = parse_sector_dims(sectors, Z4Irrep::encoded_width())?;
-            build_graded_space::<Z4Irrep>(dims, is_dual).map(GradedSpaceInner::Z4Irrep)
-        }
+        } => build_graded_space_variant::<Z4Irrep>(sectors, is_dual, GradedSpaceInner::Z4Irrep),
         CoreSectorSpec::Product { components }
             if components == vec![CoreSectorSpec::u1(), CoreSectorSpec::fermion_parity()] =>
         {
-            let dims = parse_sector_dims(sectors, FermionNumber::encoded_width())?;
-            build_graded_space::<FermionNumber>(dims, is_dual)
-                .map(GradedSpaceInner::U1IrrepFermionParity)
+            build_graded_space_variant::<FermionNumber>(
+                sectors,
+                is_dual,
+                GradedSpaceInner::U1IrrepFermionParity,
+            )
         }
         CoreSectorSpec::Product { components }
             if components == vec![CoreSectorSpec::fermion_parity(), CoreSectorSpec::u1()] =>
         {
-            let dims = parse_sector_dims(sectors, FermionParityU1Irrep::encoded_width())?;
-            build_graded_space::<FermionParityU1Irrep>(dims, is_dual)
-                .map(GradedSpaceInner::FermionParityU1Irrep)
+            build_graded_space_variant::<FermionParityU1Irrep>(
+                sectors,
+                is_dual,
+                GradedSpaceInner::FermionParityU1Irrep,
+            )
         }
         CoreSectorSpec::Product { components }
             if components == vec![CoreSectorSpec::u1(), CoreSectorSpec::su2()] =>
         {
-            let dims = parse_sector_dims(sectors, U1SU2Irrep::encoded_width())?;
-            build_graded_space::<U1SU2Irrep>(dims, is_dual).map(GradedSpaceInner::U1SU2Irrep)
+            build_graded_space_variant::<U1SU2Irrep>(sectors, is_dual, GradedSpaceInner::U1SU2Irrep)
         }
         CoreSectorSpec::Product { components }
             if components == vec![CoreSectorSpec::fermion_parity(), CoreSectorSpec::su2()] =>
         {
-            let dims = parse_sector_dims(sectors, FermionParitySU2Irrep::encoded_width())?;
-            build_graded_space::<FermionParitySU2Irrep>(dims, is_dual)
-                .map(GradedSpaceInner::FermionParitySU2Irrep)
+            build_graded_space_variant::<FermionParitySU2Irrep>(
+                sectors,
+                is_dual,
+                GradedSpaceInner::FermionParitySU2Irrep,
+            )
         }
         CoreSectorSpec::Product { components }
             if components
@@ -337,9 +337,11 @@ fn graded_space_from_spec(
                     CoreSectorSpec::su2(),
                 ] =>
         {
-            let dims = parse_sector_dims(sectors, FermionParityU1SU2Irrep::encoded_width())?;
-            build_graded_space::<FermionParityU1SU2Irrep>(dims, is_dual)
-                .map(GradedSpaceInner::FermionParityU1SU2Irrep)
+            build_graded_space_variant::<FermionParityU1SU2Irrep>(
+                sectors,
+                is_dual,
+                GradedSpaceInner::FermionParityU1SU2Irrep,
+            )
         }
         _ => Err(PyValueError::new_err("unsupported sector spec")),
     }

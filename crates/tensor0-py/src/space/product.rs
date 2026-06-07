@@ -7,7 +7,7 @@ use tensor0_core::sector::{
     U1SU2Irrep, Z2Irrep, Z3Irrep, Z4Irrep,
 };
 use tensor0_core::space::{
-    fuse_product_space as core_fuse_product_space, ProductSpace, ProductSpaceSpec,
+    fuse_product_space as core_fuse_product_space, GradedSpace, ProductSpace, ProductSpaceSpec,
 };
 
 use crate::pyconv::{core_err, py_hash};
@@ -65,9 +65,11 @@ pub(crate) fn make_product_space(
     sector_spec: PyRef<'_, PySectorSpec>,
     spaces: &Bound<'_, PyAny>,
 ) -> PyResult<PyProductSpace> {
-    let spec = sector_spec.inner.clone().canonicalize().map_err(core_err)?;
     Ok(PyProductSpace {
-        inner: ProductSpaceInner::from_spaces_for_spec(&spec, extract_spaces(spaces)?)?,
+        inner: ProductSpaceInner::from_spaces_for_spec(
+            &sector_spec.inner,
+            extract_spaces(spaces)?,
+        )?,
     })
 }
 
@@ -106,10 +108,13 @@ impl PyProductSpace {
     fn __getitem__(&self, py: Python<'_>, index: isize) -> PyResult<Py<PyAny>> {
         let len = self.inner.len() as isize;
         let index = if index < 0 { len + index } else { index };
-        if index < 0 || index >= len {
+        if index < 0 {
             return Err(PyIndexError::new_err("product space index out of range"));
         }
-        let inner = self.inner.spaces()[index as usize].clone();
+        let inner = self
+            .inner
+            .space_at(index as usize)
+            .ok_or_else(|| PyIndexError::new_err("product space index out of range"))?;
         Py::new(py, PyElementarySpace { inner }).map(|space| space.into_any())
     }
 
@@ -209,72 +214,39 @@ impl ProductSpaceInner {
 
     pub(super) fn spaces(&self) -> Vec<GradedSpaceInner> {
         match self {
-            ProductSpaceInner::U1Irrep(product) => product
-                .factors()
-                .iter()
-                .cloned()
-                .map(GradedSpaceInner::U1Irrep)
-                .collect(),
-            ProductSpaceInner::SU2Irrep(product) => product
-                .factors()
-                .iter()
-                .cloned()
-                .map(GradedSpaceInner::SU2Irrep)
-                .collect(),
-            ProductSpaceInner::FermionParity(product) => product
-                .factors()
-                .iter()
-                .cloned()
-                .map(GradedSpaceInner::FermionParity)
-                .collect(),
-            ProductSpaceInner::Z2Irrep(product) => product
-                .factors()
-                .iter()
-                .cloned()
-                .map(GradedSpaceInner::Z2Irrep)
-                .collect(),
-            ProductSpaceInner::Z3Irrep(product) => product
-                .factors()
-                .iter()
-                .cloned()
-                .map(GradedSpaceInner::Z3Irrep)
-                .collect(),
-            ProductSpaceInner::Z4Irrep(product) => product
-                .factors()
-                .iter()
-                .cloned()
-                .map(GradedSpaceInner::Z4Irrep)
-                .collect(),
-            ProductSpaceInner::U1IrrepFermionParity(product) => product
-                .factors()
-                .iter()
-                .cloned()
-                .map(GradedSpaceInner::U1IrrepFermionParity)
-                .collect(),
-            ProductSpaceInner::FermionParityU1Irrep(product) => product
-                .factors()
-                .iter()
-                .cloned()
-                .map(GradedSpaceInner::FermionParityU1Irrep)
-                .collect(),
-            ProductSpaceInner::U1SU2Irrep(product) => product
-                .factors()
-                .iter()
-                .cloned()
-                .map(GradedSpaceInner::U1SU2Irrep)
-                .collect(),
-            ProductSpaceInner::FermionParitySU2Irrep(product) => product
-                .factors()
-                .iter()
-                .cloned()
-                .map(GradedSpaceInner::FermionParitySU2Irrep)
-                .collect(),
-            ProductSpaceInner::FermionParityU1SU2Irrep(product) => product
-                .factors()
-                .iter()
-                .cloned()
-                .map(GradedSpaceInner::FermionParityU1SU2Irrep)
-                .collect(),
+            ProductSpaceInner::U1Irrep(product) => {
+                factors_to_spaces(product, GradedSpaceInner::U1Irrep)
+            }
+            ProductSpaceInner::SU2Irrep(product) => {
+                factors_to_spaces(product, GradedSpaceInner::SU2Irrep)
+            }
+            ProductSpaceInner::FermionParity(product) => {
+                factors_to_spaces(product, GradedSpaceInner::FermionParity)
+            }
+            ProductSpaceInner::Z2Irrep(product) => {
+                factors_to_spaces(product, GradedSpaceInner::Z2Irrep)
+            }
+            ProductSpaceInner::Z3Irrep(product) => {
+                factors_to_spaces(product, GradedSpaceInner::Z3Irrep)
+            }
+            ProductSpaceInner::Z4Irrep(product) => {
+                factors_to_spaces(product, GradedSpaceInner::Z4Irrep)
+            }
+            ProductSpaceInner::U1IrrepFermionParity(product) => {
+                factors_to_spaces(product, GradedSpaceInner::U1IrrepFermionParity)
+            }
+            ProductSpaceInner::FermionParityU1Irrep(product) => {
+                factors_to_spaces(product, GradedSpaceInner::FermionParityU1Irrep)
+            }
+            ProductSpaceInner::U1SU2Irrep(product) => {
+                factors_to_spaces(product, GradedSpaceInner::U1SU2Irrep)
+            }
+            ProductSpaceInner::FermionParitySU2Irrep(product) => {
+                factors_to_spaces(product, GradedSpaceInner::FermionParitySU2Irrep)
+            }
+            ProductSpaceInner::FermionParityU1SU2Irrep(product) => {
+                factors_to_spaces(product, GradedSpaceInner::FermionParityU1SU2Irrep)
+            }
         }
     }
 
@@ -291,6 +263,44 @@ impl ProductSpaceInner {
             ProductSpaceInner::U1SU2Irrep(product) => product.factors().len(),
             ProductSpaceInner::FermionParitySU2Irrep(product) => product.factors().len(),
             ProductSpaceInner::FermionParityU1SU2Irrep(product) => product.factors().len(),
+        }
+    }
+
+    fn space_at(&self, index: usize) -> Option<GradedSpaceInner> {
+        match self {
+            ProductSpaceInner::U1Irrep(product) => {
+                factor_at(product, index, GradedSpaceInner::U1Irrep)
+            }
+            ProductSpaceInner::SU2Irrep(product) => {
+                factor_at(product, index, GradedSpaceInner::SU2Irrep)
+            }
+            ProductSpaceInner::FermionParity(product) => {
+                factor_at(product, index, GradedSpaceInner::FermionParity)
+            }
+            ProductSpaceInner::Z2Irrep(product) => {
+                factor_at(product, index, GradedSpaceInner::Z2Irrep)
+            }
+            ProductSpaceInner::Z3Irrep(product) => {
+                factor_at(product, index, GradedSpaceInner::Z3Irrep)
+            }
+            ProductSpaceInner::Z4Irrep(product) => {
+                factor_at(product, index, GradedSpaceInner::Z4Irrep)
+            }
+            ProductSpaceInner::U1IrrepFermionParity(product) => {
+                factor_at(product, index, GradedSpaceInner::U1IrrepFermionParity)
+            }
+            ProductSpaceInner::FermionParityU1Irrep(product) => {
+                factor_at(product, index, GradedSpaceInner::FermionParityU1Irrep)
+            }
+            ProductSpaceInner::U1SU2Irrep(product) => {
+                factor_at(product, index, GradedSpaceInner::U1SU2Irrep)
+            }
+            ProductSpaceInner::FermionParitySU2Irrep(product) => {
+                factor_at(product, index, GradedSpaceInner::FermionParitySU2Irrep)
+            }
+            ProductSpaceInner::FermionParityU1SU2Irrep(product) => {
+                factor_at(product, index, GradedSpaceInner::FermionParityU1SU2Irrep)
+            }
         }
     }
 
@@ -312,39 +322,31 @@ impl ProductSpaceInner {
 
     fn fuse(&self) -> PyResult<GradedSpaceInner> {
         match self {
-            ProductSpaceInner::U1Irrep(product) => core_fuse_product_space(product)
-                .map(GradedSpaceInner::U1Irrep)
-                .map_err(core_err),
-            ProductSpaceInner::SU2Irrep(product) => core_fuse_product_space(product)
-                .map(GradedSpaceInner::SU2Irrep)
-                .map_err(core_err),
-            ProductSpaceInner::FermionParity(product) => core_fuse_product_space(product)
-                .map(GradedSpaceInner::FermionParity)
-                .map_err(core_err),
-            ProductSpaceInner::Z2Irrep(product) => core_fuse_product_space(product)
-                .map(GradedSpaceInner::Z2Irrep)
-                .map_err(core_err),
-            ProductSpaceInner::Z3Irrep(product) => core_fuse_product_space(product)
-                .map(GradedSpaceInner::Z3Irrep)
-                .map_err(core_err),
-            ProductSpaceInner::Z4Irrep(product) => core_fuse_product_space(product)
-                .map(GradedSpaceInner::Z4Irrep)
-                .map_err(core_err),
-            ProductSpaceInner::U1IrrepFermionParity(product) => core_fuse_product_space(product)
-                .map(GradedSpaceInner::U1IrrepFermionParity)
-                .map_err(core_err),
-            ProductSpaceInner::FermionParityU1Irrep(product) => core_fuse_product_space(product)
-                .map(GradedSpaceInner::FermionParityU1Irrep)
-                .map_err(core_err),
-            ProductSpaceInner::U1SU2Irrep(product) => core_fuse_product_space(product)
-                .map(GradedSpaceInner::U1SU2Irrep)
-                .map_err(core_err),
-            ProductSpaceInner::FermionParitySU2Irrep(product) => core_fuse_product_space(product)
-                .map(GradedSpaceInner::FermionParitySU2Irrep)
-                .map_err(core_err),
-            ProductSpaceInner::FermionParityU1SU2Irrep(product) => core_fuse_product_space(product)
-                .map(GradedSpaceInner::FermionParityU1SU2Irrep)
-                .map_err(core_err),
+            ProductSpaceInner::U1Irrep(product) => fuse_product(product, GradedSpaceInner::U1Irrep),
+            ProductSpaceInner::SU2Irrep(product) => {
+                fuse_product(product, GradedSpaceInner::SU2Irrep)
+            }
+            ProductSpaceInner::FermionParity(product) => {
+                fuse_product(product, GradedSpaceInner::FermionParity)
+            }
+            ProductSpaceInner::Z2Irrep(product) => fuse_product(product, GradedSpaceInner::Z2Irrep),
+            ProductSpaceInner::Z3Irrep(product) => fuse_product(product, GradedSpaceInner::Z3Irrep),
+            ProductSpaceInner::Z4Irrep(product) => fuse_product(product, GradedSpaceInner::Z4Irrep),
+            ProductSpaceInner::U1IrrepFermionParity(product) => {
+                fuse_product(product, GradedSpaceInner::U1IrrepFermionParity)
+            }
+            ProductSpaceInner::FermionParityU1Irrep(product) => {
+                fuse_product(product, GradedSpaceInner::FermionParityU1Irrep)
+            }
+            ProductSpaceInner::U1SU2Irrep(product) => {
+                fuse_product(product, GradedSpaceInner::U1SU2Irrep)
+            }
+            ProductSpaceInner::FermionParitySU2Irrep(product) => {
+                fuse_product(product, GradedSpaceInner::FermionParitySU2Irrep)
+            }
+            ProductSpaceInner::FermionParityU1SU2Irrep(product) => {
+                fuse_product(product, GradedSpaceInner::FermionParityU1SU2Irrep)
+            }
         }
     }
 }
@@ -352,4 +354,26 @@ impl ProductSpaceInner {
 fn extract_spaces(obj: &Bound<'_, PyAny>) -> PyResult<Vec<PyElementarySpace>> {
     let spaces = obj.extract::<Vec<PyRef<'_, PyElementarySpace>>>()?;
     Ok(spaces.iter().map(|space| (*space).clone()).collect())
+}
+
+fn factor_at<I: Sector>(
+    product: &ProductSpace<I>,
+    index: usize,
+    wrap: fn(GradedSpace<I>) -> GradedSpaceInner,
+) -> Option<GradedSpaceInner> {
+    product.get(index).cloned().map(wrap)
+}
+
+fn factors_to_spaces<I: Sector>(
+    product: &ProductSpace<I>,
+    wrap: fn(GradedSpace<I>) -> GradedSpaceInner,
+) -> Vec<GradedSpaceInner> {
+    product.factors().iter().cloned().map(wrap).collect()
+}
+
+fn fuse_product<I: Sector>(
+    product: &ProductSpace<I>,
+    wrap: fn(GradedSpace<I>) -> GradedSpaceInner,
+) -> PyResult<GradedSpaceInner> {
+    core_fuse_product_space(product).map(wrap).map_err(core_err)
 }

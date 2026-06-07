@@ -36,23 +36,38 @@ pub(crate) struct PyGenericTransformStructures {
     inner: GenericTransformStructures,
 }
 
-macro_rules! tree_braider_hom {
-    ($src:expr, $dst:expr, $p_codomain:expr, $p_domain:expr, $levels_codomain:expr, $levels_domain:expr) => {
-        core_tree_braider(
-            $src,
-            $dst,
-            $p_codomain,
-            $p_domain,
-            $levels_codomain,
-            $levels_domain,
-        )
-        .map_err(core_err)
-    };
-}
-
-macro_rules! tree_transposer_hom {
-    ($src:expr, $dst:expr, $p_codomain:expr, $p_domain:expr) => {
-        core_tree_transposer($src, $dst, $p_codomain, $p_domain).map_err(core_err)
+macro_rules! dispatch_matching_homspaces {
+    ($src:expr, $dst:expr, |$src_hom:ident, $dst_hom:ident| $body:block) => {
+        match ($src.inner(), $dst.inner()) {
+            (HomSpaceInner::U1Irrep($src_hom), HomSpaceInner::U1Irrep($dst_hom)) => $body,
+            (HomSpaceInner::SU2Irrep($src_hom), HomSpaceInner::SU2Irrep($dst_hom)) => $body,
+            (HomSpaceInner::FermionParity($src_hom), HomSpaceInner::FermionParity($dst_hom)) => {
+                $body
+            }
+            (HomSpaceInner::Z2Irrep($src_hom), HomSpaceInner::Z2Irrep($dst_hom)) => $body,
+            (HomSpaceInner::Z3Irrep($src_hom), HomSpaceInner::Z3Irrep($dst_hom)) => $body,
+            (HomSpaceInner::Z4Irrep($src_hom), HomSpaceInner::Z4Irrep($dst_hom)) => $body,
+            (
+                HomSpaceInner::U1IrrepFermionParity($src_hom),
+                HomSpaceInner::U1IrrepFermionParity($dst_hom),
+            ) => $body,
+            (
+                HomSpaceInner::FermionParityU1Irrep($src_hom),
+                HomSpaceInner::FermionParityU1Irrep($dst_hom),
+            ) => $body,
+            (HomSpaceInner::U1SU2Irrep($src_hom), HomSpaceInner::U1SU2Irrep($dst_hom)) => $body,
+            (
+                HomSpaceInner::FermionParitySU2Irrep($src_hom),
+                HomSpaceInner::FermionParitySU2Irrep($dst_hom),
+            ) => $body,
+            (
+                HomSpaceInner::FermionParityU1SU2Irrep($src_hom),
+                HomSpaceInner::FermionParityU1SU2Irrep($dst_hom),
+            ) => $body,
+            _ => Err(PyValueError::new_err(
+                "src and dst HomSpace sector families must match",
+            )),
+        }
     };
 }
 
@@ -65,110 +80,17 @@ pub(crate) fn tree_braider(
     levels_codomain: Vec<usize>,
     levels_domain: Vec<usize>,
 ) -> PyResult<PyTreeTransformer> {
-    let inner = match (src.inner(), dst.inner()) {
-        (HomSpaceInner::U1Irrep(src), HomSpaceInner::U1Irrep(dst)) => tree_braider_hom!(
-            src,
-            dst,
+    let inner = dispatch_matching_homspaces!(src, dst, |src_hom, dst_hom| {
+        core_tree_braider(
+            src_hom,
+            dst_hom,
             &p_codomain,
             &p_domain,
             &levels_codomain,
-            &levels_domain
-        ),
-        (HomSpaceInner::SU2Irrep(src), HomSpaceInner::SU2Irrep(dst)) => tree_braider_hom!(
-            src,
-            dst,
-            &p_codomain,
-            &p_domain,
-            &levels_codomain,
-            &levels_domain
-        ),
-        (HomSpaceInner::FermionParity(src), HomSpaceInner::FermionParity(dst)) => {
-            tree_braider_hom!(
-                src,
-                dst,
-                &p_codomain,
-                &p_domain,
-                &levels_codomain,
-                &levels_domain
-            )
-        }
-        (HomSpaceInner::Z2Irrep(src), HomSpaceInner::Z2Irrep(dst)) => tree_braider_hom!(
-            src,
-            dst,
-            &p_codomain,
-            &p_domain,
-            &levels_codomain,
-            &levels_domain
-        ),
-        (HomSpaceInner::Z3Irrep(src), HomSpaceInner::Z3Irrep(dst)) => tree_braider_hom!(
-            src,
-            dst,
-            &p_codomain,
-            &p_domain,
-            &levels_codomain,
-            &levels_domain
-        ),
-        (HomSpaceInner::Z4Irrep(src), HomSpaceInner::Z4Irrep(dst)) => tree_braider_hom!(
-            src,
-            dst,
-            &p_codomain,
-            &p_domain,
-            &levels_codomain,
-            &levels_domain
-        ),
-        (HomSpaceInner::U1IrrepFermionParity(src), HomSpaceInner::U1IrrepFermionParity(dst)) => {
-            tree_braider_hom!(
-                src,
-                dst,
-                &p_codomain,
-                &p_domain,
-                &levels_codomain,
-                &levels_domain
-            )
-        }
-        (HomSpaceInner::FermionParityU1Irrep(src), HomSpaceInner::FermionParityU1Irrep(dst)) => {
-            tree_braider_hom!(
-                src,
-                dst,
-                &p_codomain,
-                &p_domain,
-                &levels_codomain,
-                &levels_domain
-            )
-        }
-        (HomSpaceInner::U1SU2Irrep(src), HomSpaceInner::U1SU2Irrep(dst)) => tree_braider_hom!(
-            src,
-            dst,
-            &p_codomain,
-            &p_domain,
-            &levels_codomain,
-            &levels_domain
-        ),
-        (HomSpaceInner::FermionParitySU2Irrep(src), HomSpaceInner::FermionParitySU2Irrep(dst)) => {
-            tree_braider_hom!(
-                src,
-                dst,
-                &p_codomain,
-                &p_domain,
-                &levels_codomain,
-                &levels_domain
-            )
-        }
-        (
-            HomSpaceInner::FermionParityU1SU2Irrep(src),
-            HomSpaceInner::FermionParityU1SU2Irrep(dst),
-        ) => tree_braider_hom!(
-            src,
-            dst,
-            &p_codomain,
-            &p_domain,
-            &levels_codomain,
-            &levels_domain
-        ),
-        _ => Err(PyValueError::new_err(
-            "src and dst HomSpace sector families must match",
-        )),
-    }?;
+            &levels_domain,
+        )
+        .map_err(core_err)
+    })?;
 
     Ok(PyTreeTransformer { inner })
 }
@@ -180,45 +102,9 @@ pub(crate) fn tree_transposer(
     p_codomain: Vec<usize>,
     p_domain: Vec<usize>,
 ) -> PyResult<PyTreeTransformer> {
-    let inner = match (src.inner(), dst.inner()) {
-        (HomSpaceInner::U1Irrep(src), HomSpaceInner::U1Irrep(dst)) => {
-            tree_transposer_hom!(src, dst, &p_codomain, &p_domain)
-        }
-        (HomSpaceInner::SU2Irrep(src), HomSpaceInner::SU2Irrep(dst)) => {
-            tree_transposer_hom!(src, dst, &p_codomain, &p_domain)
-        }
-        (HomSpaceInner::FermionParity(src), HomSpaceInner::FermionParity(dst)) => {
-            tree_transposer_hom!(src, dst, &p_codomain, &p_domain)
-        }
-        (HomSpaceInner::Z2Irrep(src), HomSpaceInner::Z2Irrep(dst)) => {
-            tree_transposer_hom!(src, dst, &p_codomain, &p_domain)
-        }
-        (HomSpaceInner::Z3Irrep(src), HomSpaceInner::Z3Irrep(dst)) => {
-            tree_transposer_hom!(src, dst, &p_codomain, &p_domain)
-        }
-        (HomSpaceInner::Z4Irrep(src), HomSpaceInner::Z4Irrep(dst)) => {
-            tree_transposer_hom!(src, dst, &p_codomain, &p_domain)
-        }
-        (HomSpaceInner::U1IrrepFermionParity(src), HomSpaceInner::U1IrrepFermionParity(dst)) => {
-            tree_transposer_hom!(src, dst, &p_codomain, &p_domain)
-        }
-        (HomSpaceInner::FermionParityU1Irrep(src), HomSpaceInner::FermionParityU1Irrep(dst)) => {
-            tree_transposer_hom!(src, dst, &p_codomain, &p_domain)
-        }
-        (HomSpaceInner::U1SU2Irrep(src), HomSpaceInner::U1SU2Irrep(dst)) => {
-            tree_transposer_hom!(src, dst, &p_codomain, &p_domain)
-        }
-        (HomSpaceInner::FermionParitySU2Irrep(src), HomSpaceInner::FermionParitySU2Irrep(dst)) => {
-            tree_transposer_hom!(src, dst, &p_codomain, &p_domain)
-        }
-        (
-            HomSpaceInner::FermionParityU1SU2Irrep(src),
-            HomSpaceInner::FermionParityU1SU2Irrep(dst),
-        ) => tree_transposer_hom!(src, dst, &p_codomain, &p_domain),
-        _ => Err(PyValueError::new_err(
-            "src and dst HomSpace sector families must match",
-        )),
-    }?;
+    let inner = dispatch_matching_homspaces!(src, dst, |src_hom, dst_hom| {
+        core_tree_transposer(src_hom, dst_hom, &p_codomain, &p_domain).map_err(core_err)
+    })?;
 
     Ok(PyTreeTransformer { inner })
 }

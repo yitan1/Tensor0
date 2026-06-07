@@ -34,51 +34,47 @@ pub(in crate::layout) enum SectorStructureInner {
     FermionParityU1SU2Irrep(SectorStructure<FermionParityU1SU2Irrep>),
 }
 
-#[pyfunction]
-pub(crate) fn build_sectorstructure(space: PyRef<'_, PyHomSpace>) -> PyResult<PySectorStructure> {
-    let inner = match space.inner() {
-        HomSpaceInner::U1Irrep(hom) => core_build_sector_structure(hom)
-            .map(SectorStructureInner::U1Irrep)
-            .map_err(core_err),
-        HomSpaceInner::SU2Irrep(hom) => core_build_sector_structure(hom)
-            .map(SectorStructureInner::SU2Irrep)
-            .map_err(core_err),
-        HomSpaceInner::FermionParity(hom) => core_build_sector_structure(hom)
-            .map(SectorStructureInner::FermionParity)
-            .map_err(core_err),
-        HomSpaceInner::Z2Irrep(hom) => core_build_sector_structure(hom)
-            .map(SectorStructureInner::Z2Irrep)
-            .map_err(core_err),
-        HomSpaceInner::Z3Irrep(hom) => core_build_sector_structure(hom)
-            .map(SectorStructureInner::Z3Irrep)
-            .map_err(core_err),
-        HomSpaceInner::Z4Irrep(hom) => core_build_sector_structure(hom)
-            .map(SectorStructureInner::Z4Irrep)
-            .map_err(core_err),
-        HomSpaceInner::U1IrrepFermionParity(hom) => core_build_sector_structure(hom)
-            .map(SectorStructureInner::U1IrrepFermionParity)
-            .map_err(core_err),
-        HomSpaceInner::FermionParityU1Irrep(hom) => core_build_sector_structure(hom)
-            .map(SectorStructureInner::FermionParityU1Irrep)
-            .map_err(core_err),
-        HomSpaceInner::U1SU2Irrep(hom) => core_build_sector_structure(hom)
-            .map(SectorStructureInner::U1SU2Irrep)
-            .map_err(core_err),
-        HomSpaceInner::FermionParitySU2Irrep(hom) => core_build_sector_structure(hom)
-            .map(SectorStructureInner::FermionParitySU2Irrep)
-            .map_err(core_err),
-        HomSpaceInner::FermionParityU1SU2Irrep(hom) => core_build_sector_structure(hom)
-            .map(SectorStructureInner::FermionParityU1SU2Irrep)
-            .map_err(core_err),
-    }?;
-    Ok(PySectorStructure { inner })
-}
+impl SectorStructureInner {
+    fn from_hom(space: &HomSpaceInner) -> PyResult<Self> {
+        match space {
+            HomSpaceInner::U1Irrep(hom) => core_build_sector_structure(hom)
+                .map(SectorStructureInner::U1Irrep)
+                .map_err(core_err),
+            HomSpaceInner::SU2Irrep(hom) => core_build_sector_structure(hom)
+                .map(SectorStructureInner::SU2Irrep)
+                .map_err(core_err),
+            HomSpaceInner::FermionParity(hom) => core_build_sector_structure(hom)
+                .map(SectorStructureInner::FermionParity)
+                .map_err(core_err),
+            HomSpaceInner::Z2Irrep(hom) => core_build_sector_structure(hom)
+                .map(SectorStructureInner::Z2Irrep)
+                .map_err(core_err),
+            HomSpaceInner::Z3Irrep(hom) => core_build_sector_structure(hom)
+                .map(SectorStructureInner::Z3Irrep)
+                .map_err(core_err),
+            HomSpaceInner::Z4Irrep(hom) => core_build_sector_structure(hom)
+                .map(SectorStructureInner::Z4Irrep)
+                .map_err(core_err),
+            HomSpaceInner::U1IrrepFermionParity(hom) => core_build_sector_structure(hom)
+                .map(SectorStructureInner::U1IrrepFermionParity)
+                .map_err(core_err),
+            HomSpaceInner::FermionParityU1Irrep(hom) => core_build_sector_structure(hom)
+                .map(SectorStructureInner::FermionParityU1Irrep)
+                .map_err(core_err),
+            HomSpaceInner::U1SU2Irrep(hom) => core_build_sector_structure(hom)
+                .map(SectorStructureInner::U1SU2Irrep)
+                .map_err(core_err),
+            HomSpaceInner::FermionParitySU2Irrep(hom) => core_build_sector_structure(hom)
+                .map(SectorStructureInner::FermionParitySU2Irrep)
+                .map_err(core_err),
+            HomSpaceInner::FermionParityU1SU2Irrep(hom) => core_build_sector_structure(hom)
+                .map(SectorStructureInner::FermionParityU1SU2Irrep)
+                .map_err(core_err),
+        }
+    }
 
-#[pymethods]
-impl PySectorStructure {
-    #[getter]
-    fn blocksectors(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        match &self.inner {
+    fn blocksectors_py(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        match self {
             SectorStructureInner::U1Irrep(structure) => {
                 sectors_tuple_py(py, structure.blocksectors())
             }
@@ -115,9 +111,8 @@ impl PySectorStructure {
         }
     }
 
-    #[getter]
-    fn fusiontree_pairs(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        match &self.inner {
+    fn fusiontree_pairs_py(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        match self {
             SectorStructureInner::U1Irrep(structure) => {
                 fusiontree_pairs_py(py, structure.fusiontree_pairs(), FusionTreeInner::U1Irrep)
             }
@@ -166,9 +161,8 @@ impl PySectorStructure {
         }
     }
 
-    #[getter]
-    fn static_key(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        match &self.inner {
+    fn static_key_py(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        match self {
             SectorStructureInner::U1Irrep(structure) => {
                 sector_structure_static_key_py(py, structure)
             }
@@ -203,6 +197,30 @@ impl PySectorStructure {
                 sector_structure_static_key_py(py, structure)
             }
         }
+    }
+}
+
+#[pyfunction]
+pub(crate) fn build_sectorstructure(space: PyRef<'_, PyHomSpace>) -> PyResult<PySectorStructure> {
+    let inner = SectorStructureInner::from_hom(space.inner())?;
+    Ok(PySectorStructure { inner })
+}
+
+#[pymethods]
+impl PySectorStructure {
+    #[getter]
+    fn blocksectors(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        self.inner.blocksectors_py(py)
+    }
+
+    #[getter]
+    fn fusiontree_pairs(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        self.inner.fusiontree_pairs_py(py)
+    }
+
+    #[getter]
+    fn static_key(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        self.inner.static_key_py(py)
     }
 }
 

@@ -31,8 +31,7 @@ def to_dense(tensor: TensorMap) -> jnp.ndarray:
         coeff = _pair_coeff(row_tree, col_tree, storage)
         reduced = _gather_subblock(storage, subblock)
         dense_block = _interleaved_product(reduced, coeff, axes)
-        dense_slices = tuple(slice(start, stop) for start, stop, _deg_dim, _qdim in axes)
-        dense = dense.at[dense_slices].add(dense_block)
+        dense = dense.at[_dense_slices(axes)].add(dense_block)
 
     return dense
 
@@ -60,8 +59,7 @@ def from_dense(
     ):
         axes = _tree_pair_axes(space, row_tree, col_tree)
         coeff = _pair_coeff(row_tree, col_tree, dense)
-        dense_slices = tuple(slice(start, stop) for start, stop, _deg_dim, _qdim in axes)
-        dense_slice = dense[dense_slices]
+        dense_slice = dense[_dense_slices(axes)]
         reduced = _project_interleaved(dense_slice, coeff, axes)
         reduced = reduced / space.codomain.sector_spec.quantum_dim(row_tree.coupled)
         storage = _scatter_add_subblock(storage, subblock, reduced)
@@ -74,25 +72,28 @@ def from_dense(
 
 
 def _dense_shape(space: _native.HomSpace) -> tuple[int, ...]:
-    return tuple(_native.product_dims(space.codomain)) + tuple(
-        _native.product_dims(space.domain),
-    )
+    codomain_dims, domain_dims = _product_dims(space)
+    return codomain_dims + domain_dims
 
 
 def _normalize_dense_input(space: _native.HomSpace, data: object) -> jnp.ndarray:
     dense = jnp.asarray(data)
-    full_shape = _dense_shape(space)
+    codomain_dims, domain_dims = _product_dims(space)
+    full_shape = codomain_dims + domain_dims
     if tuple(dense.shape) == full_shape:
         return dense
 
-    matrix_shape = (
-        prod(_native.product_dims(space.codomain)),
-        prod(_native.product_dims(space.domain)),
-    )
+    matrix_shape = (prod(codomain_dims), prod(domain_dims))
     if tuple(dense.shape) == matrix_shape:
         return jnp.reshape(dense, full_shape)
 
     raise ValueError(f"dense shape {tuple(dense.shape)} does not match expected {full_shape}")
+
+
+def _product_dims(space: _native.HomSpace) -> tuple[tuple[int, ...], tuple[int, ...]]:
+    return tuple(_native.product_dims(space.codomain)), tuple(
+        _native.product_dims(space.domain),
+    )
 
 
 def _tree_pair_axes(
@@ -112,6 +113,10 @@ def _pair_coeff(
 ) -> jnp.ndarray:
     coeff = jnp.asarray(_native.fusiontree_pair_tensor(row_tree, col_tree))
     return coeff.astype(jnp.result_type(reference, coeff))
+
+
+def _dense_slices(axes: tuple[tuple[int, int, int, int], ...]) -> tuple[slice, ...]:
+    return tuple(slice(start, stop) for start, stop, _degeneracy_dim, _quantum_dim in axes)
 
 
 def _interleaved_product(

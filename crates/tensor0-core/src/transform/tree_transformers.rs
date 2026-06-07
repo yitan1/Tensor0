@@ -152,12 +152,6 @@ where
     I: Sector,
     F: Fn(&FusionTreePair<I>) -> Result<(FusionTreePair<I>, f64)>,
 {
-    if I::fusion_style() != FusionStyle::UniqueFusion {
-        return Err(Tensor0Error::Message(
-            "AbelianTreeTransformer requires UniqueFusion sector families".to_string(),
-        ));
-    }
-
     let src_subblocks = subblockstructure(src)?;
     let dst_subblocks = subblockstructure(dst)?;
     let mut data: Vec<Option<AbelianTransformData>> =

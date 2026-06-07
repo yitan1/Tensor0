@@ -1,8 +1,7 @@
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyAnyMethods, PyTuple};
-use pyo3::IntoPyObject;
-use tensor0_core::dense::{product_axes as core_product_axes, product_dims as core_product_dims};
+use tensor0_core::dense::product_axes as core_product_axes;
 use tensor0_core::sector::{
     FermionNumber, FermionParity, FermionParitySU2Irrep, FermionParityU1Irrep,
     FermionParityU1SU2Irrep, SU2Irrep, Sector, U1Irrep, U1SU2Irrep, Z2Irrep, Z3Irrep, Z4Irrep,
@@ -69,9 +68,7 @@ fn product_axes_for<I: Sector>(
 }
 
 fn product_dims_for<I: Sector>(product: &ProductSpace<I>, py: Python<'_>) -> PyResult<Py<PyAny>> {
-    Ok(PyTuple::new(py, core_product_dims(product))?
-        .into_any()
-        .unbind())
+    Ok(PyTuple::new(py, product.dims())?.into_any().unbind())
 }
 
 fn decode_sectors<I: Sector>(sectors: &Bound<'_, PyAny>) -> PyResult<Vec<I>> {
@@ -87,12 +84,5 @@ fn decode_sectors<I: Sector>(sectors: &Bound<'_, PyAny>) -> PyResult<Vec<I>> {
 }
 
 fn dense_axes_py(py: Python<'_>, axes: &[(usize, usize, usize, usize)]) -> PyResult<Py<PyAny>> {
-    let items = axes
-        .iter()
-        .map(|&(start, stop, degeneracy_dim, quantum_dim)| {
-            let item = (start, stop, degeneracy_dim, quantum_dim).into_pyobject(py)?;
-            Ok(item.into_any().unbind())
-        })
-        .collect::<PyResult<Vec<_>>>()?;
-    Ok(PyTuple::new(py, items)?.into_any().unbind())
+    Ok(PyTuple::new(py, axes.iter().copied())?.into_any().unbind())
 }

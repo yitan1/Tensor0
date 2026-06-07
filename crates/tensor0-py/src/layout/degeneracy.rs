@@ -120,28 +120,12 @@ impl PyDegeneracyStructure {
 
     #[getter]
     fn blockstructure(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        let blocks = self
-            .inner
-            .blockstructure
-            .iter()
-            .cloned()
-            .map(|inner| Py::new(py, PyBlockStructure { inner }).map(|block| block.into_any()))
-            .collect::<PyResult<Vec<_>>>()?;
-        Ok(PyTuple::new(py, blocks)?.into_any().unbind())
+        blockstructures_py(py, &self.inner.blockstructure)
     }
 
     #[getter]
     fn subblockstructure(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        let subblocks = self
-            .inner
-            .subblockstructure
-            .iter()
-            .cloned()
-            .map(|inner| {
-                Py::new(py, PySubblockStructure { inner }).map(|subblock| subblock.into_any())
-            })
-            .collect::<PyResult<Vec<_>>>()?;
-        Ok(PyTuple::new(py, subblocks)?.into_any().unbind())
+        subblockstructures_py(py, &self.inner.subblockstructure)
     }
 
     #[getter]
@@ -225,6 +209,24 @@ fn degeneracy_structure_static_key_py(
     )
         .into_pyobject(py)?;
     Ok(key.into_any().unbind())
+}
+
+fn blockstructures_py(py: Python<'_>, blocks: &[BlockStructure]) -> PyResult<Py<PyAny>> {
+    let blocks = blocks
+        .iter()
+        .cloned()
+        .map(|inner| Py::new(py, PyBlockStructure { inner }).map(|block| block.into_any()))
+        .collect::<PyResult<Vec<_>>>()?;
+    Ok(PyTuple::new(py, blocks)?.into_any().unbind())
+}
+
+fn subblockstructures_py(py: Python<'_>, subblocks: &[SubblockStructure]) -> PyResult<Py<PyAny>> {
+    let subblocks = subblocks
+        .iter()
+        .cloned()
+        .map(|inner| Py::new(py, PySubblockStructure { inner }).map(|subblock| subblock.into_any()))
+        .collect::<PyResult<Vec<_>>>()?;
+    Ok(PyTuple::new(py, subblocks)?.into_any().unbind())
 }
 
 fn block_structure_static_key_py(py: Python<'_>, block: &BlockStructure) -> PyResult<Py<PyAny>> {

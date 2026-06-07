@@ -20,10 +20,6 @@ pub fn product_axes<I: Sector>(
         .collect()
 }
 
-pub fn product_dims<I: Sector>(product: &ProductSpace<I>) -> Vec<usize> {
-    product.dims()
-}
-
 fn factor_dense_axis<I: Sector>(
     factor: &crate::space::GradedSpace<I>,
     target: &I,

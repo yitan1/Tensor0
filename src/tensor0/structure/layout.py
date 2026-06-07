@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from .. import _native
 
-# @TODO Simple Cache, need to update
+# Sector structures depend only on visible sector labels; degeneracy structures also
+# depend on degeneracy dimensions.
 _sectorstructure_cache: dict[tuple[object, ...], _native.SectorStructure] = {}
 _degeneracystructure_cache: dict[tuple[object, ...], _native.DegeneracyStructure] = {}
 

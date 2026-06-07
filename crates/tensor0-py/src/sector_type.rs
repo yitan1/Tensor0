@@ -38,11 +38,83 @@ impl PySectorSpec {
     }
 }
 
-pub(crate) fn add_sector_constant(
+fn add_sector_constant(
     py: Python<'_>,
     module: &Bound<'_, PyModule>,
     name: &str,
     inner: CoreSectorSpec,
 ) -> PyResult<()> {
     module.add(name, Py::new(py, PySectorSpec { inner })?)
+}
+
+pub(crate) fn add_sector_constants(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
+    add_sector_constant(py, module, "U1Irrep", CoreSectorSpec::u1())?;
+    add_sector_constant(py, module, "SU2Irrep", CoreSectorSpec::su2())?;
+    add_sector_constant(
+        py,
+        module,
+        "FermionParity",
+        CoreSectorSpec::fermion_parity(),
+    )?;
+    add_sector_constant(
+        py,
+        module,
+        "Z2Irrep",
+        CoreSectorSpec::zn(2).map_err(core_err)?,
+    )?;
+    add_sector_constant(
+        py,
+        module,
+        "Z3Irrep",
+        CoreSectorSpec::zn(3).map_err(core_err)?,
+    )?;
+    add_sector_constant(
+        py,
+        module,
+        "Z4Irrep",
+        CoreSectorSpec::zn(4).map_err(core_err)?,
+    )?;
+    add_sector_constant(
+        py,
+        module,
+        "FermionNumber",
+        CoreSectorSpec::product(vec![CoreSectorSpec::u1(), CoreSectorSpec::fermion_parity()])
+            .map_err(core_err)?,
+    )?;
+    add_sector_constant(
+        py,
+        module,
+        "FermionParityU1Irrep",
+        CoreSectorSpec::product(vec![CoreSectorSpec::fermion_parity(), CoreSectorSpec::u1()])
+            .map_err(core_err)?,
+    )?;
+    add_sector_constant(
+        py,
+        module,
+        "U1SU2Irrep",
+        CoreSectorSpec::product(vec![CoreSectorSpec::u1(), CoreSectorSpec::su2()])
+            .map_err(core_err)?,
+    )?;
+    add_sector_constant(
+        py,
+        module,
+        "FermionParitySU2Irrep",
+        CoreSectorSpec::product(vec![
+            CoreSectorSpec::fermion_parity(),
+            CoreSectorSpec::su2(),
+        ])
+        .map_err(core_err)?,
+    )?;
+    add_sector_constant(
+        py,
+        module,
+        "FermionParityU1SU2Irrep",
+        CoreSectorSpec::product(vec![
+            CoreSectorSpec::fermion_parity(),
+            CoreSectorSpec::u1(),
+            CoreSectorSpec::su2(),
+        ])
+        .map_err(core_err)?,
+    )?;
+    Ok(())
 }
