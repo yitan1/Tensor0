@@ -113,51 +113,53 @@ impl PyFusionTree {
     #[getter]
     fn uncoupled(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         match &self.inner {
-            FusionTreeInner::U1Irrep(tree) => sectors_tuple_py(py, &tree.uncoupled),
-            FusionTreeInner::SU2Irrep(tree) => sectors_tuple_py(py, &tree.uncoupled),
-            FusionTreeInner::FermionParity(tree) => sectors_tuple_py(py, &tree.uncoupled),
-            FusionTreeInner::Z2Irrep(tree) => sectors_tuple_py(py, &tree.uncoupled),
-            FusionTreeInner::Z3Irrep(tree) => sectors_tuple_py(py, &tree.uncoupled),
-            FusionTreeInner::Z4Irrep(tree) => sectors_tuple_py(py, &tree.uncoupled),
-            FusionTreeInner::U1IrrepFermionParity(tree) => sectors_tuple_py(py, &tree.uncoupled),
-            FusionTreeInner::FermionParityU1Irrep(tree) => sectors_tuple_py(py, &tree.uncoupled),
-            FusionTreeInner::U1SU2Irrep(tree) => sectors_tuple_py(py, &tree.uncoupled),
-            FusionTreeInner::FermionParitySU2Irrep(tree) => sectors_tuple_py(py, &tree.uncoupled),
-            FusionTreeInner::FermionParityU1SU2Irrep(tree) => sectors_tuple_py(py, &tree.uncoupled),
+            FusionTreeInner::U1Irrep(tree) => sectors_tuple_py(py, tree.uncoupled()),
+            FusionTreeInner::SU2Irrep(tree) => sectors_tuple_py(py, tree.uncoupled()),
+            FusionTreeInner::FermionParity(tree) => sectors_tuple_py(py, tree.uncoupled()),
+            FusionTreeInner::Z2Irrep(tree) => sectors_tuple_py(py, tree.uncoupled()),
+            FusionTreeInner::Z3Irrep(tree) => sectors_tuple_py(py, tree.uncoupled()),
+            FusionTreeInner::Z4Irrep(tree) => sectors_tuple_py(py, tree.uncoupled()),
+            FusionTreeInner::U1IrrepFermionParity(tree) => sectors_tuple_py(py, tree.uncoupled()),
+            FusionTreeInner::FermionParityU1Irrep(tree) => sectors_tuple_py(py, tree.uncoupled()),
+            FusionTreeInner::U1SU2Irrep(tree) => sectors_tuple_py(py, tree.uncoupled()),
+            FusionTreeInner::FermionParitySU2Irrep(tree) => sectors_tuple_py(py, tree.uncoupled()),
+            FusionTreeInner::FermionParityU1SU2Irrep(tree) => {
+                sectors_tuple_py(py, tree.uncoupled())
+            }
         }
     }
 
     #[getter]
     fn coupled(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         match &self.inner {
-            FusionTreeInner::U1Irrep(tree) => sector_tuple_py(py, &tree.coupled),
-            FusionTreeInner::SU2Irrep(tree) => sector_tuple_py(py, &tree.coupled),
-            FusionTreeInner::FermionParity(tree) => sector_tuple_py(py, &tree.coupled),
-            FusionTreeInner::Z2Irrep(tree) => sector_tuple_py(py, &tree.coupled),
-            FusionTreeInner::Z3Irrep(tree) => sector_tuple_py(py, &tree.coupled),
-            FusionTreeInner::Z4Irrep(tree) => sector_tuple_py(py, &tree.coupled),
-            FusionTreeInner::U1IrrepFermionParity(tree) => sector_tuple_py(py, &tree.coupled),
-            FusionTreeInner::FermionParityU1Irrep(tree) => sector_tuple_py(py, &tree.coupled),
-            FusionTreeInner::U1SU2Irrep(tree) => sector_tuple_py(py, &tree.coupled),
-            FusionTreeInner::FermionParitySU2Irrep(tree) => sector_tuple_py(py, &tree.coupled),
-            FusionTreeInner::FermionParityU1SU2Irrep(tree) => sector_tuple_py(py, &tree.coupled),
+            FusionTreeInner::U1Irrep(tree) => sector_tuple_py(py, tree.coupled()),
+            FusionTreeInner::SU2Irrep(tree) => sector_tuple_py(py, tree.coupled()),
+            FusionTreeInner::FermionParity(tree) => sector_tuple_py(py, tree.coupled()),
+            FusionTreeInner::Z2Irrep(tree) => sector_tuple_py(py, tree.coupled()),
+            FusionTreeInner::Z3Irrep(tree) => sector_tuple_py(py, tree.coupled()),
+            FusionTreeInner::Z4Irrep(tree) => sector_tuple_py(py, tree.coupled()),
+            FusionTreeInner::U1IrrepFermionParity(tree) => sector_tuple_py(py, tree.coupled()),
+            FusionTreeInner::FermionParityU1Irrep(tree) => sector_tuple_py(py, tree.coupled()),
+            FusionTreeInner::U1SU2Irrep(tree) => sector_tuple_py(py, tree.coupled()),
+            FusionTreeInner::FermionParitySU2Irrep(tree) => sector_tuple_py(py, tree.coupled()),
+            FusionTreeInner::FermionParityU1SU2Irrep(tree) => sector_tuple_py(py, tree.coupled()),
         }
     }
 
     #[getter]
     fn is_dual(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let flags = match &self.inner {
-            FusionTreeInner::U1Irrep(tree) => &tree.is_dual,
-            FusionTreeInner::SU2Irrep(tree) => &tree.is_dual,
-            FusionTreeInner::FermionParity(tree) => &tree.is_dual,
-            FusionTreeInner::Z2Irrep(tree) => &tree.is_dual,
-            FusionTreeInner::Z3Irrep(tree) => &tree.is_dual,
-            FusionTreeInner::Z4Irrep(tree) => &tree.is_dual,
-            FusionTreeInner::U1IrrepFermionParity(tree) => &tree.is_dual,
-            FusionTreeInner::FermionParityU1Irrep(tree) => &tree.is_dual,
-            FusionTreeInner::U1SU2Irrep(tree) => &tree.is_dual,
-            FusionTreeInner::FermionParitySU2Irrep(tree) => &tree.is_dual,
-            FusionTreeInner::FermionParityU1SU2Irrep(tree) => &tree.is_dual,
+            FusionTreeInner::U1Irrep(tree) => tree.is_dual(),
+            FusionTreeInner::SU2Irrep(tree) => tree.is_dual(),
+            FusionTreeInner::FermionParity(tree) => tree.is_dual(),
+            FusionTreeInner::Z2Irrep(tree) => tree.is_dual(),
+            FusionTreeInner::Z3Irrep(tree) => tree.is_dual(),
+            FusionTreeInner::Z4Irrep(tree) => tree.is_dual(),
+            FusionTreeInner::U1IrrepFermionParity(tree) => tree.is_dual(),
+            FusionTreeInner::FermionParityU1Irrep(tree) => tree.is_dual(),
+            FusionTreeInner::U1SU2Irrep(tree) => tree.is_dual(),
+            FusionTreeInner::FermionParitySU2Irrep(tree) => tree.is_dual(),
+            FusionTreeInner::FermionParityU1SU2Irrep(tree) => tree.is_dual(),
         };
         Ok(PyTuple::new(py, flags.iter().copied())?.into_any().unbind())
     }
@@ -165,18 +167,18 @@ impl PyFusionTree {
     #[getter]
     fn innerlines(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         match &self.inner {
-            FusionTreeInner::U1Irrep(tree) => sectors_tuple_py(py, &tree.innerlines),
-            FusionTreeInner::SU2Irrep(tree) => sectors_tuple_py(py, &tree.innerlines),
-            FusionTreeInner::FermionParity(tree) => sectors_tuple_py(py, &tree.innerlines),
-            FusionTreeInner::Z2Irrep(tree) => sectors_tuple_py(py, &tree.innerlines),
-            FusionTreeInner::Z3Irrep(tree) => sectors_tuple_py(py, &tree.innerlines),
-            FusionTreeInner::Z4Irrep(tree) => sectors_tuple_py(py, &tree.innerlines),
-            FusionTreeInner::U1IrrepFermionParity(tree) => sectors_tuple_py(py, &tree.innerlines),
-            FusionTreeInner::FermionParityU1Irrep(tree) => sectors_tuple_py(py, &tree.innerlines),
-            FusionTreeInner::U1SU2Irrep(tree) => sectors_tuple_py(py, &tree.innerlines),
-            FusionTreeInner::FermionParitySU2Irrep(tree) => sectors_tuple_py(py, &tree.innerlines),
+            FusionTreeInner::U1Irrep(tree) => sectors_tuple_py(py, tree.innerlines()),
+            FusionTreeInner::SU2Irrep(tree) => sectors_tuple_py(py, tree.innerlines()),
+            FusionTreeInner::FermionParity(tree) => sectors_tuple_py(py, tree.innerlines()),
+            FusionTreeInner::Z2Irrep(tree) => sectors_tuple_py(py, tree.innerlines()),
+            FusionTreeInner::Z3Irrep(tree) => sectors_tuple_py(py, tree.innerlines()),
+            FusionTreeInner::Z4Irrep(tree) => sectors_tuple_py(py, tree.innerlines()),
+            FusionTreeInner::U1IrrepFermionParity(tree) => sectors_tuple_py(py, tree.innerlines()),
+            FusionTreeInner::FermionParityU1Irrep(tree) => sectors_tuple_py(py, tree.innerlines()),
+            FusionTreeInner::U1SU2Irrep(tree) => sectors_tuple_py(py, tree.innerlines()),
+            FusionTreeInner::FermionParitySU2Irrep(tree) => sectors_tuple_py(py, tree.innerlines()),
             FusionTreeInner::FermionParityU1SU2Irrep(tree) => {
-                sectors_tuple_py(py, &tree.innerlines)
+                sectors_tuple_py(py, tree.innerlines())
             }
         }
     }
@@ -184,17 +186,17 @@ impl PyFusionTree {
     #[getter]
     fn vertices(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let vertices = match &self.inner {
-            FusionTreeInner::U1Irrep(tree) => &tree.vertices,
-            FusionTreeInner::SU2Irrep(tree) => &tree.vertices,
-            FusionTreeInner::FermionParity(tree) => &tree.vertices,
-            FusionTreeInner::Z2Irrep(tree) => &tree.vertices,
-            FusionTreeInner::Z3Irrep(tree) => &tree.vertices,
-            FusionTreeInner::Z4Irrep(tree) => &tree.vertices,
-            FusionTreeInner::U1IrrepFermionParity(tree) => &tree.vertices,
-            FusionTreeInner::FermionParityU1Irrep(tree) => &tree.vertices,
-            FusionTreeInner::U1SU2Irrep(tree) => &tree.vertices,
-            FusionTreeInner::FermionParitySU2Irrep(tree) => &tree.vertices,
-            FusionTreeInner::FermionParityU1SU2Irrep(tree) => &tree.vertices,
+            FusionTreeInner::U1Irrep(tree) => tree.vertices(),
+            FusionTreeInner::SU2Irrep(tree) => tree.vertices(),
+            FusionTreeInner::FermionParity(tree) => tree.vertices(),
+            FusionTreeInner::Z2Irrep(tree) => tree.vertices(),
+            FusionTreeInner::Z3Irrep(tree) => tree.vertices(),
+            FusionTreeInner::Z4Irrep(tree) => tree.vertices(),
+            FusionTreeInner::U1IrrepFermionParity(tree) => tree.vertices(),
+            FusionTreeInner::FermionParityU1Irrep(tree) => tree.vertices(),
+            FusionTreeInner::U1SU2Irrep(tree) => tree.vertices(),
+            FusionTreeInner::FermionParitySU2Irrep(tree) => tree.vertices(),
+            FusionTreeInner::FermionParityU1SU2Irrep(tree) => tree.vertices(),
         };
         tuple_from_usizes(py, vertices)
     }
@@ -271,13 +273,13 @@ pub(crate) fn fusiontree_static_key_py<I: Sector>(
     tree: &FusionTree<I>,
 ) -> PyResult<Py<PyAny>> {
     let sector_spec = sector_spec_static_key(py, &I::sector_spec())?;
-    let uncoupled = sectors_tuple_py(py, &tree.uncoupled)?;
-    let coupled = sector_tuple_py(py, &tree.coupled)?;
-    let is_dual = PyTuple::new(py, tree.is_dual.iter().copied())?
+    let uncoupled = sectors_tuple_py(py, tree.uncoupled())?;
+    let coupled = sector_tuple_py(py, tree.coupled())?;
+    let is_dual = PyTuple::new(py, tree.is_dual().iter().copied())?
         .into_any()
         .unbind();
-    let innerlines = sectors_tuple_py(py, &tree.innerlines)?;
-    let vertices = tuple_from_usizes(py, &tree.vertices)?;
+    let innerlines = sectors_tuple_py(py, tree.innerlines())?;
+    let vertices = tuple_from_usizes(py, tree.vertices())?;
     let key = (
         "fusiontree",
         sector_spec,

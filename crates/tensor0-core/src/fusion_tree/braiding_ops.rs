@@ -4,7 +4,7 @@
 //! structure. Future anyonic support should add explicit braid-word operations
 //! here instead of representing every braid as a plain permutation.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::HashMap;
 
 use ndarray::Array2;
 
@@ -12,75 +12,78 @@ use crate::error::{Result, Tensor0Error};
 use crate::fusion_tree::{enumerate_fusion_trees, FusionTree, FusionTreeBlock, FusionTreePair};
 use crate::sector::{BraidingStyle, FusionStyle, Sector};
 
+use super::auxiliary::{linearize_permutation, permutation_to_swaps};
 use super::duality_ops::{repartition_block, repartition_pair};
-use super::permutation_ops::{linearize_permutation, permutation_to_swaps};
 
 pub(crate) fn braid_pair<I: Sector>(
     src: &FusionTreePair<I>,
-    p1: &[usize],
-    p2: &[usize],
-    l1: &[usize],
-    l2: &[usize],
+    p_codomain: &[usize],
+    p_domain: &[usize],
+    levels_codomain: &[usize],
+    levels_domain: &[usize],
 ) -> Result<(FusionTreePair<I>, f64)> {
     let n1 = src.row.uncoupled.len();
     let n2 = src.col.uncoupled.len();
-    debug_assert_eq!(l1.len(), n1);
-    debug_assert_eq!(l2.len(), n2);
-    let p = linearize_permutation(p1, p2, n1, n2)?;
-    let levels = linearized_braid_levels(l1, l2);
+    debug_assert_eq!(levels_codomain.len(), n1);
+    debug_assert_eq!(levels_domain.len(), n2);
+    let permutation = linearize_permutation(p_codomain, p_domain, n1, n2)?;
+    let levels = linearized_braid_levels(levels_codomain, levels_domain);
 
-    let (full_pair, coeff1) = repartition_pair(src, n1 + n2)?;
-    let FusionTreePair { row: f, col: f0 } = full_pair;
-    let (f_prime, coeff2) = braid_tree(&f, &p, &levels)?;
-    let (dst, coeff3) = repartition_pair(
+    let (full_pair, pre) = repartition_pair(src, n1 + n2)?;
+    let FusionTreePair {
+        row: full_row,
+        col: full_col,
+    } = full_pair;
+    let (row_prime, braid) = braid_tree(&full_row, &permutation, &levels)?;
+    let (dst, post) = repartition_pair(
         &FusionTreePair {
-            row: f_prime,
-            col: f0,
+            row: row_prime,
+            col: full_col,
         },
-        p1.len(),
+        p_codomain.len(),
     )?;
 
-    Ok((dst, coeff1 * coeff2 * coeff3))
+    Ok((dst, pre * braid * post))
 }
 
 pub(crate) fn braid_block<I: Sector>(
     src: &FusionTreeBlock<I>,
-    p1: &[usize],
-    p2: &[usize],
-    l1: &[usize],
-    l2: &[usize],
+    p_codomain: &[usize],
+    p_domain: &[usize],
+    levels_codomain: &[usize],
+    levels_domain: &[usize],
 ) -> Result<(FusionTreeBlock<I>, Array2<f64>)> {
     let n1 = src.numout();
     let n2 = src.numin();
     let numind = src.numind();
-    debug_assert_eq!(l1.len(), n1);
-    debug_assert_eq!(l2.len(), n2);
-    let p = linearize_permutation(p1, p2, n1, n2)?;
-    let mut levels = linearized_braid_levels(l1, l2);
+    debug_assert_eq!(levels_codomain.len(), n1);
+    debug_assert_eq!(levels_domain.len(), n2);
+    let permutation = linearize_permutation(p_codomain, p_domain, n1, n2)?;
+    let mut levels = linearized_braid_levels(levels_codomain, levels_domain);
 
-    let (mut dst, mut u) = repartition_block(src, numind)?;
-    for s in permutation_to_swaps(&p) {
-        let inv = levels[s] > levels[s + 1];
-        let (next_dst, u_tmp) = artin_braid_block(&dst, s, inv)?;
-        u = u_tmp.dot(&u);
+    let (mut dst, mut transform) = repartition_block(src, numind)?;
+    for swap in permutation_to_swaps(&permutation) {
+        let inv = levels[swap] > levels[swap + 1];
+        let (next_dst, step) = artin_braid_block(&dst, swap, inv)?;
+        transform = step.dot(&transform);
         dst = next_dst;
-        levels.swap(s, s + 1);
+        levels.swap(swap, swap + 1);
     }
 
-    if p2.is_empty() {
-        Ok((dst, u))
+    if p_domain.is_empty() {
+        Ok((dst, transform))
     } else {
-        let (dst, u_tmp) = repartition_block(&dst, p1.len())?;
-        Ok((dst, u_tmp.dot(&u)))
+        let (dst, step) = repartition_block(&dst, p_codomain.len())?;
+        Ok((dst, step.dot(&transform)))
     }
 }
 
 fn braid_tree<I: Sector>(
-    f: &FusionTree<I>,
-    p: &[usize],
+    tree: &FusionTree<I>,
+    permutation: &[usize],
     levels: &[usize],
 ) -> Result<(FusionTree<I>, f64)> {
-    debug_assert_eq!(levels.len(), f.uncoupled.len());
+    debug_assert_eq!(levels.len(), tree.uncoupled.len());
     if I::fusion_style() != FusionStyle::UniqueFusion {
         return Err(Tensor0Error::Message(
             "braid tree requires UniqueFusion".to_string(),
@@ -92,50 +95,56 @@ fn braid_tree<I: Sector>(
         BraidingStyle::Bosonic | BraidingStyle::Fermionic
     ) {
         let mut coeff = 1.0;
-        for i in 0..p.len() {
+        for i in 0..permutation.len() {
             for j in 0..i {
-                if p[j] > p[i] {
-                    let a = &f.uncoupled[p[j]];
-                    let b = &f.uncoupled[p[i]];
+                if permutation[j] > permutation[i] {
+                    let a = &tree.uncoupled[permutation[j]];
+                    let b = &tree.uncoupled[permutation[i]];
                     let outputs = a.fusion_outputs(b);
                     coeff *= I::r_symbol(a, b, &outputs[0]);
                 }
             }
         }
 
-        let uncoupled = p
+        let uncoupled = permutation
             .iter()
-            .map(|index| f.uncoupled[*index].clone())
+            .map(|index| tree.uncoupled[*index].clone())
             .collect::<Vec<_>>();
-        let is_dual = p.iter().map(|index| f.is_dual[*index]).collect::<Vec<_>>();
-        let mut trees = enumerate_fusion_trees(&uncoupled, &is_dual, &f.coupled)?;
-        let f_prime = trees
+        let is_dual = permutation
+            .iter()
+            .map(|index| tree.is_dual[*index])
+            .collect::<Vec<_>>();
+        let tree_prime = enumerate_fusion_trees(&uncoupled, &is_dual, &tree.coupled)?
             .pop()
-            .expect("UniqueFusion symmetric braid produces a single fusion tree");
-        Ok((f_prime, coeff))
+            .ok_or_else(|| {
+                Tensor0Error::Message(
+                    "UniqueFusion symmetric braid produced no fusion tree".to_string(),
+                )
+            })?;
+        Ok((tree_prime, coeff))
     } else {
-        let mut f = f.clone();
+        let mut tree = tree.clone();
         let mut coeff = 1.0;
         let mut levels = levels.to_vec();
 
-        for s in permutation_to_swaps(p) {
-            let inv = levels[s] > levels[s + 1];
-            let (f_prime, coeff_prime) = artin_braid_tree(&f, s, inv)?;
+        for swap in permutation_to_swaps(permutation) {
+            let inv = levels[swap] > levels[swap + 1];
+            let (tree_prime, coeff_prime) = artin_braid_tree(&tree, swap, inv)?;
             coeff *= coeff_prime;
-            f = f_prime;
-            levels.swap(s, s + 1);
+            tree = tree_prime;
+            levels.swap(swap, swap + 1);
         }
 
-        Ok((f, coeff))
+        Ok((tree, coeff))
     }
 }
 
 fn artin_braid_tree<I: Sector>(
-    f: &FusionTree<I>,
+    tree: &FusionTree<I>,
     i: usize,
     inv: bool,
 ) -> Result<(FusionTree<I>, f64)> {
-    let n = f.uncoupled.len();
+    let n = tree.uncoupled.len();
     if i + 1 >= n {
         return Err(Tensor0Error::Message(
             "artin_braid index out of range".to_string(),
@@ -147,82 +156,15 @@ fn artin_braid_tree<I: Sector>(
         ));
     }
 
-    let mut uncoupled_prime = f.uncoupled.clone();
-    uncoupled_prime.swap(i, i + 1);
-    let mut is_dual_prime = f.is_dual.clone();
-    is_dual_prime.swap(i, i + 1);
-    let left = &f.uncoupled[i];
-    let right = &f.uncoupled[i + 1];
-
-    if left == &I::unit() || right == &I::unit() {
-        return Ok((
-            _artin_braid_through_unit(f, &uncoupled_prime, &is_dual_prime, i)?,
-            1.0,
-        ));
-    }
-    if I::braiding_style() == BraidingStyle::NoBraiding {
+    let (uncoupled_prime, is_dual_prime) = swapped_tree_labels(&tree.uncoupled, &tree.is_dual, i);
+    let mut terms =
+        artin_braid_multiplicity_free_terms(tree, i, inv, &uncoupled_prime, &is_dual_prime)?;
+    if terms.len() != 1 {
         return Err(Tensor0Error::Message(
-            "artin_braid does not support sectors with NoBraiding".to_string(),
+            "artin_braid tree requires a unique target fusion tree".to_string(),
         ));
     }
-
-    if i == 0 {
-        let c = if n > 2 {
-            f.innerlines[0].clone()
-        } else {
-            f.coupled.clone()
-        };
-        let r = if inv {
-            // GenericFusion/complex symbols must restore TensorKit's conjugation here.
-            I::r_symbol(right, left, &c)
-        } else {
-            I::r_symbol(left, right, &c)
-        };
-        return Ok((
-            FusionTree::new(
-                uncoupled_prime,
-                f.coupled.clone(),
-                is_dual_prime,
-                f.innerlines.clone(),
-                f.vertices.clone(),
-            )?,
-            r,
-        ));
-    }
-
-    let inner_extended = artin_inner_extended(f);
-
-    let a = &inner_extended[i - 1];
-    let b = &f.uncoupled[i];
-    let c = &inner_extended[i];
-    let d = &f.uncoupled[i + 1];
-    let e = &inner_extended[i + 1];
-
-    let c_prime = a
-        .fusion_outputs(d)
-        .into_iter()
-        .next()
-        .expect("UniqueFusion artin braid has a valid intermediate channel");
-    let coeff = if inv {
-        // GenericFusion/complex symbols must restore TensorKit's conjugation here.
-        I::r_symbol(d, c, e) * I::f_symbol(d, a, b, e, &c_prime, c)? * I::r_symbol(d, a, &c_prime)
-    } else {
-        // GenericFusion/complex symbols must restore TensorKit's conjugation here.
-        I::r_symbol(c, d, e) * I::f_symbol(d, a, b, e, &c_prime, c)? * I::r_symbol(a, d, &c_prime)
-    };
-
-    let mut innerlines = f.innerlines.clone();
-    innerlines[i - 1] = c_prime;
-    Ok((
-        FusionTree::new(
-            uncoupled_prime,
-            f.coupled.clone(),
-            is_dual_prime,
-            innerlines,
-            f.vertices.clone(),
-        )?,
-        coeff,
-    ))
+    Ok(terms.remove(0))
 }
 
 fn artin_braid_block<I: Sector>(
@@ -244,10 +186,8 @@ fn artin_braid_block<I: Sector>(
     let left = &src.row_uncoupled()[i];
     let right = &src.row_uncoupled()[i + 1];
     let is_unit_braid = left == &I::unit() || right == &I::unit();
-    let mut uncoupled_prime = src.row_uncoupled().to_vec();
-    uncoupled_prime.swap(i, i + 1);
-    let mut is_dual_prime = src.row_is_dual().to_vec();
-    is_dual_prime.swap(i, i + 1);
+    let (uncoupled_prime, is_dual_prime) =
+        swapped_tree_labels(src.row_uncoupled(), src.row_is_dual(), i);
     let dst = FusionTreeBlock::new(
         uncoupled_prime.clone(),
         is_dual_prime.clone(),
@@ -257,76 +197,29 @@ fn artin_braid_block<I: Sector>(
     let mut transform = Array2::zeros((dst.trees().len(), src.trees().len()));
     let dst_index = dst.index_map();
 
-    if is_unit_braid {
-        fill_artin_braid_unit_block(
-            src,
-            i,
-            &uncoupled_prime,
-            &is_dual_prime,
-            &dst_index,
-            &mut transform,
-        )?;
-        return Ok((dst, transform));
-    }
-    if I::braiding_style() == BraidingStyle::NoBraiding {
-        return Err(Tensor0Error::Message(
-            "artin_braid does not support sectors with NoBraiding".to_string(),
-        ));
+    if !is_unit_braid && I::fusion_style() == FusionStyle::GenericFusion {
+        let message = if i == 0 {
+            "artin_braid does not support GenericFusion R-matrix block braiding"
+        } else {
+            "artin_braid does not support GenericFusion F/R-matrix block braiding"
+        };
+        return Err(Tensor0Error::Message(message.to_string()));
     }
 
-    match I::fusion_style() {
-        FusionStyle::UniqueFusion | FusionStyle::SimpleFusion => {
-            fill_artin_braid_multiplicity_free_block(
-                src,
-                i,
-                inv,
-                &uncoupled_prime,
-                &is_dual_prime,
-                &dst_index,
-                &mut transform,
-            )?
-        }
-        FusionStyle::GenericFusion if i == 0 => {
-            return Err(Tensor0Error::Message(
-                "artin_braid does not support GenericFusion R-matrix block braiding".to_string(),
-            ));
-        }
-        FusionStyle::GenericFusion => {
-            return Err(Tensor0Error::Message(
-                "artin_braid does not support GenericFusion F/R-matrix block braiding".to_string(),
-            ));
-        }
-    }
+    fill_artin_braid_block(
+        src,
+        i,
+        inv,
+        &uncoupled_prime,
+        &is_dual_prime,
+        &dst_index,
+        &mut transform,
+    )?;
 
     Ok((dst, transform))
 }
 
-fn fill_artin_braid_unit_block<I: Sector>(
-    src: &FusionTreeBlock<I>,
-    i: usize,
-    uncoupled_prime: &[I],
-    is_dual_prime: &[bool],
-    dst_index: &HashMap<FusionTreePair<I>, usize>,
-    transform: &mut Array2<f64>,
-) -> Result<()> {
-    for (source_index, FusionTreePair { row: f1, col: f2 }) in src.trees().iter().enumerate() {
-        let f1_prime = _artin_braid_through_unit(f1, uncoupled_prime, is_dual_prime, i)?;
-        let target_pair = FusionTreePair {
-            row: f1_prime,
-            col: f2.clone(),
-        };
-        let Some(target_index) = dst_index.get(&target_pair).copied() else {
-            return Err(Tensor0Error::Message(
-                "artin_braid destination fusion tree pair was not found".to_string(),
-            ));
-        };
-        transform[[target_index, source_index]] = 1.0;
-    }
-
-    Ok(())
-}
-
-fn fill_artin_braid_multiplicity_free_block<I: Sector>(
+fn fill_artin_braid_block<I: Sector>(
     src: &FusionTreeBlock<I>,
     i: usize,
     inv: bool,
@@ -335,85 +228,17 @@ fn fill_artin_braid_multiplicity_free_block<I: Sector>(
     dst_index: &HashMap<FusionTreePair<I>, usize>,
     transform: &mut Array2<f64>,
 ) -> Result<()> {
-    let n = src.numout();
-    let left = &src.row_uncoupled()[i];
-    let right = &src.row_uncoupled()[i + 1];
-
-    for (source_index, FusionTreePair { row: f1, col: f2 }) in src.trees().iter().enumerate() {
-        if i == 0 {
-            let c = if n > 2 {
-                f1.innerlines[0].clone()
-            } else {
-                f1.coupled.clone()
-            };
-            let coeff = if inv {
-                // GenericFusion/complex symbols must restore TensorKit's conjugation here.
-                I::r_symbol(right, left, &c)
-            } else {
-                I::r_symbol(left, right, &c)
-            };
+    for (source_index, FusionTreePair { row, col }) in src.trees().iter().enumerate() {
+        for (row_prime, coeff) in
+            artin_braid_multiplicity_free_terms(row, i, inv, uncoupled_prime, is_dual_prime)?
+        {
             if coeff == 0.0 {
                 continue;
             }
 
             let target_pair = FusionTreePair {
-                row: FusionTree::new(
-                    uncoupled_prime.to_vec(),
-                    f1.coupled.clone(),
-                    is_dual_prime.to_vec(),
-                    f1.innerlines.clone(),
-                    f1.vertices.clone(),
-                )?,
-                col: f2.clone(),
-            };
-            let Some(target_index) = dst_index.get(&target_pair).copied() else {
-                return Err(Tensor0Error::Message(
-                    "artin_braid destination fusion tree pair was not found".to_string(),
-                ));
-            };
-            transform[[target_index, source_index]] = coeff;
-            continue;
-        }
-
-        let inner_extended = artin_inner_extended(f1);
-        let a = &inner_extended[i - 1];
-        let b = &f1.uncoupled[i];
-        let c = &inner_extended[i];
-        let d = &f1.uncoupled[i + 1];
-        let e = &inner_extended[i + 1];
-        let outputs1 = a.fusion_outputs(d).into_iter().collect::<BTreeSet<_>>();
-        let outputs2 = e
-            .fusion_outputs(&b.dual())
-            .into_iter()
-            .collect::<BTreeSet<_>>();
-
-        for c_prime in outputs1.intersection(&outputs2).cloned() {
-            let coeff = if inv {
-                // GenericFusion/complex symbols must restore TensorKit's conjugation here.
-                I::r_symbol(d, c, e)
-                    * I::f_symbol(d, a, b, e, &c_prime, c)?
-                    * I::r_symbol(d, a, &c_prime)
-            } else {
-                // GenericFusion/complex symbols must restore TensorKit's conjugation here.
-                I::r_symbol(c, d, e)
-                    * I::f_symbol(d, a, b, e, &c_prime, c)?
-                    * I::r_symbol(a, d, &c_prime)
-            };
-            if coeff == 0.0 {
-                continue;
-            }
-
-            let mut innerlines = f1.innerlines.clone();
-            innerlines[i - 1] = c_prime;
-            let target_pair = FusionTreePair {
-                row: FusionTree::new(
-                    uncoupled_prime.to_vec(),
-                    f1.coupled.clone(),
-                    is_dual_prime.to_vec(),
-                    innerlines,
-                    f1.vertices.clone(),
-                )?,
-                col: f2.clone(),
+                row: row_prime,
+                col: col.clone(),
             };
             let Some(target_index) = dst_index.get(&target_pair).copied() else {
                 return Err(Tensor0Error::Message(
@@ -427,19 +252,107 @@ fn fill_artin_braid_multiplicity_free_block<I: Sector>(
     Ok(())
 }
 
-fn _artin_braid_through_unit<I: Sector>(
-    f: &FusionTree<I>,
+fn artin_braid_multiplicity_free_terms<I: Sector>(
+    tree: &FusionTree<I>,
+    i: usize,
+    inv: bool,
+    uncoupled: &[I],
+    is_dual: &[bool],
+) -> Result<Vec<(FusionTree<I>, f64)>> {
+    let left = &tree.uncoupled[i];
+    let right = &tree.uncoupled[i + 1];
+    if left == &I::unit() || right == &I::unit() {
+        return Ok(vec![(
+            artin_braid_through_unit(tree, uncoupled, is_dual, i)?,
+            1.0,
+        )]);
+    }
+    if I::braiding_style() == BraidingStyle::NoBraiding {
+        return Err(Tensor0Error::Message(
+            "artin_braid does not support sectors with NoBraiding".to_string(),
+        ));
+    }
+
+    if i == 0 {
+        let c = if tree.uncoupled.len() > 2 {
+            tree.innerlines[0].clone()
+        } else {
+            tree.coupled.clone()
+        };
+        let coeff = if inv {
+            // GenericFusion/complex symbols must restore TensorKit's conjugation here.
+            I::r_symbol(right, left, &c)
+        } else {
+            I::r_symbol(left, right, &c)
+        };
+        return Ok(vec![(
+            FusionTree::new(
+                uncoupled.to_vec(),
+                tree.coupled.clone(),
+                is_dual.to_vec(),
+                tree.innerlines.clone(),
+                tree.vertices.clone(),
+            )?,
+            coeff,
+        )]);
+    }
+
+    let inner_extended = artin_inner_extended(tree);
+    let a = &inner_extended[i - 1];
+    let b = &tree.uncoupled[i];
+    let c = &inner_extended[i];
+    let d = &tree.uncoupled[i + 1];
+    let e = &inner_extended[i + 1];
+    let outputs2 = e.fusion_outputs(&b.dual());
+
+    let mut terms = Vec::new();
+    for c_prime in a
+        .fusion_outputs(d)
+        .into_iter()
+        .filter(|sector| outputs2.contains(sector))
+    {
+        let coeff = if inv {
+            // GenericFusion/complex symbols must restore TensorKit's conjugation here.
+            I::r_symbol(d, c, e)
+                * I::f_symbol(d, a, b, e, &c_prime, c)?
+                * I::r_symbol(d, a, &c_prime)
+        } else {
+            // GenericFusion/complex symbols must restore TensorKit's conjugation here.
+            I::r_symbol(c, d, e)
+                * I::f_symbol(d, a, b, e, &c_prime, c)?
+                * I::r_symbol(a, d, &c_prime)
+        };
+
+        let mut innerlines = tree.innerlines.clone();
+        innerlines[i - 1] = c_prime;
+        terms.push((
+            FusionTree::new(
+                uncoupled.to_vec(),
+                tree.coupled.clone(),
+                is_dual.to_vec(),
+                innerlines,
+                tree.vertices.clone(),
+            )?,
+            coeff,
+        ));
+    }
+
+    Ok(terms)
+}
+
+fn artin_braid_through_unit<I: Sector>(
+    tree: &FusionTree<I>,
     uncoupled: &[I],
     is_dual: &[bool],
     i: usize,
 ) -> Result<FusionTree<I>> {
-    let mut innerlines = f.innerlines.clone();
-    let mut vertices = f.vertices.clone();
+    let mut innerlines = tree.innerlines.clone();
+    let mut vertices = tree.vertices.clone();
 
     if i > 0 {
-        let inner_extended = artin_inner_extended(f);
+        let inner_extended = artin_inner_extended(tree);
 
-        let replacement = if f.uncoupled[i] == I::unit() {
+        let replacement = if tree.uncoupled[i] == I::unit() {
             inner_extended[i + 1].clone()
         } else {
             inner_extended[i - 1].clone()
@@ -450,23 +363,92 @@ fn _artin_braid_through_unit<I: Sector>(
 
     FusionTree::new(
         uncoupled.to_vec(),
-        f.coupled.clone(),
+        tree.coupled.clone(),
         is_dual.to_vec(),
         innerlines,
         vertices,
     )
 }
 
-fn artin_inner_extended<I: Sector>(f: &FusionTree<I>) -> Vec<I> {
-    let mut inner_extended = Vec::with_capacity(f.uncoupled.len());
-    inner_extended.push(f.uncoupled[0].clone());
-    inner_extended.extend(f.innerlines.iter().cloned());
-    inner_extended.push(f.coupled.clone());
+fn artin_inner_extended<I: Sector>(tree: &FusionTree<I>) -> Vec<I> {
+    let mut inner_extended = Vec::with_capacity(tree.uncoupled.len());
+    inner_extended.push(tree.uncoupled[0].clone());
+    inner_extended.extend(tree.innerlines.iter().cloned());
+    inner_extended.push(tree.coupled.clone());
     inner_extended
+}
+
+fn swapped_tree_labels<I: Sector>(
+    uncoupled: &[I],
+    is_dual: &[bool],
+    i: usize,
+) -> (Vec<I>, Vec<bool>) {
+    let mut uncoupled_prime = uncoupled.to_vec();
+    uncoupled_prime.swap(i, i + 1);
+    let mut is_dual_prime = is_dual.to_vec();
+    is_dual_prime.swap(i, i + 1);
+    (uncoupled_prime, is_dual_prime)
 }
 
 fn linearized_braid_levels(levels1: &[usize], levels2: &[usize]) -> Vec<usize> {
     let mut levels = levels1.to_vec();
     levels.extend(levels2.iter().rev().copied());
     levels
+}
+
+#[cfg(test)]
+mod tests {
+    use ndarray::Array2;
+
+    use crate::fusion_tree::FusionTreeBlock;
+    use crate::sector::SU2Irrep;
+
+    use super::braid_block;
+
+    fn su2(spin2: i64) -> SU2Irrep {
+        SU2Irrep::spin2(spin2).unwrap()
+    }
+
+    fn assert_close(actual: f64, expected: f64) {
+        assert!(
+            (actual - expected).abs() < 1.0e-12,
+            "actual={actual}, expected={expected}",
+        );
+    }
+
+    fn assert_identity(matrix: &Array2<f64>) {
+        assert_eq!(matrix.nrows(), matrix.ncols());
+        for row in 0..matrix.nrows() {
+            for col in 0..matrix.ncols() {
+                let expected = if row == col { 1.0 } else { 0.0 };
+                assert_close(matrix[[row, col]], expected);
+            }
+        }
+    }
+
+    fn four_out_half_block() -> FusionTreeBlock<SU2Irrep> {
+        let half = su2(1);
+        FusionTreeBlock::new(
+            vec![half.clone(), half.clone(), half.clone(), half],
+            vec![false, false, false, false],
+            vec![],
+            vec![],
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn braid_block_and_inverse_are_identity_on_su2_basis() {
+        let src = four_out_half_block();
+        let p_codomain = [1, 0, 2, 3];
+        let levels = [0, 1, 2, 3];
+        let inverse_levels = [1, 0, 2, 3];
+
+        let (dst, transform) = braid_block(&src, &p_codomain, &[], &levels, &[]).unwrap();
+        let (roundtrip, inverse_transform) =
+            braid_block(&dst, &p_codomain, &[], &inverse_levels, &[]).unwrap();
+
+        assert_eq!(roundtrip, src);
+        assert_identity(&inverse_transform.dot(&transform));
+    }
 }

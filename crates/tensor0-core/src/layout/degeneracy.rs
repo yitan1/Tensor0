@@ -3,9 +3,7 @@ use crate::fusion_tree::FusionTree;
 use crate::sector::Sector;
 use crate::space::{HomSpace, ProductSpace};
 
-use super::sector_structure::{
-    build_sector_structure, sector_structure_fingerprint, SectorStructure,
-};
+use super::sector_structure::{build_sector_structure, SectorStructure};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BlockStructure {
@@ -44,7 +42,7 @@ pub fn build_degeneracy_structure_from_sector_structure<I: Sector>(
     space: &HomSpace<I>,
     sectorstructure: &SectorStructure<I>,
 ) -> Result<DegeneracyStructure> {
-    if sectorstructure.sector_fingerprint() != sector_structure_fingerprint(space)? {
+    if !sectorstructure.matches_space(space) {
         return Err(Tensor0Error::Message(
             "sectorstructure does not match HomSpace sector structure".to_string(),
         ));
@@ -53,7 +51,7 @@ pub fn build_degeneracy_structure_from_sector_structure<I: Sector>(
     build_degeneracy_structure_unchecked(space, sectorstructure)
 }
 
-fn build_degeneracy_structure_unchecked<I: Sector>(
+pub(super) fn build_degeneracy_structure_unchecked<I: Sector>(
     space: &HomSpace<I>,
     sectorstructure: &SectorStructure<I>,
 ) -> Result<DegeneracyStructure> {
@@ -63,15 +61,8 @@ fn build_degeneracy_structure_unchecked<I: Sector>(
     let mut tree_index = 0usize;
 
     for blocksector in sectorstructure.blocksectors() {
-        let Some(first_pair) = sectorstructure.fusiontree_pairs().get(tree_index) else {
-            return Err(Tensor0Error::Message(
-                "sectorstructure block has no fusion tree pairs".to_string(),
-            ));
-        };
+        let first_pair = &sectorstructure.fusiontree_pairs()[tree_index];
         let first_row = &first_pair.row;
-        let first_col = &first_pair.col;
-        debug_assert!(&first_row.coupled == blocksector);
-        debug_assert!(&first_col.coupled == blocksector);
 
         let mut col_structure = Vec::new();
         let mut col_dim = 0usize;
@@ -82,23 +73,12 @@ fn build_degeneracy_structure_unchecked<I: Sector>(
             if row != first_row {
                 break;
             }
-            if &row.coupled != blocksector || &col.coupled != blocksector {
-                return Err(Tensor0Error::Message(
-                    "sectorstructure fusion tree pairs are inconsistent with block sectors"
-                        .to_string(),
-                ));
-            }
 
             let dims = fusiontree_degeneracy_dims(space.domain(), col);
             let dim = degeneracy_dim(&dims)?;
             col_dim = checked_add(col_dim, dim, "basis dimension")?;
             col_structure.push(DegeneracyTreeStructure { dim, dims });
-            probe_index = checked_add(probe_index, 1, "fusion tree pair index")?;
-        }
-        if col_structure.is_empty() {
-            return Err(Tensor0Error::Message(
-                "sectorstructure block has no column fusion trees".to_string(),
-            ));
+            probe_index += 1;
         }
         let col_count = col_structure.len();
 
@@ -107,57 +87,22 @@ fn build_degeneracy_structure_unchecked<I: Sector>(
         let mut probe_index = tree_index;
         while let Some(pair) = sectorstructure.fusiontree_pairs().get(probe_index) {
             let row = &pair.row;
-            let col = &pair.col;
-            if &row.coupled != blocksector {
+            if row.coupled() != blocksector {
                 break;
-            }
-            if col != first_col || &col.coupled != blocksector {
-                return Err(Tensor0Error::Message(
-                    "sectorstructure fusion tree pairs are inconsistent with block sectors"
-                        .to_string(),
-                ));
             }
 
             let dims = fusiontree_degeneracy_dims(space.codomain(), row);
             let dim = degeneracy_dim(&dims)?;
             row_dim = checked_add(row_dim, dim, "basis dimension")?;
             row_structure.push(DegeneracyTreeStructure { dim, dims });
-            probe_index = checked_add(probe_index, col_count, "fusion tree pair index")?;
-        }
-        if row_structure.is_empty() {
-            return Err(Tensor0Error::Message(
-                "sectorstructure block has no row fusion trees".to_string(),
-            ));
+            probe_index += col_count;
         }
         let row_count = row_structure.len();
 
         let mut row_offset = 0usize;
-        for (row_index, row_entry) in row_structure.iter().enumerate() {
+        for row_entry in &row_structure {
             let mut col_offset = 0usize;
-            for (col_index, col_entry) in col_structure.iter().enumerate() {
-                let pair_index = checked_add(
-                    tree_index,
-                    checked_add(
-                        checked_mul(row_index, col_count, "fusion tree pair index")?,
-                        col_index,
-                        "fusion tree pair index",
-                    )?,
-                    "fusion tree pair index",
-                )?;
-                let Some(pair) = sectorstructure.fusiontree_pairs().get(pair_index) else {
-                    return Err(Tensor0Error::Message(
-                        "sectorstructure block has an incomplete row group".to_string(),
-                    ));
-                };
-                let pair_row = &pair.row;
-                let pair_col = &pair.col;
-                if &pair_row.coupled != blocksector || &pair_col.coupled != blocksector {
-                    return Err(Tensor0Error::Message(
-                        "sectorstructure fusion tree pairs are inconsistent with block sectors"
-                            .to_string(),
-                    ));
-                }
-
+            for col_entry in &col_structure {
                 let row_start = checked_mul(row_offset, col_dim, "subblock offset")?;
                 let offset = checked_add(start, row_start, "subblock offset")
                     .and_then(|offset| checked_add(offset, col_offset, "subblock offset"))?;
@@ -175,8 +120,7 @@ fn build_degeneracy_structure_unchecked<I: Sector>(
             row_offset = checked_add(row_offset, row_entry.dim, "row basis offset")?;
         }
 
-        let block_pair_count = checked_mul(row_count, col_count, "fusion tree pair count")?;
-        tree_index = checked_add(tree_index, block_pair_count, "fusion tree pair index")?;
+        tree_index += row_count * col_count;
 
         let block_len = checked_mul(row_dim, col_dim, "block dimension")?;
         let stop = checked_add(start, block_len, "layout offset")?;
@@ -187,12 +131,6 @@ fn build_degeneracy_structure_unchecked<I: Sector>(
             stop,
         });
         start = stop;
-    }
-
-    if subblockstructure.len() != sectorstructure.fusiontree_pairs().len() {
-        return Err(Tensor0Error::Message(
-            "sectorstructure fusion tree pairs are inconsistent with block sectors".to_string(),
-        ));
     }
 
     Ok(DegeneracyStructure {
@@ -206,14 +144,12 @@ fn fusiontree_degeneracy_dims<I: Sector>(
     product: &ProductSpace<I>,
     tree: &FusionTree<I>,
 ) -> Vec<usize> {
-    let dims = product
-        .sector_dims(&tree.uncoupled)
-        .expect("sectorstructure fusion tree arity matches product space");
-    debug_assert!(
-        !dims.contains(&0),
-        "sectorstructure fusion tree sectors are visible in product space"
-    );
-    dims
+    product
+        .factors()
+        .iter()
+        .zip(tree.uncoupled())
+        .map(|(factor, sector)| factor.sector_dim(sector))
+        .collect()
 }
 
 fn degeneracy_dim(dims: &[usize]) -> Result<usize> {

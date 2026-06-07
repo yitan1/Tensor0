@@ -1,9 +1,9 @@
 //! Duality and double-tree repartition operations.
 //!
-//! Future code in this module should own bend/fold, repartition, transpose, and
-//! trace primitives at the fusion-tree-pair level. These operations may use
-//! pivotal, Frobenius-Schur, and quantum-dimension coefficients, but should
-//! still return tree-basis linear maps rather than tensor storage instructions.
+//! This module owns bend/fold, repartition, and transpose primitives at the
+//! fusion-tree-pair level. These operations may use pivotal, Frobenius-Schur,
+//! and quantum-dimension coefficients, but still return tree-basis linear maps
+//! rather than tensor storage instructions.
 
 use std::collections::{hash_map::Entry, HashMap};
 
@@ -13,8 +13,8 @@ use crate::error::{Result, Tensor0Error};
 use crate::fusion_tree::{FusionTree, FusionTreeBlock, FusionTreePair};
 use crate::sector::{FusionStyle, Sector};
 
+use super::auxiliary::{is_cyclic_permutation, linearize_permutation};
 use super::basic_ops::{multi_fmove, multi_fmove_inv};
-use super::permutation_ops::{is_cyclic_permutation, linearize_permutation};
 
 type FMoveTerms<I> = Vec<(FusionTree<I>, f64)>;
 type FMoveCache<I> = HashMap<FusionTree<I>, FMoveTerms<I>>;
@@ -180,13 +180,13 @@ pub(crate) fn transpose_block<I: Sector>(
 
 fn cycleclockwise_pair<I: Sector>(src: &FusionTreePair<I>) -> Result<(FusionTreePair<I>, f64)> {
     if !src.row.uncoupled.is_empty() {
-        let (tmp, first) = foldright_pair(src)?;
-        let (dst, second) = bendleft_pair(&tmp)?;
-        Ok((dst, second * first))
+        let (intermediate, fold_coeff) = foldright_pair(src)?;
+        let (dst, bend_coeff) = bendleft_pair(&intermediate)?;
+        Ok((dst, bend_coeff * fold_coeff))
     } else {
-        let (tmp, first) = bendleft_pair(src)?;
-        let (dst, second) = foldright_pair(&tmp)?;
-        Ok((dst, second * first))
+        let (intermediate, bend_coeff) = bendleft_pair(src)?;
+        let (dst, fold_coeff) = foldright_pair(&intermediate)?;
+        Ok((dst, fold_coeff * bend_coeff))
     }
 }
 
@@ -194,25 +194,25 @@ fn cycleclockwise_block<I: Sector>(
     src: &FusionTreeBlock<I>,
 ) -> Result<(FusionTreeBlock<I>, Array2<f64>)> {
     if src.numout() > 0 {
-        let (tmp, first) = foldright_block(src)?;
-        let (dst, second) = bendleft_block(&tmp)?;
-        Ok((dst, second.dot(&first)))
+        let (intermediate, fold_transform) = foldright_block(src)?;
+        let (dst, bend_transform) = bendleft_block(&intermediate)?;
+        Ok((dst, bend_transform.dot(&fold_transform)))
     } else {
-        let (tmp, first) = bendleft_block(src)?;
-        let (dst, second) = foldright_block(&tmp)?;
-        Ok((dst, second.dot(&first)))
+        let (intermediate, bend_transform) = bendleft_block(src)?;
+        let (dst, fold_transform) = foldright_block(&intermediate)?;
+        Ok((dst, fold_transform.dot(&bend_transform)))
     }
 }
 
 fn cycleanticlockwise_pair<I: Sector>(src: &FusionTreePair<I>) -> Result<(FusionTreePair<I>, f64)> {
     if !src.col.uncoupled.is_empty() {
-        let (tmp, first) = foldleft_pair(src)?;
-        let (dst, second) = bendright_pair(&tmp)?;
-        Ok((dst, second * first))
+        let (intermediate, fold_coeff) = foldleft_pair(src)?;
+        let (dst, bend_coeff) = bendright_pair(&intermediate)?;
+        Ok((dst, bend_coeff * fold_coeff))
     } else {
-        let (tmp, first) = bendright_pair(src)?;
-        let (dst, second) = foldleft_pair(&tmp)?;
-        Ok((dst, second * first))
+        let (intermediate, bend_coeff) = bendright_pair(src)?;
+        let (dst, fold_coeff) = foldleft_pair(&intermediate)?;
+        Ok((dst, fold_coeff * bend_coeff))
     }
 }
 
@@ -220,13 +220,13 @@ fn cycleanticlockwise_block<I: Sector>(
     src: &FusionTreeBlock<I>,
 ) -> Result<(FusionTreeBlock<I>, Array2<f64>)> {
     if src.numin() > 0 {
-        let (tmp, first) = foldleft_block(src)?;
-        let (dst, second) = bendright_block(&tmp)?;
-        Ok((dst, second.dot(&first)))
+        let (intermediate, fold_transform) = foldleft_block(src)?;
+        let (dst, bend_transform) = bendright_block(&intermediate)?;
+        Ok((dst, bend_transform.dot(&fold_transform)))
     } else {
-        let (tmp, first) = bendright_block(src)?;
-        let (dst, second) = foldleft_block(&tmp)?;
-        Ok((dst, second.dot(&first)))
+        let (intermediate, bend_transform) = bendright_block(src)?;
+        let (dst, fold_transform) = foldleft_block(&intermediate)?;
+        Ok((dst, fold_transform.dot(&bend_transform)))
     }
 }
 
@@ -237,42 +237,42 @@ fn foldright_pair<I: Sector>(pair: &FusionTreePair<I>) -> Result<(FusionTreePair
         ));
     }
 
-    let f1 = &pair.row;
-    let f2 = &pair.col;
-    debug_assert!(!f1.uncoupled.is_empty());
-    let a = f1.uncoupled[0].clone();
+    let row = &pair.row;
+    let col = &pair.col;
+    debug_assert!(!row.uncoupled.is_empty());
+    let a = row.uncoupled[0].clone();
     let frobenius_schur = I::frobenius_schur_phase(&a)?;
-    let is_dual_a = f1.is_dual[0];
+    let is_dual_a = row.is_dual[0];
 
-    let mut f1_terms = multi_fmove(f1)?;
-    if f1_terms.len() != 1 {
+    let mut row_terms = multi_fmove(row)?;
+    if row_terms.len() != 1 {
         return Err(Tensor0Error::Message(
             "foldright multi_Fmove requires a unique fusion tree term".to_string(),
         ));
     }
-    let (f1_prime, coeff1) = f1_terms.remove(0);
-    let b = f1_prime.coupled.clone();
-    let c = f1.coupled.clone();
+    let (row_prime, row_coeff) = row_terms.remove(0);
+    let b = row_prime.coupled.clone();
+    let c = row.coupled.clone();
     let a_symbol = I::a_symbol(&a, &b, &c)?;
-    let mut f2_terms = multi_fmove_inv(&a.dual(), &b, f2, !is_dual_a)?;
-    if f2_terms.len() != 1 {
+    let mut col_terms = multi_fmove_inv(&a.dual(), &b, col, !is_dual_a)?;
+    if col_terms.len() != 1 {
         return Err(Tensor0Error::Message(
             "foldright inverse multi_Fmove requires a unique fusion tree term".to_string(),
         ));
     }
-    let (f2_prime, coeff2) = f2_terms.remove(0);
+    let (col_prime, col_coeff) = col_terms.remove(0);
 
-    let coeff0 = ((c.quantum_dim() as f64) / (b.quantum_dim() as f64)).sqrt();
+    let scale = ((c.quantum_dim() as f64) / (b.quantum_dim() as f64)).sqrt();
     // GenericFusion/complex symbols must restore TensorKit's conjugation here.
-    let mut coeff = coeff0 * coeff1 * a_symbol * coeff2;
+    let mut coeff = scale * row_coeff * a_symbol * col_coeff;
     if is_dual_a {
         coeff *= frobenius_schur;
     }
 
     Ok((
         FusionTreePair {
-            row: f1_prime,
-            col: f2_prime,
+            row: row_prime,
+            col: col_prime,
         },
         coeff,
     ))
@@ -287,16 +287,21 @@ fn foldright_block<I: Sector>(
         ));
     }
 
-    let uncoupled1_dst = src.row_uncoupled()[1..].to_vec();
-    let is_dual1_dst = src.row_is_dual()[1..].to_vec();
-    let mut uncoupled2_dst = Vec::with_capacity(src.numin() + 1);
-    uncoupled2_dst.push(src.row_uncoupled()[0].dual());
-    uncoupled2_dst.extend_from_slice(src.col_uncoupled());
-    let mut is_dual2_dst = Vec::with_capacity(src.numin() + 1);
-    is_dual2_dst.push(!src.row_is_dual()[0]);
-    is_dual2_dst.extend_from_slice(src.col_is_dual());
+    let row_uncoupled_dst = src.row_uncoupled()[1..].to_vec();
+    let row_is_dual_dst = src.row_is_dual()[1..].to_vec();
+    let mut col_uncoupled_dst = Vec::with_capacity(src.numin() + 1);
+    col_uncoupled_dst.push(src.row_uncoupled()[0].dual());
+    col_uncoupled_dst.extend_from_slice(src.col_uncoupled());
+    let mut col_is_dual_dst = Vec::with_capacity(src.numin() + 1);
+    col_is_dual_dst.push(!src.row_is_dual()[0]);
+    col_is_dual_dst.extend_from_slice(src.col_is_dual());
 
-    let dst = FusionTreeBlock::new(uncoupled1_dst, is_dual1_dst, uncoupled2_dst, is_dual2_dst)?;
+    let dst = FusionTreeBlock::new(
+        row_uncoupled_dst,
+        row_is_dual_dst,
+        col_uncoupled_dst,
+        col_is_dual_dst,
+    )?;
     let dst_index = dst.index_map();
     let mut transform = Array2::zeros((dst.trees().len(), src.trees().len()));
     if I::fusion_style() == FusionStyle::UniqueFusion {
@@ -312,43 +317,42 @@ fn foldright_block<I: Sector>(
         return Ok((dst, transform));
     }
 
-    let f1 = &src.trees()[0].row;
-    let a = f1.uncoupled[0].clone();
+    let a = src.row_uncoupled()[0].clone();
     let frobenius_schur = I::frobenius_schur_phase(&a)?;
-    let is_dual_a = f1.is_dual[0];
-    let mut f1_cache: FMoveCache<I> = HashMap::new();
-    let mut f2_cache: FMoveInvCache<I> = HashMap::new();
+    let is_dual_a = src.row_is_dual()[0];
+    let mut row_fmove_cache: FMoveCache<I> = HashMap::new();
+    let mut col_fmove_inv_cache: FMoveInvCache<I> = HashMap::new();
     let mut a_symbol_cache: HashMap<(I, I), f64> = HashMap::new();
 
     for (source_index, pair) in src.trees().iter().enumerate() {
-        let f1 = &pair.row;
-        let f2 = &pair.col;
-        let f1_terms = match f1_cache.entry(f1.clone()) {
+        let row = &pair.row;
+        let col = &pair.col;
+        let row_terms = match row_fmove_cache.entry(row.clone()) {
             Entry::Occupied(entry) => entry.into_mut(),
-            Entry::Vacant(entry) => entry.insert(multi_fmove(f1)?),
+            Entry::Vacant(entry) => entry.insert(multi_fmove(row)?),
         };
 
-        for (f1_prime, coeff1) in f1_terms.iter() {
-            let b = f1_prime.coupled.clone();
-            let c = f1.coupled.clone();
+        for (row_prime, row_coeff) in row_terms.iter() {
+            let b = row_prime.coupled.clone();
+            let c = row.coupled.clone();
             let a_key = (b.clone(), c.clone());
             let a_symbol = match a_symbol_cache.entry(a_key) {
                 Entry::Occupied(entry) => *entry.get(),
                 Entry::Vacant(entry) => *entry.insert(I::a_symbol(&a, &b, &c)?),
             };
 
-            let inv_key = (b.clone(), f2.clone());
-            let f2_terms = match f2_cache.entry(inv_key) {
+            let inv_key = (b.clone(), col.clone());
+            let col_terms = match col_fmove_inv_cache.entry(inv_key) {
                 Entry::Occupied(entry) => entry.into_mut(),
                 Entry::Vacant(entry) => {
-                    entry.insert(multi_fmove_inv(&a.dual(), &b, f2, !is_dual_a)?)
+                    entry.insert(multi_fmove_inv(&a.dual(), &b, col, !is_dual_a)?)
                 }
             };
 
-            let coeff0 = ((c.quantum_dim() as f64) / (b.quantum_dim() as f64)).sqrt();
-            for (f2_prime, coeff2) in f2_terms.iter() {
+            let scale = ((c.quantum_dim() as f64) / (b.quantum_dim() as f64)).sqrt();
+            for (col_prime, col_coeff) in col_terms.iter() {
                 // GenericFusion/complex symbols must restore TensorKit's conjugation here.
-                let mut coeff = coeff0 * coeff1 * a_symbol * coeff2;
+                let mut coeff = scale * row_coeff * a_symbol * col_coeff;
                 if is_dual_a {
                     coeff *= frobenius_schur;
                 }
@@ -357,8 +361,8 @@ fn foldright_block<I: Sector>(
                 }
 
                 let target_pair = FusionTreePair {
-                    row: f1_prime.clone(),
-                    col: f2_prime.clone(),
+                    row: row_prime.clone(),
+                    col: col_prime.clone(),
                 };
                 let Some(target_index) = dst_index.get(&target_pair).copied() else {
                     return Err(Tensor0Error::Message(
@@ -374,90 +378,111 @@ fn foldright_block<I: Sector>(
 }
 
 fn bendright_pair<I: Sector>(pair: &FusionTreePair<I>) -> Result<(FusionTreePair<I>, f64)> {
-    let ((a, b, c), target_pair) = _bendright_treepair(pair)?;
-    let f1 = &pair.row;
-    let mut coeff0 = ((c.quantum_dim() as f64) / (a.quantum_dim() as f64)).sqrt();
-    if f1.is_dual[f1.is_dual.len() - 1] {
+    let (target_pair, a, b, c) = bendright_target(pair)?;
+    let row = &pair.row;
+    let mut scale = ((c.quantum_dim() as f64) / (a.quantum_dim() as f64)).sqrt();
+    if row.is_dual[row.is_dual.len() - 1] {
         // GenericFusion/complex symbols must restore TensorKit's conjugation here.
-        coeff0 *= I::frobenius_schur_phase(&b.dual())?;
+        scale *= I::frobenius_schur_phase(&b.dual())?;
     }
-    let coeff = coeff0 * I::b_symbol(&a, &b, &c)?;
+    let coeff = scale * I::b_symbol(&a, &b, &c)?;
     Ok((target_pair, coeff))
 }
 
-fn _bendright_treepair<I: Sector>(
-    pair: &FusionTreePair<I>,
-) -> Result<((I, I, I), FusionTreePair<I>)> {
-    let f1 = &pair.row;
-    let f2 = &pair.col;
-    let n1 = f1.uncoupled.len();
-    let n2 = f2.uncoupled.len();
+fn bendright_target<I: Sector>(pair: &FusionTreePair<I>) -> Result<(FusionTreePair<I>, I, I, I)> {
+    let row = &pair.row;
+    let col = &pair.col;
+    let row_arity = row.uncoupled.len();
+    let col_arity = col.uncoupled.len();
 
-    let a = match n1 {
+    let a = match row_arity {
         0 => unreachable!("bendright pair has at least one outgoing leg"),
         1 => I::unit(),
-        2 => f1.uncoupled[0].clone(),
-        _ => f1.innerlines[n1 - 3].clone(),
+        2 => row.uncoupled[0].clone(),
+        _ => row.innerlines[row_arity - 3].clone(),
     };
-    let b = f1.uncoupled[n1 - 1].clone();
-    let c = f1.coupled.clone();
+    let b = row.uncoupled[row_arity - 1].clone();
+    let c = row.coupled.clone();
 
-    let uncoupled1 = f1.uncoupled[..n1 - 1].to_vec();
-    let is_dual1 = f1.is_dual[..n1 - 1].to_vec();
-    let innerlines1 = if n1 > 2 {
-        f1.innerlines[..f1.innerlines.len() - 1].to_vec()
+    let row_uncoupled = row.uncoupled[..row_arity - 1].to_vec();
+    let row_is_dual = row.is_dual[..row_arity - 1].to_vec();
+    let row_innerlines = if row_arity > 2 {
+        row.innerlines[..row.innerlines.len() - 1].to_vec()
     } else {
         vec![]
     };
-    let vertices1 = if n1 > 1 {
-        f1.vertices[..f1.vertices.len() - 1].to_vec()
+    let row_vertices = if row_arity > 1 {
+        row.vertices[..row.vertices.len() - 1].to_vec()
     } else {
         vec![]
     };
-    let f1_prime = FusionTree::new(uncoupled1, a.clone(), is_dual1, innerlines1, vertices1)?;
+    let row_prime = FusionTree::new(
+        row_uncoupled,
+        a.clone(),
+        row_is_dual,
+        row_innerlines,
+        row_vertices,
+    )?;
 
-    let mut uncoupled2 = f2.uncoupled.clone();
-    uncoupled2.push(b.dual());
-    let mut is_dual2 = f2.is_dual.clone();
-    is_dual2.push(!f1.is_dual[n1 - 1]);
-    let mut innerlines2 = if n2 > 1 {
-        f2.innerlines.clone()
+    let mut col_uncoupled = col.uncoupled.clone();
+    col_uncoupled.push(b.dual());
+    let mut col_is_dual = col.is_dual.clone();
+    col_is_dual.push(!row.is_dual[row_arity - 1]);
+    let mut col_innerlines = if col_arity > 1 {
+        col.innerlines.clone()
     } else {
         vec![]
     };
-    if n2 > 1 {
-        innerlines2.push(c.clone());
+    if col_arity > 1 {
+        col_innerlines.push(c.clone());
     }
-    let mut vertices2 = if n2 > 0 { f2.vertices.clone() } else { vec![] };
-    if n2 > 0 {
-        vertices2.push(0);
+    let mut col_vertices = if col_arity > 0 {
+        col.vertices.clone()
+    } else {
+        vec![]
+    };
+    if col_arity > 0 {
+        col_vertices.push(0);
     }
-    let f2_prime = FusionTree::new(uncoupled2, a.clone(), is_dual2, innerlines2, vertices2)?;
+    let col_prime = FusionTree::new(
+        col_uncoupled,
+        a.clone(),
+        col_is_dual,
+        col_innerlines,
+        col_vertices,
+    )?;
 
     Ok((
-        (a, b, c),
         FusionTreePair {
-            row: f1_prime,
-            col: f2_prime,
+            row: row_prime,
+            col: col_prime,
         },
+        a,
+        b,
+        c,
     ))
 }
 
 fn bendright_block<I: Sector>(
     src: &FusionTreeBlock<I>,
 ) -> Result<(FusionTreeBlock<I>, Array2<f64>)> {
-    let n1 = src.numout();
-    debug_assert!(n1 > 0);
-    let b = src.row_uncoupled()[n1 - 1].clone();
-    let is_dual_b = src.row_is_dual()[n1 - 1];
-    let uncoupled1_dst = src.row_uncoupled()[..n1 - 1].to_vec();
-    let is_dual1_dst = src.row_is_dual()[..n1 - 1].to_vec();
-    let mut uncoupled2_dst = src.col_uncoupled().to_vec();
-    uncoupled2_dst.push(b.dual());
-    let mut is_dual2_dst = src.col_is_dual().to_vec();
-    is_dual2_dst.push(!is_dual_b);
+    let row_arity = src.numout();
+    debug_assert!(row_arity > 0);
+    let b = src.row_uncoupled()[row_arity - 1].clone();
+    let is_dual_b = src.row_is_dual()[row_arity - 1];
+    let row_uncoupled_dst = src.row_uncoupled()[..row_arity - 1].to_vec();
+    let row_is_dual_dst = src.row_is_dual()[..row_arity - 1].to_vec();
+    let mut col_uncoupled_dst = src.col_uncoupled().to_vec();
+    col_uncoupled_dst.push(b.dual());
+    let mut col_is_dual_dst = src.col_is_dual().to_vec();
+    col_is_dual_dst.push(!is_dual_b);
 
-    let dst = FusionTreeBlock::new(uncoupled1_dst, is_dual1_dst, uncoupled2_dst, is_dual2_dst)?;
+    let dst = FusionTreeBlock::new(
+        row_uncoupled_dst,
+        row_is_dual_dst,
+        col_uncoupled_dst,
+        col_is_dual_dst,
+    )?;
     let dst_index = dst.index_map();
     let mut transform = Array2::zeros((dst.trees().len(), src.trees().len()));
 
@@ -508,16 +533,21 @@ fn foldleft_block<I: Sector>(
         ));
     }
 
-    let mut uncoupled1_dst = Vec::with_capacity(src.numout() + 1);
-    uncoupled1_dst.push(src.col_uncoupled()[0].dual());
-    uncoupled1_dst.extend_from_slice(src.row_uncoupled());
-    let mut is_dual1_dst = Vec::with_capacity(src.numout() + 1);
-    is_dual1_dst.push(!src.col_is_dual()[0]);
-    is_dual1_dst.extend_from_slice(src.row_is_dual());
-    let uncoupled2_dst = src.col_uncoupled()[1..].to_vec();
-    let is_dual2_dst = src.col_is_dual()[1..].to_vec();
+    let mut row_uncoupled_dst = Vec::with_capacity(src.numout() + 1);
+    row_uncoupled_dst.push(src.col_uncoupled()[0].dual());
+    row_uncoupled_dst.extend_from_slice(src.row_uncoupled());
+    let mut row_is_dual_dst = Vec::with_capacity(src.numout() + 1);
+    row_is_dual_dst.push(!src.col_is_dual()[0]);
+    row_is_dual_dst.extend_from_slice(src.row_is_dual());
+    let col_uncoupled_dst = src.col_uncoupled()[1..].to_vec();
+    let col_is_dual_dst = src.col_is_dual()[1..].to_vec();
 
-    let dst = FusionTreeBlock::new(uncoupled1_dst, is_dual1_dst, uncoupled2_dst, is_dual2_dst)?;
+    let dst = FusionTreeBlock::new(
+        row_uncoupled_dst,
+        row_is_dual_dst,
+        col_uncoupled_dst,
+        col_is_dual_dst,
+    )?;
     let dst_index = dst.index_map();
     let mut transform = Array2::zeros((dst.trees().len(), src.trees().len()));
     if I::fusion_style() == FusionStyle::UniqueFusion {
@@ -533,45 +563,43 @@ fn foldleft_block<I: Sector>(
         return Ok((dst, transform));
     }
 
-    let f2 = &src.trees()[0].col;
-    let a = f2.uncoupled[0].clone();
+    let a = src.col_uncoupled()[0].clone();
     let frobenius_schur = I::frobenius_schur_phase(&a)?;
-    let is_dual_a = f2.is_dual[0];
-    let mut f2_cache: FMoveCache<I> = HashMap::new();
-    let mut f1_cache: FMoveInvCache<I> = HashMap::new();
+    let is_dual_a = src.col_is_dual()[0];
+    let mut col_fmove_cache: FMoveCache<I> = HashMap::new();
+    let mut row_fmove_inv_cache: FMoveInvCache<I> = HashMap::new();
     let mut a_symbol_cache: HashMap<(I, I), f64> = HashMap::new();
 
     for (source_index, pair) in src.trees().iter().enumerate() {
-        let f1 = &pair.row;
-        let f2 = &pair.col;
-        let f2_terms = match f2_cache.entry(f2.clone()) {
+        let row = &pair.row;
+        let col = &pair.col;
+        let col_terms = match col_fmove_cache.entry(col.clone()) {
             Entry::Occupied(entry) => entry.into_mut(),
-            Entry::Vacant(entry) => entry.insert(multi_fmove(f2)?),
+            Entry::Vacant(entry) => entry.insert(multi_fmove(col)?),
         };
 
-        for (f2_prime, coeff2) in f2_terms.iter() {
-            let b = f2_prime.coupled.clone();
-            let c = f2.coupled.clone();
+        for (col_prime, col_coeff) in col_terms.iter() {
+            let b = col_prime.coupled.clone();
+            let c = col.coupled.clone();
             let a_key = (b.clone(), c.clone());
             let a_symbol = match a_symbol_cache.entry(a_key) {
                 Entry::Occupied(entry) => *entry.get(),
                 Entry::Vacant(entry) => *entry.insert(I::a_symbol(&a, &b, &c)?),
             };
 
-            let inv_key = (b.clone(), f1.clone());
-            let f1_terms = match f1_cache.entry(inv_key) {
+            let inv_key = (b.clone(), row.clone());
+            let row_terms = match row_fmove_inv_cache.entry(inv_key) {
                 Entry::Occupied(entry) => entry.into_mut(),
                 Entry::Vacant(entry) => {
-                    entry.insert(multi_fmove_inv(&a.dual(), &b, f1, !is_dual_a)?)
+                    entry.insert(multi_fmove_inv(&a.dual(), &b, row, !is_dual_a)?)
                 }
             };
 
-            let coeff0 = ((c.quantum_dim() as f64) / (b.quantum_dim() as f64)).sqrt();
-            for (f1_prime, coeff1) in f1_terms.iter() {
+            let scale = ((c.quantum_dim() as f64) / (b.quantum_dim() as f64)).sqrt();
+            for (row_prime, row_coeff) in row_terms.iter() {
                 // GenericFusion/complex symbols must restore TensorKit's conjugation here.
-                let mut coeff = coeff0 * coeff1 * a_symbol * coeff2;
+                let mut coeff = scale * row_coeff * a_symbol * col_coeff;
                 if is_dual_a {
-                    // GenericFusion/complex symbols must restore TensorKit's conjugation here.
                     coeff *= frobenius_schur;
                 }
                 if coeff == 0.0 {
@@ -579,8 +607,8 @@ fn foldleft_block<I: Sector>(
                 }
 
                 let target_pair = FusionTreePair {
-                    row: f1_prime.clone(),
-                    col: f2_prime.clone(),
+                    row: row_prime.clone(),
+                    col: col_prime.clone(),
                 };
                 let Some(target_index) = dst_index.get(&target_pair).copied() else {
                     return Err(Tensor0Error::Message(
@@ -614,18 +642,23 @@ fn bendleft_pair<I: Sector>(pair: &FusionTreePair<I>) -> Result<(FusionTreePair<
 fn bendleft_block<I: Sector>(
     src: &FusionTreeBlock<I>,
 ) -> Result<(FusionTreeBlock<I>, Array2<f64>)> {
-    let n2 = src.numin();
-    debug_assert!(n2 > 0);
-    let b = src.col_uncoupled()[n2 - 1].clone();
-    let is_dual_b = src.col_is_dual()[n2 - 1];
-    let uncoupled2_dst = src.col_uncoupled()[..n2 - 1].to_vec();
-    let is_dual2_dst = src.col_is_dual()[..n2 - 1].to_vec();
-    let mut uncoupled1_dst = src.row_uncoupled().to_vec();
-    uncoupled1_dst.push(b.dual());
-    let mut is_dual1_dst = src.row_is_dual().to_vec();
-    is_dual1_dst.push(!is_dual_b);
+    let col_arity = src.numin();
+    debug_assert!(col_arity > 0);
+    let b = src.col_uncoupled()[col_arity - 1].clone();
+    let is_dual_b = src.col_is_dual()[col_arity - 1];
+    let col_uncoupled_dst = src.col_uncoupled()[..col_arity - 1].to_vec();
+    let col_is_dual_dst = src.col_is_dual()[..col_arity - 1].to_vec();
+    let mut row_uncoupled_dst = src.row_uncoupled().to_vec();
+    row_uncoupled_dst.push(b.dual());
+    let mut row_is_dual_dst = src.row_is_dual().to_vec();
+    row_is_dual_dst.push(!is_dual_b);
 
-    let dst = FusionTreeBlock::new(uncoupled1_dst, is_dual1_dst, uncoupled2_dst, is_dual2_dst)?;
+    let dst = FusionTreeBlock::new(
+        row_uncoupled_dst,
+        row_is_dual_dst,
+        col_uncoupled_dst,
+        col_is_dual_dst,
+    )?;
     let dst_index = dst.index_map();
     let mut transform = Array2::zeros((dst.trees().len(), src.trees().len()));
 
@@ -643,4 +676,96 @@ fn bendleft_block<I: Sector>(
     }
 
     Ok((dst, transform))
+}
+
+#[cfg(test)]
+mod tests {
+    use ndarray::Array2;
+
+    use crate::fusion_tree::FusionTreeBlock;
+    use crate::sector::SU2Irrep;
+
+    use super::{repartition_block, transpose_block};
+
+    fn su2(spin2: i64) -> SU2Irrep {
+        SU2Irrep::spin2(spin2).unwrap()
+    }
+
+    fn assert_close(actual: f64, expected: f64) {
+        assert!(
+            (actual - expected).abs() < 1.0e-12,
+            "actual={actual}, expected={expected}",
+        );
+    }
+
+    fn assert_identity(matrix: &Array2<f64>) {
+        assert_eq!(matrix.nrows(), matrix.ncols());
+        for row in 0..matrix.nrows() {
+            for col in 0..matrix.ncols() {
+                let expected = if row == col { 1.0 } else { 0.0 };
+                assert_close(matrix[[row, col]], expected);
+            }
+        }
+    }
+
+    fn two_out_two_in_half_block() -> FusionTreeBlock<SU2Irrep> {
+        let half = su2(1);
+        FusionTreeBlock::new(
+            vec![half.clone(), half.clone()],
+            vec![false, false],
+            vec![half.clone(), half],
+            vec![false, false],
+        )
+        .unwrap()
+    }
+
+    fn inverse_visible_permutation(
+        p_codomain: &[usize],
+        p_domain: &[usize],
+        source_numout: usize,
+    ) -> (Vec<usize>, Vec<usize>) {
+        let target_order = p_codomain
+            .iter()
+            .chain(p_domain.iter())
+            .copied()
+            .collect::<Vec<_>>();
+        let mut inverse = vec![0; target_order.len()];
+        for (target_index, source_index) in target_order.into_iter().enumerate() {
+            inverse[source_index] = target_index;
+        }
+
+        (
+            inverse[..source_numout].to_vec(),
+            inverse[source_numout..].to_vec(),
+        )
+    }
+
+    #[test]
+    fn repartition_block_and_inverse_are_identity_on_su2_basis() {
+        let src = two_out_two_in_half_block();
+
+        let (dst, transform) = repartition_block(&src, 1).unwrap();
+        let (roundtrip, inverse_transform) = repartition_block(&dst, src.numout()).unwrap();
+
+        assert_eq!(dst.numout(), 1);
+        assert_eq!(dst.numin(), 3);
+        assert_eq!(roundtrip, src);
+        assert_identity(&inverse_transform.dot(&transform));
+    }
+
+    #[test]
+    fn transpose_block_and_inverse_are_identity_for_cyclic_shift() {
+        let src = two_out_two_in_half_block();
+        let p_codomain = [1, 3];
+        let p_domain = [0, 2];
+
+        let (dst, transform) = transpose_block(&src, &p_codomain, &p_domain).unwrap();
+        let (inverse_codomain, inverse_domain) =
+            inverse_visible_permutation(&p_codomain, &p_domain, src.numout());
+        let (roundtrip, inverse_transform) =
+            transpose_block(&dst, &inverse_codomain, &inverse_domain).unwrap();
+
+        assert_eq!(roundtrip, src);
+        assert_identity(&inverse_transform.dot(&transform));
+    }
 }

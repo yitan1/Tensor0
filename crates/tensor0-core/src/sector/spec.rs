@@ -19,8 +19,8 @@ pub enum GroupSpec {
 /// Serde metadata representation for sector families.
 ///
 /// Direct enum construction is a raw representation. Use constructors or
-/// `canonicalize()` before hashing, fingerprinting, or crossing Python/JAX
-/// metadata boundaries.
+/// `canonicalize()` before serialization or crossing Python/JAX metadata
+/// boundaries.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SectorSpec {

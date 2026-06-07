@@ -6,7 +6,7 @@ use crate::sector::Sector;
 use crate::space::HomSpace;
 
 use super::degeneracy::{
-    build_degeneracy_structure_from_sector_structure, DegeneracyStructure, SubblockStructure,
+    build_degeneracy_structure_unchecked, DegeneracyStructure, SubblockStructure,
 };
 use super::sector_structure::{build_sector_structure, SectorStructure};
 
@@ -71,7 +71,9 @@ impl<I: Sector> SubblockStructureMap<I> {
 
 pub fn subblockstructure<I: Sector>(space: &HomSpace<I>) -> Result<SubblockStructureMap<I>> {
     let sectorstructure = build_sector_structure(space)?;
-    let degeneracystructure =
-        build_degeneracy_structure_from_sector_structure(space, &sectorstructure)?;
-    SubblockStructureMap::from_layout(&sectorstructure, &degeneracystructure)
+    let degeneracystructure = build_degeneracy_structure_unchecked(space, &sectorstructure)?;
+    SubblockStructureMap::new(
+        sectorstructure.fusiontree_pairs().to_vec(),
+        degeneracystructure.subblockstructure,
+    )
 }

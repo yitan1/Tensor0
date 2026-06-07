@@ -1,23 +1,20 @@
 use std::collections::BTreeSet;
 
-use serde::Serialize;
-
 use crate::error::{Result, Tensor0Error};
-use crate::fingerprint::fingerprint;
 use crate::fusion_tree::FusionTreePair;
-use crate::sector::{FusionStyle, Sector, SectorSpec};
+use crate::sector::{FusionStyle, Sector};
 use crate::space::{HomSpace, ProductSpace};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SectorStructure<I: Sector> {
-    sector_fingerprint: u128,
+    sector_key: SectorStructureKey<I>,
     blocksectors: Vec<I>,
     fusiontree_pairs: Vec<FusionTreePair<I>>,
 }
 
 impl<I: Sector> SectorStructure<I> {
-    pub fn sector_fingerprint(&self) -> u128 {
-        self.sector_fingerprint
+    pub(super) fn matches_space(&self, space: &HomSpace<I>) -> bool {
+        self.sector_key == sector_structure_key(space)
     }
 
     pub fn blocksectors(&self) -> &[I] {
@@ -29,26 +26,23 @@ impl<I: Sector> SectorStructure<I> {
     }
 }
 
-#[derive(Serialize)]
-struct SectorStructureFingerprintKey {
-    sector_spec: SectorSpec,
-    codomain: Vec<SectorStructureFactorKey>,
-    domain: Vec<SectorStructureFactorKey>,
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SectorStructureKey<I: Sector> {
+    codomain: Vec<SectorStructureFactorKey<I>>,
+    domain: Vec<SectorStructureFactorKey<I>>,
 }
 
-#[derive(Serialize)]
-struct SectorStructureFactorKey {
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SectorStructureFactorKey<I: Sector> {
     is_dual: bool,
-    sectors: Vec<Vec<i64>>,
+    sectors: Vec<I>,
 }
 
-pub fn sector_structure_fingerprint<I: Sector>(space: &HomSpace<I>) -> Result<u128> {
-    let key = SectorStructureFingerprintKey {
-        sector_spec: I::sector_spec().canonicalize()?,
+fn sector_structure_key<I: Sector>(space: &HomSpace<I>) -> SectorStructureKey<I> {
+    SectorStructureKey {
         codomain: product_sector_key(space.codomain()),
         domain: product_sector_key(space.domain()),
-    };
-    fingerprint(&key)
+    }
 }
 
 pub fn build_sector_structure<I: Sector>(space: &HomSpace<I>) -> Result<SectorStructure<I>> {
@@ -58,7 +52,7 @@ pub fn build_sector_structure<I: Sector>(space: &HomSpace<I>) -> Result<SectorSt
         ));
     }
 
-    let sector_fingerprint = sector_structure_fingerprint(space)?;
+    let sector_key = sector_structure_key(space);
     let blocksectors = hom_block_sectors(space)?;
     let mut fusiontree_pairs = Vec::new();
 
@@ -77,13 +71,13 @@ pub fn build_sector_structure<I: Sector>(space: &HomSpace<I>) -> Result<SectorSt
     }
 
     Ok(SectorStructure {
-        sector_fingerprint,
+        sector_key,
         blocksectors,
         fusiontree_pairs,
     })
 }
 
-fn product_sector_key<I: Sector>(product: &ProductSpace<I>) -> Vec<SectorStructureFactorKey> {
+fn product_sector_key<I: Sector>(product: &ProductSpace<I>) -> Vec<SectorStructureFactorKey<I>> {
     product
         .factors()
         .iter()
@@ -92,7 +86,7 @@ fn product_sector_key<I: Sector>(product: &ProductSpace<I>) -> Vec<SectorStructu
             sectors: factor
                 .sectors()
                 .into_iter()
-                .map(|(sector, _)| sector.encode_value().into_iter().collect())
+                .map(|(sector, _)| sector)
                 .collect(),
         })
         .collect()

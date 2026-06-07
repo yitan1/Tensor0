@@ -1,6 +1,5 @@
 pub mod dense;
 pub mod error;
-pub mod fingerprint;
 pub mod fusion_tree;
 pub mod layout;
 pub mod sector;
