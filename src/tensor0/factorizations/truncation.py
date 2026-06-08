@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import math
 
 import jax
+from jax import Array
 import jax.numpy as jnp
 
 from .. import _native
@@ -219,7 +220,7 @@ def _combine_indices(
     return _freeze_indices(result)
 
 
-def _truncation_error(values: SectorVector, indices: KeepIndices) -> object:
+def _truncation_error(values: SectorVector, indices: KeepIndices) -> Array:
     keep = {sector: set(index_tuple) for sector, index_tuple in indices.items()}
     error_squared = 0.0
     for sector, index, value, weight in _entries(values):

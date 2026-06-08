@@ -1,11 +1,22 @@
 from __future__ import annotations
 
+from collections import OrderedDict
+from typing import TypeVar
+
 from .. import _native
 
 # Sector structures depend only on visible sector labels; degeneracy structures also
 # depend on degeneracy dimensions.
-_sectorstructure_cache: dict[tuple[object, ...], _native.SectorStructure] = {}
-_degeneracystructure_cache: dict[tuple[object, ...], _native.DegeneracyStructure] = {}
+_CacheValue = TypeVar("_CacheValue")
+_LAYOUT_CACHE_MAXSIZE = 10_000
+_sectorstructure_cache: OrderedDict[
+    tuple[object, ...],
+    _native.SectorStructure,
+] = OrderedDict()
+_degeneracystructure_cache: OrderedDict[
+    tuple[object, ...],
+    _native.DegeneracyStructure,
+] = OrderedDict()
 
 
 def get_sectorstructure(space: _native.HomSpace) -> _native.SectorStructure:
@@ -19,7 +30,7 @@ def get_degeneracystructure(space: _native.HomSpace) -> _native.DegeneracyStruct
         raise TypeError("get_degeneracystructure() requires a HomSpace")
 
     key = _degeneracystructure_key(space)
-    cached = _degeneracystructure_cache.get(key)
+    cached = _cache_get(_degeneracystructure_cache, key)
     if cached is not None:
         return cached
 
@@ -28,8 +39,7 @@ def get_degeneracystructure(space: _native.HomSpace) -> _native.DegeneracyStruct
         space,
         sectorstructure,
     )
-    _degeneracystructure_cache[key] = degeneracystructure
-    return degeneracystructure
+    return _cache_set(_degeneracystructure_cache, key, degeneracystructure)
 
 
 def _clear_layout_caches_for_tests() -> None:
@@ -39,13 +49,34 @@ def _clear_layout_caches_for_tests() -> None:
 
 def _get_sectorstructure(space: _native.HomSpace) -> _native.SectorStructure:
     key = _sectorstructure_key(space)
-    cached = _sectorstructure_cache.get(key)
+    cached = _cache_get(_sectorstructure_cache, key)
     if cached is not None:
         return cached
 
     sectorstructure = _native.build_sectorstructure(space)
-    _sectorstructure_cache[key] = sectorstructure
-    return sectorstructure
+    return _cache_set(_sectorstructure_cache, key, sectorstructure)
+
+
+def _cache_get(
+    cache: OrderedDict[tuple[object, ...], _CacheValue],
+    key: tuple[object, ...],
+) -> _CacheValue | None:
+    cached = cache.get(key)
+    if cached is not None:
+        cache.move_to_end(key)
+    return cached
+
+
+def _cache_set(
+    cache: OrderedDict[tuple[object, ...], _CacheValue],
+    key: tuple[object, ...],
+    value: _CacheValue,
+) -> _CacheValue:
+    cache[key] = value
+    cache.move_to_end(key)
+    while len(cache) > _LAYOUT_CACHE_MAXSIZE:
+        cache.popitem(last=False)
+    return value
 
 
 def _sectorstructure_key(space: _native.HomSpace) -> tuple[object, ...]:

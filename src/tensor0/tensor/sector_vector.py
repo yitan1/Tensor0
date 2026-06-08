@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from jax import Array
 from jax import tree_util as _tree_util
@@ -11,6 +12,9 @@ from jax.typing import DTypeLike
 from .. import _native
 from ..structure.spaces import _normalize_sector_key, hom
 from .storage import VectorStorage, _validate_vector_storage_data
+
+if TYPE_CHECKING:
+    from .tensor_map import TensorMap
 
 
 @dataclass(frozen=True, eq=False, init=False)
@@ -50,7 +54,7 @@ class SectorVector:
             offset = next_offset
         return tuple(result)
 
-    def to_diagonal(self):
+    def to_diagonal(self) -> TensorMap:
         from .tensor_map import TensorMap, _packed_vector_from_blocks
 
         diagonal_space = hom((self.space,), (self.space,))

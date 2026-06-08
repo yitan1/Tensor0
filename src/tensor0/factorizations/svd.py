@@ -59,7 +59,7 @@ def svd_trunc(
     tensor: TensorMap,
     *,
     trunc: object | None = None,
-) -> tuple[TensorMap, SectorVector, TensorMap, object]:
+) -> tuple[TensorMap, SectorVector, TensorMap, Array]:
     trunc = notrunc() if trunc is None else _ensure_strategy(trunc)
 
     u, s, vh = svd_compact(tensor)
