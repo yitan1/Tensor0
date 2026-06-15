@@ -98,6 +98,55 @@ def test_sectorvector_blocks_returns_space_order_pairs():
     _assert_array_equal(blocks[1][1], data[2:5])
 
 
+def test_sectorvector_exposes_read_only_block_mapping_helpers():
+    bond = space(U1Irrep, {1: 3, 0: 2})
+    data = jnp.arange(5, dtype=jnp.float32)
+    vector = SectorVector(bond, data)
+
+    assert vector.blocksectors == ((0,), (1,))
+    assert vector.keys() == ((0,), (1,))
+    assert vector.hasblock(0)
+    assert not vector.hasblock(2)
+
+    values = tuple(vector.values())
+    pairs = tuple(vector.pairs())
+
+    assert tuple(sector for sector, _block in pairs) == ((0,), (1,))
+    _assert_array_equal(values[0], data[0:2])
+    _assert_array_equal(values[1], data[2:5])
+    _assert_array_equal(vector.get(0), data[0:2])
+    assert vector.get(2, "missing") == "missing"
+
+
+def test_sectorvector_copy_and_similar_preserve_sector_structure():
+    bond = space(U1Irrep, {0: 2, 1: 3})
+    data = jnp.arange(5, dtype=jnp.float32)
+    vector = SectorVector(bond, data)
+
+    copied = vector.copy()
+    same_layout = vector.similar()
+    typed = vector.similar(jnp.float16)
+    target_space = space(U1Irrep, {0: 1})
+    resized = vector.similar(space=target_space)
+
+    assert isinstance(copied, SectorVector)
+    assert copied.sector_type == vector.sector_type
+    assert copied.sectors == vector.sectors
+    _assert_array_equal(copied.storage.data, data)
+
+    assert same_layout.sectors == vector.sectors
+    assert same_layout.storage.data.shape == (5,)
+    assert same_layout.storage.data.dtype == data.dtype
+
+    assert typed.sectors == vector.sectors
+    assert typed.storage.data.shape == (5,)
+    assert typed.storage.data.dtype == jnp.dtype(jnp.float16)
+
+    assert resized.sectors == (((0,), 1),)
+    assert resized.storage.data.shape == (1,)
+    assert resized.storage.data.dtype == data.dtype
+
+
 def test_sectorvector_supports_tuple_product_sector_keys():
     sector_type = U1Irrep @ FermionParity
     bond = space(sector_type, {(0, 0): 2, (1, 1): 3})

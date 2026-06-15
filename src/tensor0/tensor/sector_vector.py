@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 
 from jax import Array
@@ -10,7 +10,7 @@ from jax.typing import DTypeLike
 
 from .. import _native
 from ..structure.sector_dict import SectorDict
-from ..structure.spaces import _normalize_sector_key, space
+from ..structure.spaces import _normalize_sector_key, space as _space
 from ._sector_index import _sector_slices_for_space
 from .storage import VectorStorage, _validate_vector_storage_data
 
@@ -42,6 +42,32 @@ class SectorVector:
             for sector, sector_slice in self.structure.items()
         )
 
+    @property
+    def blocksectors(self) -> tuple[tuple[int, ...], ...]:
+        return tuple(self.structure)
+
+    def keys(self) -> tuple[tuple[int, ...], ...]:
+        return self.blocksectors
+
+    def values(self) -> Iterator[Array]:
+        return (self.storage.data[sector_slice] for sector_slice in self.structure.values())
+
+    def pairs(self) -> Iterator[tuple[tuple[int, ...], Array]]:
+        return (
+            (sector, self.storage.data[sector_slice])
+            for sector, sector_slice in self.structure.items()
+        )
+
+    def hasblock(self, coupled: object) -> bool:
+        return coupled in self.structure
+
+    def get(self, coupled: object, default: object = None) -> Array | object:
+        key = _normalize_sector_key(coupled)
+        sector_slice = self.structure.get(key)
+        if sector_slice is None:
+            return default
+        return self.storage.data[sector_slice]
+
     def block(self, coupled: int | tuple[int, ...]) -> Array:
         key = _normalize_sector_key(coupled)
         try:
@@ -51,16 +77,35 @@ class SectorVector:
         return self.storage.data[sector_slice]
 
     def blocks(self) -> tuple[tuple[tuple[int, ...], Array], ...]:
-        return tuple(
-            (sector, self.storage.data[sector_slice])
-            for sector, sector_slice in self.structure.items()
-        )
+        return tuple(self.pairs())
 
     def to_diagonal(self):
         from .diagonal import DiagonalTensorMap
 
-        domain = space(self.sector_type, dict(self.sectors))
+        domain = self._visible_space()
         return DiagonalTensorMap(domain, self.storage)
+
+    def copy(self) -> SectorVector:
+        return SectorVector(
+            self._visible_space(),
+            jnp.array(self.storage.data, copy=True),
+        )
+
+    def similar(
+        self,
+        dtype: DTypeLike | None = None,
+        *,
+        space: _native.ElementarySpace | None = None,
+    ) -> SectorVector:
+        target_space = self._visible_space() if space is None else space
+        target_dtype = self.storage.data.dtype if dtype is None else dtype
+        return SectorVector(
+            target_space,
+            jnp.empty((_space_dim(target_space),), dtype=target_dtype),
+        )
+
+    def _visible_space(self) -> _native.ElementarySpace:
+        return _space(self.sector_type, dict(self.sectors))
 
 
 def _packed_sector_values(
