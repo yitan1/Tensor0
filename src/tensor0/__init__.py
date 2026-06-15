@@ -38,7 +38,14 @@ from .structure import (
     hom,
     space,
 )
-from .tensor import SectorVector, TensorMap, VectorStorage, from_dense, to_dense
+from .tensor import (
+    DiagonalTensorMap,
+    SectorVector,
+    TensorMap,
+    VectorStorage,
+    from_dense,
+    to_dense,
+)
 from .transforms import (
     braid,
     permute,
@@ -51,6 +58,7 @@ __version__ = "0.0.0"
 __all__ = [
     "BlockStructure",
     "DegeneracyStructure",
+    "DiagonalTensorMap",
     "ElementarySpace",
     "FermionNumber",
     "FermionParity",

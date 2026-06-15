@@ -5,12 +5,13 @@ import jax.numpy as jnp
 
 from .. import _native
 from ..structure.spaces import hom
-from ..tensor.sector_vector import SectorVector, _packed_sector_values
+from ..tensor.diagonal import DiagonalTensorMap
+from ..tensor.sector_vector import _packed_sector_values
 from ..tensor.tensor_map import TensorMap, _packed_vector_from_blocks
 from .truncation import _ensure_strategy, _find_truncated_indices, _truncation_error, notrunc
 
 
-def svd_compact(tensor: TensorMap) -> tuple[TensorMap, SectorVector, TensorMap]:
+def svd_compact(tensor: TensorMap) -> tuple[TensorMap, DiagonalTensorMap, TensorMap]:
     if not isinstance(tensor, TensorMap):
         raise TypeError("svd_compact() requires a TensorMap")
 
@@ -44,7 +45,7 @@ def svd_compact(tensor: TensorMap) -> tuple[TensorMap, SectorVector, TensorMap]:
             u_space,
             _packed_vector_from_blocks(u_space, u_blocks, dtype=tensor_dtype),
         ),
-        SectorVector(
+        DiagonalTensorMap(
             bond,
             _packed_sector_values(bond, s_blocks, dtype=singular_dtype),
         ),
@@ -59,19 +60,20 @@ def svd_trunc(
     tensor: TensorMap,
     *,
     trunc: object | None = None,
-) -> tuple[TensorMap, SectorVector, TensorMap, Array]:
+) -> tuple[TensorMap, DiagonalTensorMap, TensorMap, Array]:
     trunc = notrunc() if trunc is None else _ensure_strategy(trunc)
 
     u, s, vh = svd_compact(tensor)
-    keep = _find_truncated_indices(s, trunc)
-    error = _truncation_error(s, keep)
+    values = s.diag()
+    keep = _find_truncated_indices(values, trunc)
+    error = _truncation_error(values, keep)
 
     sector_dims = tuple(
         (sector, len(indices))
-        for sector, _dim in s.space.sectors
+        for sector, _dim in values.sectors
         if (indices := keep.get(sector, ()))
     )
-    bond = _native.make_space(s.space.sector_spec, sector_dims, False)
+    bond = _native.make_space(values.sector_type, sector_dims, False)
     u_space = hom(tensor.space.codomain, (bond,))
     vh_space = hom((bond,), tensor.space.domain)
 
@@ -81,7 +83,7 @@ def svd_trunc(
     for sector, _dim in bond.sectors:
         indices = jnp.asarray(keep[sector], dtype=jnp.int32)
         u_blocks[sector] = jnp.take(u.block(sector), indices, axis=1)
-        s_blocks[sector] = jnp.take(s.block(sector), indices, axis=0)
+        s_blocks[sector] = jnp.take(values.block(sector), indices, axis=0)
         vh_blocks[sector] = jnp.take(vh.block(sector), indices, axis=0)
 
     tensor_dtype = jnp.asarray(tensor.storage.data).dtype
@@ -91,7 +93,7 @@ def svd_trunc(
             u_space,
             _packed_vector_from_blocks(u_space, u_blocks, dtype=tensor_dtype),
         ),
-        SectorVector(
+        DiagonalTensorMap(
             bond,
             _packed_sector_values(bond, s_blocks, dtype=singular_dtype),
         ),

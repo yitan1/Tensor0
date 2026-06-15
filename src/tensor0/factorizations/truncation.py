@@ -184,7 +184,7 @@ def _error_indices(values: SectorVector, strategy: TruncationByError) -> KeepInd
 
 
 def _space_indices(values: SectorVector, strategy: TruncationSpace) -> KeepIndices:
-    if values.space.sector_spec != strategy.space.sector_spec:
+    if values.sector_type != strategy.space.sector_spec:
         raise ValueError("truncation space sector family must match singular values")
     limits = {sector: dim for sector, dim in strategy.space.sectors}
     result = _empty_indices(values)
@@ -240,7 +240,7 @@ def _weighted_norm(values: SectorVector) -> float:
 def _entries(values: SectorVector) -> list[tuple[SectorKey, int, float, int]]:
     entries: list[tuple[SectorKey, int, float, int]] = []
     for sector, block in values.blocks():
-        weight = values.space.sector_spec.quantum_dim(sector)
+        weight = values.sector_type.quantum_dim(sector)
         for index, raw_value in enumerate(jax.device_get(block)):
             entries.append((sector, index, float(abs(raw_value)), weight))
     return entries

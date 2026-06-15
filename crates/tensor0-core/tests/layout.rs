@@ -2,8 +2,7 @@ use tensor0_core::error::{Result, Tensor0Error};
 use tensor0_core::fusion_tree::FusionTreePair;
 use tensor0_core::layout::{
     build_degeneracy_structure, build_degeneracy_structure_from_sector_structure,
-    build_sector_structure, subblockstructure, DegeneracyStructure, SectorStructure,
-    SubblockStructure, SubblockStructureMap,
+    build_sector_structure, DegeneracyStructure, SectorStructure, SubblockStructure,
 };
 use tensor0_core::sector::{
     BraidingStyle, EncodedSectorValue, FusionStyle, SU2Irrep, Sector, SectorCardinality,
@@ -65,8 +64,14 @@ fn assert_layout_contract<I: Sector>(
 
     for pair in sectorstructure.fusiontree_pairs() {
         assert!(pair.row.coupled() == pair.col.coupled());
-        assert!(sectorstructure.blocksectors().contains(pair.row.coupled()));
+        assert!(sectorstructure
+            .blocksectors()
+            .any(|sector| sector == pair.row.coupled()));
     }
+}
+
+fn blocksectors_vec<I: Sector>(sectorstructure: &SectorStructure<I>) -> Vec<I> {
+    sectorstructure.blocksectors().cloned().collect()
 }
 
 fn assert_blocks_are_packed_with_dims(
@@ -132,29 +137,32 @@ fn layout_structures_satisfy_core_contracts() {
 }
 
 #[test]
-fn subblockstructure_maps_fusion_tree_pairs_to_subblocks_like_tensorkit() {
+fn sectorstructure_fusion_tree_pairs_align_with_degeneracy_subblocks_like_tensorkit() {
     let v = GradedSpace::new(vec![(u1(0), 2)], false).unwrap();
     let w = GradedSpace::new(vec![(u1(0), 3)], false).unwrap();
     let h = HomSpace::new(ProductSpace::new(vec![v, w]), empty_product());
     let (sectorstructure, degeneracystructure) = build_layout_parts(&h);
 
-    let from_layout =
-        SubblockStructureMap::from_layout(&sectorstructure, &degeneracystructure).unwrap();
-    let from_space = subblockstructure(&h).unwrap();
+    for (index, pair) in sectorstructure.fusiontree_pairs().enumerate() {
+        assert_eq!(sectorstructure.fusiontree_pair_index(pair), Some(index));
+        assert_eq!(sectorstructure.fusiontree_pair_at(index), Some(pair),);
+        let subblock = &degeneracystructure.subblockstructure[index];
+        assert_subblock(subblock, &[2, 3], &[3, 1], 0);
+    }
+}
 
-    assert_eq!(from_space, from_layout);
-    assert_eq!(from_space.pairs(), sectorstructure.fusiontree_pairs());
-    assert_eq!(
-        from_space.structures(),
-        degeneracystructure.subblockstructure.as_slice(),
-    );
+#[test]
+fn sectorstructure_indexes_visible_sectors_and_fusion_tree_pairs() {
+    let v = GradedSpace::new(vec![(u1(0), 2), (u1(1), 3)], false).unwrap();
+    let h = HomSpace::new(one_factor(v.clone()), one_factor(v));
+    let sectorstructure = build_sector_structure(&h).unwrap();
 
-    for (index, pair) in sectorstructure.fusiontree_pairs().iter().enumerate() {
-        assert_eq!(from_space.index_of(pair), Some(index));
-        assert_eq!(
-            from_space.get(pair).unwrap(),
-            &degeneracystructure.subblockstructure[index],
-        );
+    assert_eq!(sectorstructure.blocksector_index(&u1(0)), Some(0));
+    assert_eq!(sectorstructure.blocksector_index(&u1(1)), Some(1));
+    assert_eq!(sectorstructure.blocksector_index(&u1(2)), None);
+
+    for (index, pair) in sectorstructure.fusiontree_pairs().enumerate() {
+        assert_eq!(sectorstructure.fusiontree_pair_index(pair), Some(index));
     }
 }
 
@@ -216,7 +224,9 @@ fn su2_four_half_product() -> ProductSpace<SU2Irrep> {
     ])
 }
 
-fn assert_first_u1_pair_uncoupled_order(pairs: &[FusionTreePair<U1Irrep>]) {
+fn assert_first_u1_pair_uncoupled_order<'a>(
+    pairs: impl IntoIterator<Item = &'a FusionTreePair<U1Irrep>>,
+) {
     let expected_uncoupled = [
         ([0, 0], [0, 0]),
         ([0, 0], [-1, 1]),
@@ -228,8 +238,9 @@ fn assert_first_u1_pair_uncoupled_order(pairs: &[FusionTreePair<U1Irrep>]) {
         ([1, -1], [-1, 1]),
         ([1, -1], [1, -1]),
     ];
-    for (pair, (expected_row, expected_col)) in pairs[..expected_uncoupled.len()]
-        .iter()
+    for (pair, (expected_row, expected_col)) in pairs
+        .into_iter()
+        .take(expected_uncoupled.len())
         .zip(expected_uncoupled)
     {
         let row = &pair.row;
@@ -317,7 +328,10 @@ fn single_factor_layout_preserves_visible_order_dims_and_dual_flags() {
     let space = HomSpace::new(one_factor(v.clone()), one_factor(v));
     let (sectorstructure, degeneracystructure) = build_layout_parts(&space);
 
-    assert_eq!(sectorstructure.blocksectors(), vec![u1(0), u1(1), u1(-1)]);
+    assert_eq!(
+        blocksectors_vec(&sectorstructure),
+        vec![u1(0), u1(1), u1(-1)]
+    );
     assert_eq!(sectorstructure.fusiontree_pairs().len(), 3);
     assert_blocks_are_packed_with_dims(&degeneracystructure, &[(2, 2), (3, 3), (5, 5)]);
 
@@ -325,7 +339,7 @@ fn single_factor_layout_preserves_visible_order_dims_and_dual_flags() {
     for ((subblock, pair), (sector, dim, start)) in degeneracystructure
         .subblockstructure
         .iter()
-        .zip(sectorstructure.fusiontree_pairs().iter())
+        .zip(sectorstructure.fusiontree_pairs())
         .zip(expected)
     {
         let row = &pair.row;
@@ -343,14 +357,10 @@ fn single_factor_layout_preserves_visible_order_dims_and_dual_flags() {
     let space = HomSpace::new(one_factor(v.clone()), one_factor(v));
     let (sectorstructure, degeneracystructure) = build_layout_parts(&space);
 
-    assert_eq!(sectorstructure.blocksectors(), vec![u1(1), u1(-1)]);
+    assert_eq!(blocksectors_vec(&sectorstructure), vec![u1(1), u1(-1)]);
     assert_blocks_are_packed_with_dims(&degeneracystructure, &[(5, 5), (3, 3)]);
 
-    for (pair, sector) in sectorstructure
-        .fusiontree_pairs()
-        .iter()
-        .zip([u1(1), u1(-1)])
-    {
+    for (pair, sector) in sectorstructure.fusiontree_pairs().zip([u1(1), u1(-1)]) {
         let row = &pair.row;
         let col = &pair.col;
         assert_eq!(row.uncoupled(), &[sector]);
@@ -367,7 +377,7 @@ fn two_factor_u1_layout_uses_tensorkit_tree_order_and_row_major_subblocks() {
     let (sectorstructure, degeneracystructure) = build_layout_parts(&space);
 
     assert_eq!(
-        sectorstructure.blocksectors(),
+        blocksectors_vec(&sectorstructure),
         vec![u1(0), u1(1), u1(-1), u1(2), u1(-2)],
     );
     assert_blocks_are_packed_with_dims(
@@ -414,7 +424,7 @@ fn three_factor_one_sided_layouts_use_python_row_major_strides() {
     for (space, block_dims) in cases {
         let (sectorstructure, degeneracystructure) = build_layout_parts(&space);
 
-        assert_eq!(sectorstructure.blocksectors(), vec![u1(0)]);
+        assert_eq!(blocksectors_vec(&sectorstructure), vec![u1(0)]);
         assert_eq!(sectorstructure.fusiontree_pairs().len(), 1);
         assert_blocks_are_packed_with_dims(&degeneracystructure, &[block_dims]);
         assert_subblock(
@@ -437,7 +447,7 @@ fn su2_layout_handles_non_abelian_blocks_and_multi_tree_basis() {
     let space = HomSpace::new(product(), product());
     let (sectorstructure, degeneracystructure) = build_layout_parts(&space);
 
-    assert_eq!(sectorstructure.blocksectors(), vec![su2(0), su2(2)]);
+    assert_eq!(blocksectors_vec(&sectorstructure), vec![su2(0), su2(2)]);
     assert_eq!(sectorstructure.fusiontree_pairs().len(), 2);
     assert_blocks_are_packed_with_dims(&degeneracystructure, &[(6, 6), (6, 6)]);
 
@@ -448,7 +458,7 @@ fn su2_layout_handles_non_abelian_blocks_and_multi_tree_basis() {
     let space = HomSpace::new(codomain, empty_product_of::<SU2Irrep>());
     let (sectorstructure, degeneracystructure) = build_layout_parts(&space);
 
-    assert_eq!(sectorstructure.blocksectors(), vec![su2(0)]);
+    assert_eq!(blocksectors_vec(&sectorstructure), vec![su2(0)]);
     assert_eq!(sectorstructure.fusiontree_pairs().len(), 2);
     assert_blocks_are_packed_with_dims(&degeneracystructure, &[(31, 1)]);
 
@@ -458,7 +468,6 @@ fn su2_layout_handles_non_abelian_blocks_and_multi_tree_basis() {
     ];
     for ((pair, subblock), (uncoupled, sizes, offset)) in sectorstructure
         .fusiontree_pairs()
-        .iter()
         .zip(degeneracystructure.subblockstructure.iter())
         .zip(expected)
     {

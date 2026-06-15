@@ -1,8 +1,9 @@
 use crate::error::{Result, Tensor0Error};
-use crate::fusion_tree::FusionTree;
+use crate::fusion_tree::{FusionTree, FusionTreePair};
 use crate::sector::Sector;
 use crate::space::{HomSpace, ProductSpace};
 
+use super::indices::IndexedMappingRef;
 use super::sector_structure::{build_sector_structure, SectorStructure};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -26,6 +27,9 @@ pub struct DegeneracyStructure {
     pub blockstructure: Vec<BlockStructure>,
     pub subblockstructure: Vec<SubblockStructure>,
 }
+
+pub(crate) type SubblockStructureMapRef<'a, I> =
+    IndexedMappingRef<'a, FusionTreePair<I>, SubblockStructure>;
 
 #[derive(Clone, Debug)]
 struct DegeneracyTreeStructure {
@@ -51,23 +55,35 @@ pub fn build_degeneracy_structure_from_sector_structure<I: Sector>(
     build_degeneracy_structure_unchecked(space, sectorstructure)
 }
 
+pub(crate) fn subblockstructure_ref<'a, I: Sector>(
+    sectorstructure: &'a SectorStructure<I>,
+    degeneracystructure: &'a DegeneracyStructure,
+) -> Result<SubblockStructureMapRef<'a, I>> {
+    IndexedMappingRef::new(
+        sectorstructure.fusiontree_pair_indices(),
+        &degeneracystructure.subblockstructure,
+    )
+}
+
 pub(super) fn build_degeneracy_structure_unchecked<I: Sector>(
     space: &HomSpace<I>,
     sectorstructure: &SectorStructure<I>,
 ) -> Result<DegeneracyStructure> {
-    let mut blockstructure = Vec::with_capacity(sectorstructure.blocksectors().len());
-    let mut subblockstructure = Vec::with_capacity(sectorstructure.fusiontree_pairs().len());
+    let mut blockstructure = Vec::with_capacity(sectorstructure.blocksector_count());
+    let mut subblockstructure = Vec::with_capacity(sectorstructure.fusiontree_pair_count());
     let mut start = 0usize;
     let mut tree_index = 0usize;
 
     for blocksector in sectorstructure.blocksectors() {
-        let first_pair = &sectorstructure.fusiontree_pairs()[tree_index];
+        let first_pair = sectorstructure
+            .fusiontree_pair_at(tree_index)
+            .expect("blocksector has at least one fusion tree pair");
         let first_row = &first_pair.row;
 
         let mut col_structure = Vec::new();
         let mut col_dim = 0usize;
         let mut probe_index = tree_index;
-        while let Some(pair) = sectorstructure.fusiontree_pairs().get(probe_index) {
+        while let Some(pair) = sectorstructure.fusiontree_pair_at(probe_index) {
             let row = &pair.row;
             let col = &pair.col;
             if row != first_row {
@@ -85,7 +101,7 @@ pub(super) fn build_degeneracy_structure_unchecked<I: Sector>(
         let mut row_structure = Vec::new();
         let mut row_dim = 0usize;
         let mut probe_index = tree_index;
-        while let Some(pair) = sectorstructure.fusiontree_pairs().get(probe_index) {
+        while let Some(pair) = sectorstructure.fusiontree_pair_at(probe_index) {
             let row = &pair.row;
             if row.coupled() != blocksector {
                 break;

@@ -5,11 +5,13 @@ use crate::fusion_tree::FusionTreePair;
 use crate::sector::{FusionStyle, Sector};
 use crate::space::{HomSpace, ProductSpace};
 
+use super::indices::Indices;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SectorStructure<I: Sector> {
     sector_key: SectorStructureKey<I>,
-    blocksectors: Vec<I>,
-    fusiontree_pairs: Vec<FusionTreePair<I>>,
+    blocksectors: Indices<I>,
+    fusiontree_pairs: Indices<FusionTreePair<I>>,
 }
 
 impl<I: Sector> SectorStructure<I> {
@@ -17,11 +19,47 @@ impl<I: Sector> SectorStructure<I> {
         self.sector_key == sector_structure_key(space)
     }
 
-    pub fn blocksectors(&self) -> &[I] {
-        &self.blocksectors
+    /// Returns coupled block sectors in canonical layout order.
+    pub fn blocksectors(&self) -> impl ExactSizeIterator<Item = &I> + '_ {
+        self.blocksectors.iter()
     }
 
-    pub fn fusiontree_pairs(&self) -> &[FusionTreePair<I>] {
+    /// Returns fusion tree pairs in canonical subblock layout order.
+    pub fn fusiontree_pairs(&self) -> impl ExactSizeIterator<Item = &FusionTreePair<I>> + '_ {
+        self.fusiontree_pairs.iter()
+    }
+
+    /// Returns the number of coupled block sectors.
+    pub fn blocksector_count(&self) -> usize {
+        self.blocksectors.len()
+    }
+
+    /// Returns the number of fusion tree pairs.
+    pub fn fusiontree_pair_count(&self) -> usize {
+        self.fusiontree_pairs.len()
+    }
+
+    /// Returns the block sector for a layout index.
+    pub fn blocksector_at(&self, index: usize) -> Option<&I> {
+        self.blocksectors.get_index(index)
+    }
+
+    /// Returns the fusion tree pair for a subblock layout index.
+    pub fn fusiontree_pair_at(&self, index: usize) -> Option<&FusionTreePair<I>> {
+        self.fusiontree_pairs.get_index(index)
+    }
+
+    /// Returns the canonical layout index for a coupled block sector.
+    pub fn blocksector_index(&self, sector: &I) -> Option<usize> {
+        self.blocksectors.index_of(sector)
+    }
+
+    /// Returns the canonical subblock layout index for a fusion tree pair.
+    pub fn fusiontree_pair_index(&self, pair: &FusionTreePair<I>) -> Option<usize> {
+        self.fusiontree_pairs.index_of(pair)
+    }
+
+    pub(super) fn fusiontree_pair_indices(&self) -> &Indices<FusionTreePair<I>> {
         &self.fusiontree_pairs
     }
 }
@@ -72,8 +110,8 @@ pub fn build_sector_structure<I: Sector>(space: &HomSpace<I>) -> Result<SectorSt
 
     Ok(SectorStructure {
         sector_key,
-        blocksectors,
-        fusiontree_pairs,
+        blocksectors: Indices::new(blocksectors)?,
+        fusiontree_pairs: Indices::new(fusiontree_pairs)?,
     })
 }
 

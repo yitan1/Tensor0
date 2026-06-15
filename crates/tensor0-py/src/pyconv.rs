@@ -58,9 +58,13 @@ pub(crate) fn sector_tuple_py<I: Sector>(py: Python<'_>, sector: &I) -> PyResult
     Ok(PyTuple::new(py, encoded)?.into_any().unbind())
 }
 
-pub(crate) fn sectors_tuple_py<I: Sector>(py: Python<'_>, sectors: &[I]) -> PyResult<Py<PyAny>> {
+pub(crate) fn sectors_tuple_py<'a, I, S>(py: Python<'_>, sectors: S) -> PyResult<Py<PyAny>>
+where
+    I: Sector + 'a,
+    S: IntoIterator<Item = &'a I>,
+{
     let items = sectors
-        .iter()
+        .into_iter()
         .map(|sector| sector_tuple_py(py, sector))
         .collect::<PyResult<Vec<_>>>()?;
     Ok(PyTuple::new(py, items)?.into_any().unbind())

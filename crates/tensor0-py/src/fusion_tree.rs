@@ -274,17 +274,18 @@ fn fusiontree_pair_tensor_for<I: Sector>(
     arrayd_to_numpy(py, tensor)
 }
 
-pub(crate) fn fusiontree_pairs_py<I, F>(
+pub(crate) fn fusiontree_pairs_py<'a, I, P, F>(
     py: Python<'_>,
-    pairs: &[FusionTreePair<I>],
+    pairs: P,
     wrap: F,
 ) -> PyResult<Py<PyAny>>
 where
-    I: Sector,
+    I: Sector + 'a,
+    P: IntoIterator<Item = &'a FusionTreePair<I>>,
     F: Fn(FusionTree<I>) -> FusionTreeInner + Copy,
 {
     let items = pairs
-        .iter()
+        .into_iter()
         .map(|pair| {
             let row = Py::new(
                 py,

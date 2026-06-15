@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
 
 from jax import Array
 from jax import tree_util as _tree_util
@@ -10,16 +9,16 @@ import jax.numpy as jnp
 from jax.typing import DTypeLike
 
 from .. import _native
-from ..structure.spaces import _normalize_sector_key, hom
+from ..structure.sector_dict import SectorDict
+from ..structure.spaces import _normalize_sector_key, space
+from ._sector_index import _sector_slices_for_space
 from .storage import VectorStorage, _validate_vector_storage_data
-
-if TYPE_CHECKING:
-    from .tensor_map import TensorMap
 
 
 @dataclass(frozen=True, eq=False, init=False)
 class SectorVector:
-    space: _native.ElementarySpace
+    sector_type: _native.SectorSpec
+    structure: SectorDict[slice]
     storage: VectorStorage
 
     def __init__(self, space: _native.ElementarySpace, storage: object) -> None:
@@ -32,38 +31,36 @@ class SectorVector:
 
         _validate_vector_storage_data(vector_storage.data, _space_dim(space))
 
-        object.__setattr__(self, "space", space)
+        object.__setattr__(self, "sector_type", space.sector_spec)
+        object.__setattr__(self, "structure", _sector_slices_for_space(space))
         object.__setattr__(self, "storage", vector_storage)
+
+    @property
+    def sectors(self) -> tuple[tuple[tuple[int, ...], int], ...]:
+        return tuple(
+            (sector, sector_slice.stop - sector_slice.start)
+            for sector, sector_slice in self.structure.items()
+        )
 
     def block(self, coupled: int | tuple[int, ...]) -> Array:
         key = _normalize_sector_key(coupled)
-        offset = 0
-        for sector, dim in self.space.sectors:
-            next_offset = offset + dim
-            if sector == key:
-                return self.storage.data[offset:next_offset]
-            offset = next_offset
-        raise KeyError(key)
+        try:
+            sector_slice = self.structure[key]
+        except KeyError:
+            raise KeyError(key) from None
+        return self.storage.data[sector_slice]
 
     def blocks(self) -> tuple[tuple[tuple[int, ...], Array], ...]:
-        result: list[tuple[tuple[int, ...], Array]] = []
-        offset = 0
-        for sector, dim in self.space.sectors:
-            next_offset = offset + dim
-            result.append((sector, self.storage.data[offset:next_offset]))
-            offset = next_offset
-        return tuple(result)
-
-    def to_diagonal(self) -> TensorMap:
-        from .tensor_map import TensorMap, _packed_vector_from_blocks
-
-        diagonal_space = hom((self.space,), (self.space,))
-        block_arrays = {sector: jnp.diag(values) for sector, values in self.blocks()}
-        dtype = jnp.asarray(self.storage.data).dtype
-        return TensorMap(
-            diagonal_space,
-            _packed_vector_from_blocks(diagonal_space, block_arrays, dtype=dtype),
+        return tuple(
+            (sector, self.storage.data[sector_slice])
+            for sector, sector_slice in self.structure.items()
         )
+
+    def to_diagonal(self):
+        from .diagonal import DiagonalTensorMap
+
+        domain = space(self.sector_type, dict(self.sectors))
+        return DiagonalTensorMap(domain, self.storage)
 
 
 def _packed_sector_values(
@@ -95,16 +92,20 @@ def _space_dim(space: _native.ElementarySpace) -> int:
 
 def _sectorvector_flatten(
     vector: SectorVector,
-) -> tuple[tuple[object, ...], _native.ElementarySpace]:
-    return (vector.storage.data,), vector.space
+) -> tuple[
+    tuple[object, ...],
+    tuple[_native.SectorSpec, tuple[tuple[tuple[int, ...], int], ...]],
+]:
+    return (vector.storage.data,), (vector.sector_type, vector.sectors)
 
 
 def _sectorvector_unflatten(
-    aux_data: _native.ElementarySpace,
+    aux_data: tuple[_native.SectorSpec, tuple[tuple[tuple[int, ...], int], ...]],
     children: tuple[object, ...],
 ) -> SectorVector:
+    sector_type, sectors = aux_data
     (data,) = children
-    return SectorVector(aux_data, data)
+    return SectorVector(_native.make_space(sector_type, sectors, False), data)
 
 
 _tree_util.register_pytree_node(

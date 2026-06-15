@@ -9,7 +9,12 @@ import jax.numpy as jnp
 from jax.typing import DTypeLike
 
 from .. import _native
-from ..structure.layout import get_degeneracystructure, get_sectorstructure
+from ..structure.layout import (
+    get_blockstructure,
+    get_degeneracystructure,
+    get_sectorstructure,
+)
+from ..structure.sector_dict import SectorDict
 from ..structure.spaces import _normalize_sector_key, hom
 from ._subblocks import gather_subblock as _gather_subblock
 from .storage import VectorStorage, _validate_vector_storage_data
@@ -28,7 +33,6 @@ class TensorMap:
         if not isinstance(vector_storage, VectorStorage):
             vector_storage = VectorStorage(vector_storage)
 
-        get_sectorstructure(space)
         degeneracystructure = get_degeneracystructure(space)
         _validate_vector_storage_data(vector_storage.data, degeneracystructure.total_dim)
 
@@ -37,23 +41,15 @@ class TensorMap:
 
     def block(self, coupled: int | tuple[int, ...]) -> Array:
         key = _normalize_sector_key(coupled)
-        sectorstructure = get_sectorstructure(self.space)
-        degeneracystructure = get_degeneracystructure(self.space)
-
         try:
-            index = sectorstructure.blocksectors.index(key)
-        except ValueError:
+            block = get_blockstructure(self.space)[key]
+        except KeyError:
             raise KeyError(key) from None
-
-        block = degeneracystructure.blockstructure[index]
         return self.storage.data[block.start : block.stop].reshape(
             (block.row_dim, block.col_dim),
         )
 
     def blocks(self) -> tuple[tuple[tuple[int, ...], Array], ...]:
-        sectorstructure = get_sectorstructure(self.space)
-        degeneracystructure = get_degeneracystructure(self.space)
-
         return tuple(
             (
                 coupled,
@@ -61,10 +57,7 @@ class TensorMap:
                     (block.row_dim, block.col_dim),
                 ),
             )
-            for coupled, block in zip(
-                sectorstructure.blocksectors,
-                degeneracystructure.blockstructure,
-            )
+            for coupled, block in get_blockstructure(self.space).items()
         )
 
     def subblock(self, row_tree: _native.FusionTree, col_tree: _native.FusionTree) -> Array:
@@ -139,19 +132,23 @@ class TensorMap:
 
         result_space = hom(self.space.codomain, other.space.domain)
         dtype = jnp.result_type(self.storage.data, other.storage.data)
-        left_blocks = dict(self.blocks())
-        right_blocks = dict(other.blocks())
-        result_blocks: dict[tuple[int, ...], Array] = {}
+        left_blocks = SectorDict(self.blocks())
+        right_blocks = SectorDict(other.blocks())
+        result_blocks: list[tuple[tuple[int, ...], Array]] = []
 
         for coupled in get_sectorstructure(result_space).blocksectors:
             left = left_blocks.get(coupled)
             right = right_blocks.get(coupled)
             if left is not None and right is not None:
-                result_blocks[coupled] = left @ right
+                result_blocks.append((coupled, left @ right))
 
         return TensorMap(
             result_space,
-            _packed_vector_from_blocks(result_space, result_blocks, dtype=dtype),
+            _packed_vector_from_blocks(
+                result_space,
+                SectorDict(result_blocks),
+                dtype=dtype,
+            ),
         )
 
 
@@ -161,14 +158,11 @@ def _packed_vector_from_blocks(
     *,
     dtype: DTypeLike | None,
 ) -> Array:
-    sectorstructure = get_sectorstructure(space)
     degeneracystructure = get_degeneracystructure(space)
+    blockstructures = get_blockstructure(space)
 
     flat_blocks: list[Array] = []
-    for coupled, block in zip(
-        sectorstructure.blocksectors,
-        degeneracystructure.blockstructure,
-    ):
+    for coupled, block in blockstructures.items():
         expected_shape = (block.row_dim, block.col_dim)
         value = block_arrays.get(coupled)
         if value is None:

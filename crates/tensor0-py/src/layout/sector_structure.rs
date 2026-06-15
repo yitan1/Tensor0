@@ -10,7 +10,7 @@ use tensor0_core::sector::{
 };
 
 use crate::fusion_tree::{fusiontree_pairs_py, fusiontree_static_key_py, FusionTreeInner};
-use crate::pyconv::{core_err, sectors_tuple_py};
+use crate::pyconv::{core_err, sector_key_from_py, sectors_tuple_py};
 use crate::space::{HomSpaceInner, PyHomSpace};
 
 #[pyclass(name = "SectorStructure", skip_from_py_object)]
@@ -198,6 +198,32 @@ impl SectorStructureInner {
             }
         }
     }
+
+    fn blocksector_index_py(&self, sector: &Bound<'_, PyAny>) -> PyResult<Option<usize>> {
+        match self {
+            SectorStructureInner::U1Irrep(structure) => blocksector_index_py(structure, sector),
+            SectorStructureInner::SU2Irrep(structure) => blocksector_index_py(structure, sector),
+            SectorStructureInner::FermionParity(structure) => {
+                blocksector_index_py(structure, sector)
+            }
+            SectorStructureInner::Z2Irrep(structure) => blocksector_index_py(structure, sector),
+            SectorStructureInner::Z3Irrep(structure) => blocksector_index_py(structure, sector),
+            SectorStructureInner::Z4Irrep(structure) => blocksector_index_py(structure, sector),
+            SectorStructureInner::U1IrrepFermionParity(structure) => {
+                blocksector_index_py(structure, sector)
+            }
+            SectorStructureInner::FermionParityU1Irrep(structure) => {
+                blocksector_index_py(structure, sector)
+            }
+            SectorStructureInner::U1SU2Irrep(structure) => blocksector_index_py(structure, sector),
+            SectorStructureInner::FermionParitySU2Irrep(structure) => {
+                blocksector_index_py(structure, sector)
+            }
+            SectorStructureInner::FermionParityU1SU2Irrep(structure) => {
+                blocksector_index_py(structure, sector)
+            }
+        }
+    }
 }
 
 #[pyfunction]
@@ -222,6 +248,19 @@ impl PySectorStructure {
     fn static_key(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         self.inner.static_key_py(py)
     }
+
+    fn blocksector_index(&self, sector: &Bound<'_, PyAny>) -> PyResult<Option<usize>> {
+        self.inner.blocksector_index_py(sector)
+    }
+}
+
+fn blocksector_index_py<I: Sector>(
+    structure: &SectorStructure<I>,
+    sector: &Bound<'_, PyAny>,
+) -> PyResult<Option<usize>> {
+    let encoded = sector_key_from_py(sector)?;
+    let typed_sector = I::decode_value(&encoded).map_err(core_err)?;
+    Ok(structure.blocksector_index(&typed_sector))
 }
 
 fn sector_structure_static_key_py<I: Sector>(
@@ -231,7 +270,6 @@ fn sector_structure_static_key_py<I: Sector>(
     let blocksectors = sectors_tuple_py(py, structure.blocksectors())?;
     let pairs = structure
         .fusiontree_pairs()
-        .iter()
         .map(|pair| {
             let row = fusiontree_static_key_py(py, &pair.row)?;
             let col = fusiontree_static_key_py(py, &pair.col)?;

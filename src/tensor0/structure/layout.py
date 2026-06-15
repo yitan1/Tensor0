@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+from collections.abc import Callable, Iterator, Mapping
 from collections import OrderedDict
-from typing import TypeVar
+from dataclasses import dataclass
+from typing import Generic, TypeVar
 
 from .. import _native
 
 # Sector structures depend only on visible sector labels; degeneracy structures also
 # depend on degeneracy dimensions.
 _CacheValue = TypeVar("_CacheValue")
+_Key = TypeVar("_Key")
+_Value = TypeVar("_Value")
 _LAYOUT_CACHE_MAXSIZE = 10_000
 _sectorstructure_cache: OrderedDict[
     tuple[object, ...],
@@ -17,6 +21,50 @@ _degeneracystructure_cache: OrderedDict[
     tuple[object, ...],
     _native.DegeneracyStructure,
 ] = OrderedDict()
+
+
+@dataclass(frozen=True, init=False)
+class _IndexedMapping(Mapping[_Key, _Value], Generic[_Key, _Value]):
+    _keys: tuple[_Key, ...]
+    _values: tuple[_Value, ...]
+    _index_of: Callable[[object], int | None]
+
+    def __init__(
+        self,
+        keys: tuple[_Key, ...],
+        values: tuple[_Value, ...],
+        index_of: Callable[[object], int | None],
+    ) -> None:
+        if len(keys) != len(values):
+            raise ValueError("IndexedMapping requires keys and values with the same length")
+
+        object.__setattr__(self, "_keys", keys)
+        object.__setattr__(self, "_values", values)
+        object.__setattr__(self, "_index_of", index_of)
+
+    def __getitem__(self, key: object) -> _Value:
+        index = self._index_of(key)
+        if index is None or index < 0 or index >= len(self._values):
+            raise KeyError(key)
+        return self._values[index]
+
+    def __iter__(self) -> Iterator[_Key]:
+        return iter(self._keys)
+
+    def __len__(self) -> int:
+        return len(self._keys)
+
+    def __contains__(self, key: object) -> bool:
+        try:
+            return self._index_of(key) is not None
+        except (TypeError, ValueError):
+            return False
+
+    def items(self) -> Iterator[tuple[_Key, _Value]]:  # type: ignore[override]
+        return zip(self._keys, self._values, strict=True)
+
+    def values(self) -> Iterator[_Value]:  # type: ignore[override]
+        return iter(self._values)
 
 
 def get_sectorstructure(space: _native.HomSpace) -> _native.SectorStructure:
@@ -40,6 +88,21 @@ def get_degeneracystructure(space: _native.HomSpace) -> _native.DegeneracyStruct
         sectorstructure,
     )
     return _cache_set(_degeneracystructure_cache, key, degeneracystructure)
+
+
+def get_blockstructure(
+    space: _native.HomSpace,
+) -> _IndexedMapping[tuple[int, ...], _native.BlockStructure]:
+    if not isinstance(space, _native.HomSpace):
+        raise TypeError("get_blockstructure() requires a HomSpace")
+
+    sectorstructure = _get_sectorstructure(space)
+    degeneracystructure = get_degeneracystructure(space)
+    return _IndexedMapping(
+        sectorstructure.blocksectors,
+        degeneracystructure.blockstructure,
+        sectorstructure.blocksector_index,
+    )
 
 
 def _clear_layout_caches_for_tests() -> None:

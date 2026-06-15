@@ -9,5 +9,6 @@ license = "MIT"
 description = "Rust core and Python extension support for Tensor0"
 
 [workspace.dependencies]
+indexmap = "2"
 ndarray = "0.17"
 numpy = "0.28"

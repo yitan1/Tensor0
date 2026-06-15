@@ -11,7 +11,10 @@ use crate::error::{Result, Tensor0Error};
 use crate::fusion_tree::braiding_ops::{braid_block, braid_pair};
 use crate::fusion_tree::duality_ops::{transpose_block, transpose_pair};
 use crate::fusion_tree::{fusion_blocks, FusionTreeBlock, FusionTreePair};
-use crate::layout::{subblockstructure, SubblockStructure, SubblockStructureMap};
+use crate::layout::{
+    build_degeneracy_structure_from_sector_structure, build_sector_structure,
+    subblockstructure_ref, SubblockStructure, SubblockStructureMapRef,
+};
 use crate::sector::{FusionStyle, Sector};
 use crate::space::HomSpace;
 
@@ -152,18 +155,18 @@ where
     I: Sector,
     F: Fn(&FusionTreePair<I>) -> Result<(FusionTreePair<I>, f64)>,
 {
-    let src_subblocks = subblockstructure(src)?;
-    let dst_subblocks = subblockstructure(dst)?;
-    let mut data: Vec<Option<AbelianTransformData>> =
-        Vec::with_capacity(src_subblocks.pairs().len());
-    data.resize_with(src_subblocks.pairs().len(), || None);
+    let src_sectorstructure = build_sector_structure(src)?;
+    let src_degeneracystructure =
+        build_degeneracy_structure_from_sector_structure(src, &src_sectorstructure)?;
+    let src_subblocks = subblockstructure_ref(&src_sectorstructure, &src_degeneracystructure)?;
+    let dst_sectorstructure = build_sector_structure(dst)?;
+    let dst_degeneracystructure =
+        build_degeneracy_structure_from_sector_structure(dst, &dst_sectorstructure)?;
+    let dst_subblocks = subblockstructure_ref(&dst_sectorstructure, &dst_degeneracystructure)?;
+    let mut data: Vec<Option<AbelianTransformData>> = Vec::with_capacity(src_subblocks.len());
+    data.resize_with(src_subblocks.len(), || None);
 
-    for (index, (src_pair, src_subblock)) in src_subblocks
-        .pairs()
-        .iter()
-        .zip(src_subblocks.structures().iter())
-        .enumerate()
-    {
+    for (index, (src_pair, src_subblock)) in src_subblocks.iter().enumerate() {
         let (dst_pair, coeff) = transform(src_pair)?;
         let Some(dst_subblock) = dst_subblocks.get(&dst_pair) else {
             return Err(Tensor0Error::Message(
@@ -193,8 +196,14 @@ where
     I: Sector,
     F: Fn(&FusionTreeBlock<I>) -> Result<(FusionTreeBlock<I>, Array2<f64>)>,
 {
-    let src_subblocks = subblockstructure(src)?;
-    let dst_subblocks = subblockstructure(dst)?;
+    let src_sectorstructure = build_sector_structure(src)?;
+    let src_degeneracystructure =
+        build_degeneracy_structure_from_sector_structure(src, &src_sectorstructure)?;
+    let src_subblocks = subblockstructure_ref(&src_sectorstructure, &src_degeneracystructure)?;
+    let dst_sectorstructure = build_sector_structure(dst)?;
+    let dst_degeneracystructure =
+        build_degeneracy_structure_from_sector_structure(dst, &dst_sectorstructure)?;
+    let dst_subblocks = subblockstructure_ref(&dst_sectorstructure, &dst_degeneracystructure)?;
     let src_blocks = fusion_blocks(src)?;
     let mut data: Vec<Option<GenericTransformData>> = Vec::with_capacity(src_blocks.len());
     data.resize_with(src_blocks.len(), || None);
@@ -219,7 +228,7 @@ where
 
 fn repack_transformer_structure<I: Sector>(
     block: &FusionTreeBlock<I>,
-    subblocks: &SubblockStructureMap<I>,
+    subblocks: &SubblockStructureMapRef<'_, I>,
 ) -> GenericTransformStructures {
     let first_pair = block
         .trees()

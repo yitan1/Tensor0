@@ -98,9 +98,9 @@ assert c.space == hom((v,), (x,))
 
 ## SVD
 
-`svd_compact(...)` returns `(u, s, vh)`, where `s` is a `SectorVector`.
-`SectorVector.to_diagonal()` converts it into a diagonal `TensorMap` for
-reconstruction through the existing composition path.
+`svd_compact(...)` returns `(u, s, vh)`, where `s` is a `DiagonalTensorMap`.
+Use `s.to_tensor_map()` when reconstruction needs the regular dense block
+composition path.
 
 ```python
 import jax.numpy as jnp
@@ -119,7 +119,7 @@ h = hom((left,), (right,))
 tensor = TensorMap(h, data_for(h))
 
 u, s, vh = svd_compact(tensor)
-reconstructed = u @ s.to_diagonal() @ vh
+reconstructed = u @ s.to_tensor_map() @ vh
 ```
 
 Use `svd_trunc(...)` with `notrunc()`, `truncrank(...)`, `trunctol(...)`,

@@ -5,9 +5,9 @@ import jax.numpy as jnp
 import pytest
 
 from tensor0 import (
+    DiagonalTensorMap,
     FermionParity,
     SectorVector,
-    TensorMap,
     U1Irrep,
     VectorStorage,
     hom,
@@ -29,14 +29,17 @@ def test_sectorvector_accepts_raw_data_and_vector_storage_matching_space_dims():
     data = jnp.arange(5, dtype=jnp.float32)
     raw_vector = SectorVector(bond, data)
 
-    assert raw_vector.space is bond
+    assert not hasattr(raw_vector, "space")
+    assert raw_vector.sector_type == U1Irrep
+    assert raw_vector.sectors == (((0,), 2), ((1,), 3))
     assert isinstance(raw_vector.storage, VectorStorage)
     assert raw_vector.storage.data is data
 
     storage = VectorStorage(data)
     storage_vector = SectorVector(bond, storage)
 
-    assert storage_vector.space is bond
+    assert storage_vector.sector_type == U1Irrep
+    assert storage_vector.sectors == (((0,), 2), ((1,), 3))
     assert storage_vector.storage is storage
     assert storage_vector.storage.data is data
 
@@ -105,6 +108,21 @@ def test_sectorvector_supports_tuple_product_sector_keys():
     _assert_array_equal(vector.block((1, 1)), data[2:5])
 
 
+def test_sectorvector_constructed_from_dual_space_keeps_visible_sector_labels():
+    dual_bond = space(U1Irrep, {1: 2}, dual=True)
+    data = jnp.arange(2, dtype=jnp.float32)
+    vector = SectorVector(dual_bond, data)
+
+    assert vector.sector_type == U1Irrep
+    assert vector.sectors == (((-1,), 2),)
+    _assert_array_equal(vector.block(-1), data)
+
+    diagonal = vector.to_diagonal()
+
+    assert diagonal.domain == space(U1Irrep, {-1: 2})
+    assert not diagonal.domain.is_dual
+
+
 def test_sectorvector_to_diagonal_returns_diagonal_tensormap():
     bond = space(U1Irrep, {0: 2, 1: 3})
     data = jnp.arange(1, 6, dtype=jnp.float32)
@@ -112,11 +130,11 @@ def test_sectorvector_to_diagonal_returns_diagonal_tensormap():
 
     diagonal = vector.to_diagonal()
 
-    assert isinstance(diagonal, TensorMap)
-    assert diagonal.space == hom((bond,), (bond,))
+    assert isinstance(diagonal, DiagonalTensorMap)
+    assert diagonal.domain == bond
     assert diagonal.storage.data.dtype == data.dtype
-    _assert_array_equal(diagonal.block(0), jnp.diag(data[0:2]))
-    _assert_array_equal(diagonal.block(1), jnp.diag(data[2:5]))
+    _assert_array_equal(diagonal.diag().block(0), data[0:2])
+    _assert_array_equal(diagonal.diag().block(1), data[2:5])
 
 
 def test_sectorvector_pytree_children_are_storage_data():
@@ -130,7 +148,8 @@ def test_sectorvector_pytree_children_are_storage_data():
     assert len(leaves) == 1
     assert leaves[0] is vector.storage.data
     assert isinstance(rebuilt, SectorVector)
-    assert rebuilt.space == vector.space
+    assert rebuilt.sector_type == vector.sector_type
+    assert rebuilt.sectors == vector.sectors
     assert rebuilt.storage.data is vector.storage.data
 
 
@@ -143,7 +162,8 @@ def test_sectorvector_tree_unflatten_reconstructs_sectorvector():
     rebuilt = jax.tree_util.tree_unflatten(treedef, (new_data,))
 
     assert isinstance(rebuilt, SectorVector)
-    assert rebuilt.space == vector.space
+    assert rebuilt.sector_type == vector.sector_type
+    assert rebuilt.sectors == vector.sectors
     assert rebuilt.storage.data is new_data
 
     with pytest.raises(ValueError, match="storage data length mismatch"):

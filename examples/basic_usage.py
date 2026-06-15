@@ -66,7 +66,7 @@ def composition_and_svd_example():
     svd_space = hom((left,), (right,))
     tensor = TensorMap(svd_space, _data_for(svd_space))
     u, s, vh = svd_compact(tensor)
-    reconstructed = u @ s.to_diagonal() @ vh
+    reconstructed = u @ s.to_tensor_map() @ vh
 
     assert reconstructed.space == tensor.space
     for coupled, block in tensor.blocks():
