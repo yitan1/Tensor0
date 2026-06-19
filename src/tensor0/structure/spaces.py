@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from typing import Any
 
 from .. import _native
-from .sector_type import SectorKey, SectorType, _normalize_sector_key
+from .sector_type import SectorType, _normalize_sector_key
 
-SectorDims = Mapping[SectorKey, int]
+SectorDims = Mapping[Any, int]
 SectorValue = tuple[int, ...]
 SectorDimItem = tuple[SectorValue, int]
 SectorDimItems = tuple[SectorDimItem, ...]
@@ -62,6 +63,27 @@ def hom(
         domain_product = _native.make_product_space(sector_type, ())
 
     return _native.make_hom_products(codomain_product, domain_product)
+
+
+def _as_product_space_input(
+    value: object,
+    argument_name: str,
+    function_name: str,
+) -> _native.ProductSpace | tuple[_native.ElementarySpace, ...]:
+    if isinstance(value, _native.ProductSpace):
+        return value
+    if isinstance(value, _native.ElementarySpace):
+        return (value,)
+    raise TypeError(
+        f"{function_name}() requires {argument_name} to be an ElementarySpace "
+        "or ProductSpace",
+    )
+
+
+def _as_hom_space(value: object, function_name: str) -> _native.HomSpace:
+    if not isinstance(value, _native.HomSpace):
+        raise TypeError(f"{function_name}() requires a HomSpace")
+    return value
 
 
 def _product_space_or_none(

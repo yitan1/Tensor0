@@ -43,14 +43,15 @@ class DiagonalTensorMap:
         return tuple((sector, jnp.diag(values)) for sector, values in self.diag().blocks())
 
     def to_tensor_map(self):
-        from .tensor_map import TensorMap, _packed_vector_from_blocks
+        from ._blocks import pack_blocks
+        from .tensor_map import TensorMap
 
         diagonal_space = self.space
         block_arrays = dict(self.blocks())
         dtype = jnp.asarray(self.storage.data).dtype
         return TensorMap(
             diagonal_space,
-            _packed_vector_from_blocks(diagonal_space, block_arrays, dtype=dtype),
+            pack_blocks(diagonal_space, block_arrays, dtype=dtype),
         )
 
 

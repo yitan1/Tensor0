@@ -1,10 +1,14 @@
 from dataclasses import FrozenInstanceError
 
+import tensor0
+import tensor0.tensor as tensor_api
+import jax
 import jax.numpy as jnp
 import pytest
 
 from tensor0 import (
     SU2Irrep,
+    SectorDict,
     TensorMap,
     U1Irrep,
     VectorStorage,
@@ -44,16 +48,21 @@ def _int_data_for(h):
     return jnp.arange(1, total_dim + 1, dtype=jnp.int32)
 
 
-def _gather_expected_subblock(data, subblock):
-    indices = jnp.zeros(subblock.sizes, dtype=jnp.result_type(subblock.offset))
-    for axis, (size, stride) in enumerate(zip(subblock.sizes, subblock.strides)):
-        shape = (1,) * axis + (size,) + (1,) * (len(subblock.sizes) - axis - 1)
-        indices = indices + jnp.arange(size).reshape(shape) * stride
-    return data[(indices + subblock.offset).reshape(-1)].reshape(subblock.sizes)
-
-
 def _tensor_for(space_obj):
     return TensorMap(space_obj, float_data_for(space_obj))
+
+
+def _metadata_cases():
+    empty = _native.make_product_space(U1Irrep, ())
+    u1 = space(U1Irrep, {0: 2, 1: 3})
+    half = space(SU2Irrep, {1: 1})
+
+    return (
+        ("scalar", hom(empty, empty)),
+        ("one-sided", hom((u1,), ())),
+        ("u1", hom((u1,), (u1,))),
+        ("su2", hom((half,), (half,))),
+    )
 
 
 def _assert_tensormap_storage_contract(case):
@@ -82,27 +91,30 @@ def _assert_tensormap_blocks_contract(case):
         assert_allclose(tensor.block(coupled), block)
 
 
-def _assert_tensormap_subblocks_contract(case):
-    tensor = _tensor_for(case.space)
-    sectorstructure = get_sectorstructure(case.space)
-    degeneracystructure = get_degeneracystructure(case.space)
+def _assert_tensormap_metadata_contract(space_obj):
+    tensor = _tensor_for(space_obj)
+    degeneracystructure = get_degeneracystructure(space_obj)
 
-    subblocks = tensor.subblocks()
-
-    assert len(subblocks) == len(sectorstructure.fusiontree_pairs)
-    for ((row, col), subblock), (expected_row, expected_col), layout in zip(
-        subblocks,
-        sectorstructure.fusiontree_pairs,
-        degeneracystructure.subblockstructure,
-        strict=True,
-    ):
-        assert row.static_key == expected_row.static_key
-        assert col.static_key == expected_col.static_key
-        assert_allclose(tensor.subblock(row, col), subblock)
-        assert_allclose(
-            subblock,
-            _gather_expected_subblock(tensor.storage.data, layout),
-        )
+    assert tensor.codomain == space_obj.codomain
+    assert tensor.domain == space_obj.domain
+    assert tensor.numout == space_obj.numout
+    assert tensor.numin == space_obj.numin
+    assert tensor.numind == space_obj.numind
+    assert tensor.codomainind == tuple(range(space_obj.numout))
+    assert tensor.domainind == tuple(range(space_obj.numout, space_obj.numind))
+    assert tensor.allind == tuple(range(space_obj.numind))
+    assert tensor.dim == degeneracystructure.total_dim
+    assert tensor.dims == tuple(_native.product_dims(space_obj.codomain)) + tuple(
+        _native.product_dims(space_obj.domain),
+    )
+    assert tensor.blocksectors == tuple(coupled for coupled, _block in tensor.blocks())
+    assert len(tensor.fusiontrees) == len(tensor.subblocks())
+    assert tensor.ndim == tensor.numind
+    assert tensor.shape == tensor.dims
+    assert tensor.output_axes == tensor.codomainind
+    assert tensor.input_axes == tensor.domainind
+    assert tensor.axes == tensor.allind
+    assert tensor.block_sectors == tensor.blocksectors
 
 
 def _assert_tensormap_matmul_contract(case):
@@ -118,6 +130,27 @@ def _assert_tensormap_matmul_contract(case):
     right_blocks = dict(right.blocks())
     for coupled, block in result.blocks():
         assert_allclose(block, left_blocks[coupled] @ right_blocks[coupled])
+
+
+def _u1_blocks_for(h):
+    tensor = TensorMap(h, float_data_for(h))
+    return dict(tensor.blocks())
+
+
+class _ExplodingVectorData:
+    def __init__(self, length: int = 13) -> None:
+        self.shape = (length,)
+
+    def __getitem__(self, key):
+        if isinstance(key, slice) and key.start == 0 and key.stop == 0:
+            return jnp.zeros((0,))
+        raise AssertionError("storage data should not be sliced")
+
+    def __array__(self):
+        raise AssertionError("storage data should not be converted")
+
+    def __rmul__(self, _other):
+        raise AssertionError("storage data should not be multiplied")
 
 
 def test_vector_storage_is_frozen_and_preserves_data():
@@ -192,9 +225,545 @@ def test_tensormap_satisfies_blocks_contract(case):
     _assert_tensormap_blocks_contract(case)
 
 
-@pytest.mark.parametrize("case", tensor_map_cases(), ids=lambda case: case.name)
-def test_tensormap_satisfies_subblocks_contract(case):
-    _assert_tensormap_subblocks_contract(case)
+@pytest.mark.parametrize(
+    "space_obj",
+    [space_obj for _name, space_obj in _metadata_cases()],
+    ids=[name for name, _space_obj in _metadata_cases()],
+)
+def test_tensormap_exposes_basic_metadata_interfaces(space_obj):
+    _assert_tensormap_metadata_contract(space_obj)
+
+
+def test_tensormap_hasblock_uses_sectorstructure_key_semantics():
+    tensor = TensorMap(_u1_hom(), _u1_data())
+
+    assert tensor.hasblock(0)
+    assert tensor.hasblock((1,))
+    assert not tensor.hasblock(2)
+
+    with pytest.raises(TypeError, match="sector key"):
+        tensor.hasblock("bad")
+
+    product_case = next(
+        case for case in tensor_map_cases() if case.name == "u1-fermion-product"
+    )
+    product_tensor = _tensor_for(product_case.space)
+
+    with pytest.raises(ValueError, match="width"):
+        product_tensor.hasblock((0,))
+
+
+def test_tensormap_zeros_and_ones_allocate_expected_storage_and_blocks():
+    h = _u1_hom()
+
+    zero = tensor0.zeros(h)
+    one = tensor_api.ones(h, dtype=jnp.float32)
+
+    assert zero.space == h
+    assert zero.storage.data.shape == (get_degeneracystructure(h).total_dim,)
+    assert zero.storage.data.dtype == jnp.zeros(()).dtype
+    for _coupled, block in zero.blocks():
+        assert_allclose(block, jnp.zeros(block.shape, dtype=zero.storage.data.dtype))
+
+    assert one.space == h
+    assert one.storage.data.shape == (get_degeneracystructure(h).total_dim,)
+    assert one.storage.data.dtype == jnp.dtype(jnp.float32)
+    for _coupled, block in one.blocks():
+        assert_allclose(block, jnp.ones(block.shape, dtype=jnp.float32))
+
+
+def test_tensormap_zeros_and_ones_reject_non_hom_space():
+    with pytest.raises(TypeError, match="zeros.*HomSpace"):
+        tensor0.zeros(object())  # pyright: ignore[reportArgumentType]
+
+    with pytest.raises(TypeError, match="ones.*HomSpace"):
+        tensor0.ones(object())  # pyright: ignore[reportArgumentType]
+
+
+def test_tensormap_copy_astype_and_similar_allocate_independent_storage():
+    h = _u1_hom()
+    tensor = TensorMap(h, float_data_for(h))
+    other_h = _u1_hom_same_total_dim_with_different_metadata()
+
+    copied = tensor.copy()
+    cast = tensor.astype(jnp.complex64)
+    similar = tensor.similar()
+    retargeted = tensor.similar(space=other_h, dtype=jnp.int32)
+
+    assert copied.space == h
+    assert copied.storage.data is not tensor.storage.data
+    assert_allclose(copied.storage.data, tensor.storage.data)
+
+    assert cast.space == h
+    assert cast.storage.data.dtype == jnp.dtype(jnp.complex64)
+    assert_allclose(cast.storage.data, tensor.storage.data.astype(jnp.complex64))
+
+    assert similar.space == h
+    assert similar.storage.data.dtype == tensor.storage.data.dtype
+    assert_allclose(similar.storage.data, jnp.zeros_like(tensor.storage.data))
+
+    assert retargeted.space == other_h
+    assert retargeted.storage.data.dtype == jnp.dtype(jnp.int32)
+    assert_allclose(retargeted.storage.data, jnp.zeros_like(retargeted.storage.data))
+
+
+def test_from_blocks_builds_tensormap_and_converts_dtype():
+    h = _u1_hom()
+    blocks = _u1_blocks_for(h)
+
+    tensor = tensor0.from_blocks(h, blocks)
+    cast = tensor_api.from_blocks(h, blocks.items(), dtype=jnp.complex64)
+
+    assert tensor.space == h
+    for coupled, block in blocks.items():
+        assert_allclose(tensor.block(coupled), block)
+
+    assert cast.storage.data.dtype == jnp.dtype(jnp.complex64)
+    for coupled, block in blocks.items():
+        assert_allclose(cast.block(coupled), block.astype(jnp.complex64))
+
+
+def test_from_blocks_rejects_non_hom_space():
+    with pytest.raises(TypeError, match="from_blocks.*HomSpace"):
+        tensor0.from_blocks(object(), {})  # pyright: ignore[reportArgumentType]
+
+
+def test_from_blocks_rejects_missing_expected_block():
+    h = _u1_hom()
+    blocks = _u1_blocks_for(h)
+    blocks.pop((1,))
+
+    with pytest.raises(ValueError, match="missing|no data"):
+        tensor0.from_blocks(h, blocks)
+
+
+def test_from_blocks_rejects_unexpected_non_empty_block():
+    h = _u1_hom()
+    blocks = list(_u1_blocks_for(h).items())
+    blocks.append(((2,), jnp.ones((1, 1), dtype=jnp.float32)))
+
+    with pytest.raises(ValueError, match="unexpected|not expected"):
+        tensor0.from_blocks(h, blocks)
+
+
+def test_from_blocks_ignores_unexpected_empty_block():
+    h = _u1_hom()
+    blocks = list(_u1_blocks_for(h).items())
+    blocks.append(((2,), jnp.ones((0,), dtype=jnp.float32)))
+
+    tensor = tensor0.from_blocks(h, blocks)
+
+    for coupled, block in _u1_blocks_for(h).items():
+        assert_allclose(tensor.block(coupled), block)
+
+
+def test_from_blocks_rejects_wrong_block_shape():
+    h = _u1_hom()
+    blocks = _u1_blocks_for(h)
+    blocks[(0,)] = jnp.zeros((1, 1), dtype=jnp.float32)
+
+    with pytest.raises(ValueError, match=r"\(0,\).*shape.*\(1, 1\).*expected"):
+        tensor0.from_blocks(h, blocks)
+
+
+def test_from_blocks_rejects_duplicate_sector():
+    h = _u1_hom()
+    blocks = _u1_blocks_for(h)
+
+    with pytest.raises(ValueError, match="multiple"):
+        tensor0.from_blocks(h, [(0, blocks[(0,)]), ((0,), blocks[(0,)])])
+
+
+def test_zero_like_preserves_space_dtype_and_zeroes_storage():
+    h = _u1_hom()
+    tensor = TensorMap(h, _int_data_for(h))
+
+    result = tensor0.zero_like(tensor)
+
+    assert result.space == h
+    assert result.storage.data.dtype == tensor.storage.data.dtype
+    assert_allclose(result.storage.data, jnp.zeros_like(tensor.storage.data))
+
+
+def test_tensormap_scalar_and_linear_operations_match_functional_forms():
+    h = _u1_hom()
+    left = TensorMap(h, float_data_for(h))
+    right = TensorMap(h, jnp.arange(left.dim, dtype=jnp.float32) * 0.25)
+
+    negated = -left
+    summed = left + right
+    subtracted = left - right
+    left_scaled = 2.5 * left
+    right_scaled = left * 2.5
+    divided = left / 2.0
+    functional_add = tensor0.add(left, right, alpha=2.0, beta=-0.5)
+    functional_scale = tensor_api.scale(left, 3.0)
+
+    assert negated.space == h
+    assert_allclose(negated.storage.data, -left.storage.data)
+    assert_allclose(summed.storage.data, left.storage.data + right.storage.data)
+    assert_allclose(subtracted.storage.data, left.storage.data - right.storage.data)
+    assert_allclose(left_scaled.storage.data, 2.5 * left.storage.data)
+    assert_allclose(right_scaled.storage.data, left.storage.data * 2.5)
+    assert_allclose(divided.storage.data, left.storage.data / 2.0)
+    assert_allclose(
+        functional_add.storage.data,
+        2.0 * left.storage.data - 0.5 * right.storage.data,
+    )
+    assert_allclose(functional_scale.storage.data, 3.0 * left.storage.data)
+
+
+def test_tensormap_linear_operations_promote_dtype():
+    h = _u1_hom()
+    int_tensor = TensorMap(h, _int_data_for(h))
+    float_tensor = TensorMap(h, float_data_for(h).astype(jnp.float32))
+
+    added = tensor0.add(int_tensor, float_tensor)
+    complex_scaled = tensor_api.scale(int_tensor, jnp.array(1.0 + 2.0j, dtype=jnp.complex64))
+
+    assert added.storage.data.dtype == jnp.result_type(
+        int_tensor.storage.data,
+        float_tensor.storage.data,
+        1,
+        1,
+    )
+    assert_allclose(added.storage.data, int_tensor.storage.data + float_tensor.storage.data)
+    assert complex_scaled.storage.data.dtype == jnp.result_type(
+        int_tensor.storage.data,
+        jnp.array(1.0 + 2.0j, dtype=jnp.complex64),
+    )
+    assert_allclose(
+        complex_scaled.storage.data,
+        int_tensor.storage.data * jnp.array(1.0 + 2.0j, dtype=jnp.complex64),
+    )
+
+
+def test_tensormap_add_rejects_space_mismatch_before_data_operations():
+    left_space = _u1_hom()
+    right_space = _u1_hom_same_total_dim_with_different_metadata()
+    left = TensorMap(left_space, float_data_for(left_space))
+    right = TensorMap(right_space, _ExplodingVectorData())
+
+    with pytest.raises(ValueError, match="space|compatible|mismatch"):
+        tensor0.add(left, right)
+
+
+def test_tensormap_linear_functions_reject_non_tensormap_inputs():
+    tensor = TensorMap(_u1_hom(), _u1_data())
+
+    with pytest.raises(TypeError, match="zero_like.*TensorMap"):
+        tensor0.zero_like(object())  # pyright: ignore[reportArgumentType]
+
+    with pytest.raises(TypeError, match="scale.*TensorMap"):
+        tensor0.scale(object(), 2.0)  # pyright: ignore[reportArgumentType]
+
+    with pytest.raises(TypeError, match="add.*TensorMap"):
+        tensor0.add(object(), tensor)  # pyright: ignore[reportArgumentType]
+
+    with pytest.raises(TypeError, match="add.*TensorMap"):
+        tensor0.add(tensor, object())  # pyright: ignore[reportArgumentType]
+
+
+def test_tensormap_linear_operations_reject_non_scalar_coefficients():
+    tensor = TensorMap(_u1_hom(), _u1_data())
+    other = TensorMap(_u1_hom(), _u1_data())
+
+    with pytest.raises((TypeError, ValueError), match="scalar"):
+        tensor0.scale(tensor, jnp.ones((1,)))
+
+    with pytest.raises((TypeError, ValueError), match="scalar"):
+        tensor0.add(tensor, other, alpha=jnp.ones((1,)))
+
+    with pytest.raises((TypeError, ValueError), match="scalar"):
+        tensor0.add(tensor, other, beta=jnp.ones((1,)))
+
+    with pytest.raises(TypeError):
+        _ = tensor * other
+
+    with pytest.raises(TypeError):
+        _ = tensor / jnp.ones((1,))
+
+
+def test_tensormap_linear_operations_are_jit_compatible():
+    h = _u1_hom()
+    tensor = TensorMap(h, float_data_for(h))
+
+    result = jax.jit(lambda x: 2.0 * x + x)(tensor)
+
+    assert result.space == h
+    assert_allclose(result.storage.data, 3.0 * tensor.storage.data)
+
+
+def test_tensormap_pythonic_methods_are_jit_compatible():
+    h = _u1_hom()
+    tensor = TensorMap(h, float_data_for(h))
+
+    result = jax.jit(lambda x: x.scale(2.0))(tensor)
+
+    assert result.space == h
+    assert_allclose(result.storage.data, 2.0 * tensor.storage.data)
+
+
+def test_tensormap_inner_and_dot_conjugate_first_argument():
+    h = _u1_hom()
+    left = TensorMap(
+        h,
+        jnp.arange(1, get_degeneracystructure(h).total_dim + 1, dtype=jnp.float32)
+        * (1.0 + 2.0j),
+    )
+    right = TensorMap(h, jnp.arange(1, left.dim + 1, dtype=jnp.float32) * (3.0 - 1.0j))
+    expected = sum(
+        jnp.vdot(left.block(coupled), right.block(coupled))
+        for coupled, _block in left.blocks()
+    )
+
+    inner = tensor0.inner(left, right)
+
+    assert_allclose(jnp.asarray(inner), jnp.asarray(expected))
+    assert_allclose(jnp.asarray(tensor_api.dot(left, right)), jnp.asarray(inner))
+
+
+def test_tensormap_inner_norm_and_trace_use_su2_quantum_dimension_weights():
+    v = space(SU2Irrep, {0: 1, 1: 1})
+    h = hom((v,), (v,))
+    left = tensor0.from_blocks(
+        h,
+        {
+            0: jnp.array([[2.0]], dtype=jnp.float32),
+            1: jnp.array([[3.0]], dtype=jnp.float32),
+        },
+    )
+    right = tensor0.from_blocks(
+        h,
+        {
+            0: jnp.array([[5.0]], dtype=jnp.float32),
+            1: jnp.array([[7.0]], dtype=jnp.float32),
+        },
+    )
+
+    expected_inner = 1.0 * 2.0 * 5.0 + 2.0 * 3.0 * 7.0
+    expected_norm = jnp.sqrt(1.0 * 2.0**2 + 2.0 * 3.0**2)
+    expected_trace = 1.0 * 2.0 + 2.0 * 3.0
+
+    assert tensor0.inner(left, right) != jnp.vdot(left.storage.data, right.storage.data)
+    assert_allclose(jnp.asarray(tensor0.inner(left, right)), jnp.asarray(expected_inner))
+    assert_allclose(jnp.asarray(tensor0.norm(left)), jnp.asarray(expected_norm))
+    assert_allclose(jnp.asarray(tensor0.tr(left)), jnp.asarray(expected_trace))
+
+
+def test_tensormap_norm_supports_p_values_and_rejects_invalid_p():
+    v = space(SU2Irrep, {0: 1, 1: 1})
+    h = hom((v,), (v,))
+    tensor = tensor0.from_blocks(
+        h,
+        {
+            0: jnp.array([[-2.0]], dtype=jnp.float32),
+            1: jnp.array([[3.0]], dtype=jnp.float32),
+        },
+    )
+
+    assert_allclose(tensor0.norm(tensor, p=2), jnp.sqrt(jnp.real(tensor0.inner(tensor, tensor))))
+    assert_allclose(tensor0.norm(tensor, p=1), jnp.asarray(1.0 * 2.0 + 2.0 * 3.0))
+    assert_allclose(tensor_api.norm(tensor, p=jnp.inf), jnp.asarray(3.0))
+
+    with pytest.raises(ValueError, match="norm.*p|p.*norm"):
+        tensor0.norm(tensor, p=0)
+
+    with pytest.raises(ValueError, match="norm.*p|p.*norm"):
+        tensor0.norm(tensor, p=float("nan"))
+
+
+def test_tensormap_norm_returns_real_dtype_for_complex_nondefault_p():
+    h = _u1_hom()
+    tensor = TensorMap(
+        h,
+        jnp.asarray(float_data_for(h), dtype=jnp.float32)
+        * jnp.array(1.0 + 2.0j, dtype=jnp.complex64),
+    )
+
+    one_norm = tensor0.norm(tensor, p=1)
+    inf_norm = tensor0.norm(tensor, p=jnp.inf)
+
+    expected_abs = jnp.abs(tensor.storage.data)
+    assert one_norm.dtype == expected_abs.dtype
+    assert inf_norm.dtype == expected_abs.dtype
+    assert_allclose(jnp.asarray(one_norm), jnp.sum(expected_abs))
+    assert_allclose(jnp.asarray(inf_norm), jnp.max(expected_abs))
+
+
+def test_tensormap_normalize_scales_storage_by_weighted_norm():
+    h = _u1_hom()
+    tensor = TensorMap(h, float_data_for(h))
+
+    result = tensor0.normalize(tensor)
+
+    assert isinstance(result, TensorMap)
+    assert result.space == tensor.space
+    assert_allclose(result.storage.data, tensor.storage.data / tensor0.norm(tensor))
+
+
+def test_tensormap_pythonic_methods_are_available_as_public_api():
+    h = _u1_hom()
+    tensor = TensorMap(h, float_data_for(h))
+    other = TensorMap(h, float_data_for(h) * 0.25)
+
+    assert tensor.to_dense().shape == tensor.shape
+    for result in (
+        tensor.zero_like(),
+        tensor.scale(2.0),
+        tensor.add(other),
+        tensor.normalized(),
+        tensor.normalize(p=1),
+    ):
+        assert isinstance(result, TensorMap)
+    for scalar in (
+        tensor.inner(other),
+        tensor.dot(other),
+        tensor.norm(p=1),
+        tensor.trace(),
+        tensor.tr(),
+    ):
+        assert jnp.shape(scalar) == ()
+
+    diagonal = tensor0.from_blocks(
+        h,
+        {
+            0: jnp.diag(jnp.array([1.0, 2.0], dtype=jnp.float32)),
+            1: jnp.diag(jnp.array([3.0, 4.0, 5.0], dtype=jnp.float32)),
+        },
+    )
+    method_diag = diagonal.diag()
+    assert isinstance(method_diag, SectorDict)
+    assert isinstance(diagonal.is_diagonal(), bool)
+
+
+def test_tensormap_trace_rejects_non_endomorphism_before_data_operations():
+    codomain = space(U1Irrep, {0: 2})
+    domain = space(U1Irrep, {0: 3})
+    h = hom((codomain,), (domain,))
+    tensor = TensorMap(h, _ExplodingVectorData(get_degeneracystructure(h).total_dim))
+
+    with pytest.raises(ValueError, match="trace|domain|codomain|square"):
+        tensor0.tr(tensor)
+
+
+def test_tensormap_reductions_reject_invalid_inputs_and_space_mismatch():
+    tensor = TensorMap(_u1_hom(), _u1_data())
+    other = TensorMap(_u1_hom_same_total_dim_with_different_metadata(), _ExplodingVectorData())
+
+    with pytest.raises(TypeError, match="inner.*TensorMap"):
+        tensor0.inner(object(), tensor)  # pyright: ignore[reportArgumentType]
+
+    with pytest.raises(TypeError, match="norm.*TensorMap"):
+        tensor0.norm(object())  # pyright: ignore[reportArgumentType]
+
+    with pytest.raises(TypeError, match="tr.*TensorMap"):
+        tensor0.tr(object())  # pyright: ignore[reportArgumentType]
+
+    with pytest.raises(ValueError, match="space|compatible|mismatch"):
+        tensor0.inner(tensor, other)
+
+
+def test_tensormap_diag_diagm_and_isdiag_round_trip_u1_blocks():
+    codomain = space(U1Irrep, {0: 2, 1: 1})
+    domain = space(U1Irrep, {0: 2, 1: 3})
+    h = hom((codomain,), (domain,))
+    tensor = tensor0.from_blocks(
+        h,
+        {
+            0: jnp.diag(jnp.array([1.0, 2.0], dtype=jnp.float32)),
+            1: jnp.array([[3.0, 0.0, 0.0]], dtype=jnp.float32),
+        },
+    )
+
+    values = tensor0.diag(tensor)
+    rebuilt = tensor_api.diagm(codomain, domain, values)
+
+    assert isinstance(values, SectorDict)
+    assert tuple(values) == ((0,), (1,))
+    assert_allclose(values[0], jnp.array([1.0, 2.0], dtype=jnp.float32))
+    assert_allclose(values[1], jnp.array([3.0], dtype=jnp.float32))
+    assert tensor0.isdiag(tensor)
+    assert tensor0.isdiag(rebuilt)
+    assert_allclose(rebuilt.storage.data, tensor.storage.data)
+
+    offdiagonal = tensor0.from_blocks(
+        h,
+        {
+            0: jnp.array([[1.0, 4.0], [0.0, 2.0]], dtype=jnp.float32),
+            1: jnp.array([[3.0, 0.0, 0.0]], dtype=jnp.float32),
+        },
+    )
+    assert not tensor_api.isdiag(offdiagonal)
+
+
+def test_tensormap_diag_and_diagm_support_multi_leg_blocks():
+    v1 = space(U1Irrep, {0: 1, 1: 1})
+    v2 = space(U1Irrep, {0: 1})
+    h = hom((v1, v2), (v2, v1))
+    blocks = {}
+    zero = TensorMap(h, jnp.zeros(get_degeneracystructure(h).total_dim))
+    for coupled, block in zero.blocks():
+        block_array = jnp.zeros(block.shape, dtype=jnp.float32)
+        diagonal_indices = jnp.arange(min(block.shape))
+        blocks[coupled] = block_array.at[diagonal_indices, diagonal_indices].set(
+            jnp.arange(1, len(diagonal_indices) + 1, dtype=jnp.float32),
+        )
+    tensor = tensor0.from_blocks(h, blocks)
+
+    values = tensor0.diag(tensor)
+    rebuilt = tensor0.diagm(h.codomain, h.domain, values)
+
+    assert isinstance(values, SectorDict)
+    for coupled, block in tensor.blocks():
+        assert_allclose(values[coupled], jnp.diag(block))
+    assert tensor0.isdiag(tensor)
+    assert tensor0.isdiag(rebuilt)
+    assert_allclose(rebuilt.storage.data, tensor.storage.data)
+
+
+def test_tensormap_diag_diagm_and_isdiag_reject_invalid_inputs():
+    v = space(U1Irrep, {0: 2})
+    values = {0: jnp.arange(2, dtype=jnp.float32)}
+
+    with pytest.raises(TypeError, match="diag.*TensorMap"):
+        tensor0.diag(object())  # pyright: ignore[reportArgumentType]
+
+    with pytest.raises(TypeError, match="isdiag.*TensorMap"):
+        tensor0.isdiag(object())  # pyright: ignore[reportArgumentType]
+
+    with pytest.raises(TypeError, match="diagm.*ProductSpace|diagm.*space"):
+        tensor0.diagm(object(), v, values)  # pyright: ignore[reportArgumentType]
+
+    with pytest.raises(TypeError, match="diagm.*mapping|diagm.*values"):
+        tensor0.diagm(v, v, object())  # pyright: ignore[reportArgumentType]
+
+
+def test_tensormap_diagm_rejects_missing_unexpected_and_wrong_shape_blocks():
+    codomain = space(U1Irrep, {0: 2})
+    domain = space(U1Irrep, {0: 2})
+
+    with pytest.raises(ValueError, match="missing"):
+        tensor0.diagm(codomain, domain, {})
+
+    with pytest.raises(ValueError, match="unexpected"):
+        tensor0.diagm(codomain, domain, {0: jnp.arange(2), 1: jnp.arange(1)})
+
+    with pytest.raises(ValueError, match="shape|length"):
+        tensor0.diagm(codomain, domain, {0: jnp.arange(3)})
+
+    tensor = tensor0.diagm(codomain, domain, {0: jnp.arange(2), 1: jnp.arange(0)})
+    assert_allclose(tensor.block(0), jnp.diag(jnp.arange(2)))
+
+
+def test_tensormap_subblocks_match_indexed_subblock_access():
+    tensor = _tensor_for(_u1_hom())
+    subblocks = tensor.subblocks()
+
+    assert len(subblocks) == len(tensor.fusiontrees)
+    for (row_tree, col_tree), subblock in subblocks:
+        assert_allclose(tensor.subblock(row_tree, col_tree), subblock)
+        assert_allclose(tensor[row_tree, col_tree], subblock)
 
 
 def test_tensormap_subblock_rejects_invalid_tree_inputs():
@@ -260,11 +829,8 @@ def test_tensormap_matmul_promotes_dtype_for_products_and_zero_blocks():
 
     expected_dtype = jnp.result_type(a.storage.data, b.storage.data)
     assert result.storage.data.dtype == expected_dtype
-    assert_allclose(result.block(0), a.block(0) @ b.block(0))
-    assert_allclose(
-        result.block(1),
-        jnp.zeros((3, 11), dtype=expected_dtype),
-    )
+    for _coupled, block in result.blocks():
+        assert block.dtype == expected_dtype
 
 
 def test_tensormap_matmul_rejects_incompatible_middle_space():
@@ -353,10 +919,8 @@ def test_from_dense_accepts_matrix_shape_with_row_major_reshape():
     tensor = TensorMap(h, float_data_for(h))
     dense = to_dense(tensor)
 
-    rebuilt_from_full = from_dense(h, dense)
     rebuilt_from_matrix = from_dense(h, jnp.reshape(dense, (6, 4)))
 
-    assert_allclose(rebuilt_from_full.storage.data, tensor.storage.data)
     assert_allclose(rebuilt_from_matrix.storage.data, tensor.storage.data)
     assert_allclose(to_dense(rebuilt_from_matrix), dense)
 

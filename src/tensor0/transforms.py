@@ -9,7 +9,7 @@ import jax.numpy as jnp
 
 from . import _native
 from .structure.layout import get_degeneracystructure
-from .tensor._subblocks import (
+from .tensor._blocks import (
     gather_strided as _gather_strided,
     gather_subblock as _gather_subblock,
     scatter_add_strided as _scatter_add_strided,

@@ -6,7 +6,7 @@ import jax.numpy as jnp
 
 from .. import _native
 from ..structure.layout import get_degeneracystructure, get_sectorstructure
-from ._subblocks import (
+from ._blocks import (
     gather_subblock as _gather_subblock,
     scatter_add_subblock as _scatter_add_subblock,
 )

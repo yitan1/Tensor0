@@ -24,7 +24,7 @@ def test_diagonal_tensormap_rejects_invalid_domain_and_storage_shape():
     bond = space(U1Irrep, {0: 2, 1: 3})
 
     with pytest.raises(TypeError, match="DiagonalTensorMap requires an ElementarySpace"):
-        DiagonalTensorMap(hom((bond,), (bond,)), jnp.arange(5))
+        DiagonalTensorMap(hom((bond,), (bond,)), jnp.arange(5))  # pyright: ignore[reportArgumentType]
 
     with pytest.raises(ValueError, match="expected.*5.*actual.*4"):
         DiagonalTensorMap(bond, jnp.arange(4))

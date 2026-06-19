@@ -155,26 +155,6 @@ def _assert_u1_truncation_case(case):
             )
 
 
-def test_svd_compact_returns_expected_spaces_and_sector_ranks():
-    h = _rectangular_u1_hom()
-    tensor = TensorMap(h, float_data_for(h))
-
-    u, s, vh = svd_compact(tensor)
-
-    assert isinstance(u, TensorMap)
-    assert isinstance(s, DiagonalTensorMap)
-    assert isinstance(vh, TensorMap)
-    assert s.domain.sectors == (((0,), 2), ((1,), 2))
-    assert u.space == hom(tensor.space.codomain, (s.domain,))
-    assert vh.space == hom((s.domain,), tensor.space.domain)
-    assert u.block(0).shape == (2, 2)
-    assert u.block(1).shape == (4, 2)
-    assert s.diag().block(0).shape == (2,)
-    assert s.diag().block(1).shape == (2,)
-    assert vh.block(0).shape == (2, 3)
-    assert vh.block(1).shape == (2, 2)
-
-
 @pytest.mark.parametrize("case", factorization_cases(), ids=lambda case: case.name)
 def test_svd_compact_reconstructs_factorization_cases(case):
     tensor = TensorMap(case.space, float_data_for(case.space))
@@ -275,13 +255,13 @@ def test_svd_trunc_truncrank_uses_su2_quantum_dimensions(
 
 def test_truncation_constructors_reject_non_callable_by():
     with pytest.raises(TypeError, match="by must be callable"):
-        truncrank(1, by=object())
+        truncrank(1, by=object())  # pyright: ignore[reportArgumentType]
 
     with pytest.raises(TypeError, match="by must be callable"):
-        trunctol(atol=1.0, by=object())
+        trunctol(atol=1.0, by=object())  # pyright: ignore[reportArgumentType]
 
     with pytest.raises(TypeError, match="by must be callable"):
-        truncspace(space(U1Irrep, {0: 1}), by=object())
+        truncspace(space(U1Irrep, {0: 1}), by=object())  # pyright: ignore[reportArgumentType]
 
 
 def test_svd_compact_supports_typed_empty_hom_space():

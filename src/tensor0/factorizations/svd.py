@@ -5,9 +5,10 @@ import jax.numpy as jnp
 
 from .. import _native
 from ..structure.spaces import hom
+from ..tensor._blocks import pack_blocks
 from ..tensor.diagonal import DiagonalTensorMap
 from ..tensor.sector_vector import _packed_sector_values
-from ..tensor.tensor_map import TensorMap, _packed_vector_from_blocks
+from ..tensor.tensor_map import TensorMap
 from .truncation import _ensure_strategy, _find_truncated_indices, _truncation_error, notrunc
 
 
@@ -43,7 +44,7 @@ def svd_compact(tensor: TensorMap) -> tuple[TensorMap, DiagonalTensorMap, Tensor
     return (
         TensorMap(
             u_space,
-            _packed_vector_from_blocks(u_space, u_blocks, dtype=tensor_dtype),
+            pack_blocks(u_space, u_blocks, dtype=tensor_dtype),
         ),
         DiagonalTensorMap(
             bond,
@@ -51,7 +52,7 @@ def svd_compact(tensor: TensorMap) -> tuple[TensorMap, DiagonalTensorMap, Tensor
         ),
         TensorMap(
             vh_space,
-            _packed_vector_from_blocks(vh_space, vh_blocks, dtype=tensor_dtype),
+            pack_blocks(vh_space, vh_blocks, dtype=tensor_dtype),
         ),
     )
 
@@ -91,7 +92,7 @@ def svd_trunc(
     return (
         TensorMap(
             u_space,
-            _packed_vector_from_blocks(u_space, u_blocks, dtype=tensor_dtype),
+            pack_blocks(u_space, u_blocks, dtype=tensor_dtype),
         ),
         DiagonalTensorMap(
             bond,
@@ -99,7 +100,7 @@ def svd_trunc(
         ),
         TensorMap(
             vh_space,
-            _packed_vector_from_blocks(vh_space, vh_blocks, dtype=tensor_dtype),
+            pack_blocks(vh_space, vh_blocks, dtype=tensor_dtype),
         ),
         error,
     )

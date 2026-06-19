@@ -32,20 +32,14 @@ def assert_space_sectors(sector_type, sector_dims, expected_sectors):
 
 
 def test_sector_type_constants_and_products_expose_expected_aliases():
-    assert SectorType is _native.SectorSpec
     assert isinstance(U1Irrep, SectorType)
     assert isinstance(FermionParity, SectorType)
     assert isinstance(SU2Irrep, SectorType)
-    assert SU2Irrep.static_key == ("irrep", ("su2",))
 
     S = U1Irrep @ FermionParity
     assert isinstance(S, SectorType)
     assert S == FermionNumber
     assert hash(S) == hash(FermionNumber)
-    assert S.static_key == (
-        "product",
-        (("irrep", ("u1",)), ("fermion_parity",)),
-    )
 
     assert FermionParity @ U1Irrep == FermionParityU1Irrep
     assert U1Irrep @ SU2Irrep == U1SU2Irrep

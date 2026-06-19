@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Generic, TypeVar
+from typing import Any, Generic, TypeVar
 
 from .sector_type import SectorKey, _normalize_sector_key
 
@@ -17,7 +17,7 @@ class SectorDict(Mapping[tuple[int, ...], _Value], Generic[_Value]):
 
     def __init__(
         self,
-        items: Iterable[tuple[SectorKey, _Value]] | Mapping[SectorKey, _Value] = (),
+        items: Iterable[tuple[object, _Value]] | Mapping[Any, _Value] = (),
     ) -> None:
         ordered_items: list[tuple[tuple[int, ...], _Value]] = []
         seen: set[tuple[int, ...]] = set()

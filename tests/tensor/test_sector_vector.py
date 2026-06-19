@@ -201,19 +201,14 @@ def test_sectorvector_pytree_children_are_storage_data():
     assert rebuilt.sectors == vector.sectors
     assert rebuilt.storage.data is vector.storage.data
 
-
-def test_sectorvector_tree_unflatten_reconstructs_sectorvector():
-    bond = space(U1Irrep, {0: 2, 1: 3})
-    vector = SectorVector(bond, jnp.arange(5, dtype=jnp.float32))
-    _leaves, treedef = jax.tree_util.tree_flatten(vector)
     new_data = jnp.arange(5, dtype=jnp.float32) + 20
 
-    rebuilt = jax.tree_util.tree_unflatten(treedef, (new_data,))
+    rebuilt_with_new_data = jax.tree_util.tree_unflatten(treedef, (new_data,))
 
-    assert isinstance(rebuilt, SectorVector)
-    assert rebuilt.sector_type == vector.sector_type
-    assert rebuilt.sectors == vector.sectors
-    assert rebuilt.storage.data is new_data
+    assert isinstance(rebuilt_with_new_data, SectorVector)
+    assert rebuilt_with_new_data.sector_type == vector.sector_type
+    assert rebuilt_with_new_data.sectors == vector.sectors
+    assert rebuilt_with_new_data.storage.data is new_data
 
     with pytest.raises(ValueError, match="storage data length mismatch"):
         jax.tree_util.tree_unflatten(treedef, (jnp.arange(4),))
