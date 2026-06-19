@@ -7,15 +7,21 @@ import pytest
 from tensor0 import (
     DiagonalTensorMap,
     FermionParity,
+    SectorVector,
     SU2Irrep,
     TensorMap,
     U1Irrep,
     _native,
+    cond,
+    get_degeneracystructure,
     hom,
     notrunc,
+    rank,
     space,
     svd_compact,
+    svd_full,
     svd_trunc,
+    svd_vals,
     truncerror,
     truncrank,
     truncspace,
@@ -61,6 +67,13 @@ def _known_su2_truncation_tensor():
     h = hom((v,), (w,))
     data = jnp.array([4.0, 5.0], dtype=jnp.float32)
     return TensorMap(h, data)
+
+
+def _svd_infimum_bond_for(tensor: TensorMap):
+    return _native.infimum_space(
+        _native.fuse(tensor.space.codomain),
+        _native.fuse(tensor.space.domain),
+    )
 
 
 def _u1_truncation_cases():
@@ -161,14 +174,67 @@ def test_svd_compact_reconstructs_factorization_cases(case):
 
     u, s, vh = svd_compact(tensor)
     reconstructed = u @ s.to_tensor_map() @ vh
-    expected_bond = _native.infimum_space(
-        _native.fuse(tensor.space.codomain),
-        _native.fuse(tensor.space.domain),
-    )
+    expected_bond = _svd_infimum_bond_for(tensor)
 
     assert s.domain == expected_bond
     assert u.space == hom(tensor.space.codomain, (expected_bond,))
     assert vh.space == hom((expected_bond,), tensor.space.domain)
+    assert_tensormap_blocks_allclose(reconstructed, tensor)
+
+
+@pytest.mark.parametrize("case", factorization_cases(), ids=lambda case: case.name)
+def test_svd_vals_returns_infimum_sector_vector(case):
+    tensor = TensorMap(case.space, float_data_for(case.space))
+    expected_bond = _svd_infimum_bond_for(tensor)
+
+    values = svd_vals(tensor)
+
+    assert isinstance(values, SectorVector)
+    assert values.sectors == expected_bond.sectors
+    for sector, _dim in expected_bond.sectors:
+        expected_values = jnp.linalg.svd(tensor.block(sector), compute_uv=False)
+        assert_allclose(values.block(sector), expected_values)
+
+
+def test_rank_and_cond_use_blockwise_singular_values():
+    tensor = _known_su2_truncation_tensor()
+
+    assert int(rank(tensor)) == 4
+    assert int(rank(tensor, atol=4.5)) == 3
+    assert_allclose(cond(tensor), jnp.asarray(5.0 / 4.0, dtype=jnp.float32))
+
+
+def test_rank_and_cond_handle_zero_and_invalid_inputs():
+    h = _rectangular_u1_hom()
+    tensor = TensorMap(h, jnp.zeros((get_degeneracystructure(h).total_dim,)))
+
+    assert int(rank(tensor)) == 0
+    assert bool(jnp.isinf(cond(tensor)))
+
+    with pytest.raises(TypeError, match="rank.*TensorMap"):
+        rank(object())  # pyright: ignore[reportArgumentType]
+
+    with pytest.raises(ValueError, match="atol.*non-negative"):
+        rank(tensor, atol=-1.0)
+
+    with pytest.raises(NotImplementedError, match="p=2"):
+        cond(tensor, p=1)
+
+
+@pytest.mark.parametrize("case", factorization_cases(), ids=lambda case: case.name)
+def test_svd_full_uses_fused_spaces_and_reconstructs(case):
+    tensor = TensorMap(case.space, float_data_for(case.space))
+    fused_codomain = _native.fuse(tensor.space.codomain)
+    fused_domain = _native.fuse(tensor.space.domain)
+
+    u, s, vh = svd_full(tensor)
+    reconstructed = u @ s @ vh
+
+    assert isinstance(s, TensorMap)
+    assert not isinstance(s, DiagonalTensorMap)
+    assert u.space == hom(tensor.space.codomain, (fused_codomain,))
+    assert s.space == hom((fused_codomain,), (fused_domain,))
+    assert vh.space == hom((fused_domain,), tensor.space.domain)
     assert_tensormap_blocks_allclose(reconstructed, tensor)
 
 
@@ -270,10 +336,7 @@ def test_svd_compact_supports_typed_empty_hom_space():
     tensor = TensorMap(h, jnp.array([3.0], dtype=jnp.float32))
 
     u, s, vh = svd_compact(tensor)
-    expected_bond = _native.infimum_space(
-        _native.fuse(h.codomain),
-        _native.fuse(h.domain),
-    )
+    expected_bond = _svd_infimum_bond_for(tensor)
     reconstructed = u @ s.to_tensor_map() @ vh
 
     assert s.domain == expected_bond

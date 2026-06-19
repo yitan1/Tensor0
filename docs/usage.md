@@ -65,6 +65,7 @@ ordered_blocks = tensor.blocks()
 
 `TensorMap` stores a `HomSpace` and a 1D `VectorStorage`-compatible JAX array.
 The storage length must match `get_degeneracystructure(h).total_dim`.
+Use `scalar(tensor)` only for scalar TensorMaps with no visible indices.
 
 ## Composition
 
@@ -98,9 +99,11 @@ assert c.space == hom((v,), (x,))
 
 ## SVD
 
-`svd_compact(...)` returns `(u, s, vh)`, where `s` is a `DiagonalTensorMap`.
-Use `s.to_tensor_map()` when reconstruction needs the regular dense block
-composition path.
+`svd_vals(...)` returns singular values as a `SectorVector` over the infimum
+bond space. `svd_compact(...)` returns `(u, s, vh)`, where `s` is a
+`DiagonalTensorMap`. Use `s.to_tensor_map()` when reconstruction needs the
+regular dense block composition path. `svd_full(...)` returns `(u, s, vh)` over
+the fused codomain/domain spaces, with `s` as a regular `TensorMap`.
 
 ```python
 import jax.numpy as jnp
@@ -124,6 +127,8 @@ reconstructed = u @ s.to_tensor_map() @ vh
 
 Use `svd_trunc(...)` with `notrunc()`, `truncrank(...)`, `trunctol(...)`,
 `truncspace(...)`, or `truncerror(...)` when a truncation strategy is needed.
+`rank(...)` and `cond(...)` are SVD-derived helpers; `rank` counts sector ranks
+with quantum-dimension weighting, and `cond` currently supports the 2-norm.
 
 ## Transforms
 

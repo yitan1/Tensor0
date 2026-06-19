@@ -54,6 +54,18 @@ class TensorMap:
         object.__setattr__(self, "space", space)
         object.__setattr__(self, "storage", vector_storage)
 
+    def __repr__(self) -> str:
+        dtype = getattr(self.storage.data, "dtype", "unknown")
+        return (
+            "TensorMap("
+            f"numout={self.numout}, "
+            f"numin={self.numin}, "
+            f"dims={self.dims}, "
+            f"blocks={len(self.blocksectors)}, "
+            f"dtype={dtype}"
+            ")"
+        )
+
     def copy(self) -> TensorMap:
         return TensorMap(self.space, jnp.array(self.storage.data, copy=True))
 
@@ -248,6 +260,11 @@ class TensorMap:
 
         return to_dense(self)
 
+    def scalar(self) -> Array:
+        if self.space.numind != 0:
+            raise ValueError("scalar() requires a TensorMap with no visible indices")
+        return self.storage.data[0]
+
     def permute(self, p: tuple[tuple[int, ...], tuple[int, ...]]) -> TensorMap:
         from ..transforms import permute
 
@@ -349,6 +366,38 @@ class TensorMap:
 
     def normalize(self, p: SupportsFloat = 2) -> TensorMap:
         return self.scale(1 / self.norm(p=p))
+
+    def adjoint(self) -> TensorMap:
+        result_space = hom(self.space.domain, self.space.codomain)
+        block_arrays = SectorDict(
+            (coupled, jnp.conj(block.T)) for coupled, block in self.blocks()
+        )
+        return TensorMap(
+            result_space,
+            _pack_blocks(
+                result_space,
+                block_arrays,
+                dtype=None,
+            ),
+        )
+
+    def real(self) -> TensorMap:
+        if not jnp.issubdtype(self.storage.data.dtype, jnp.complexfloating):
+            return self
+        return TensorMap(self.space, jnp.real(self.storage.data))
+
+    def imag(self) -> TensorMap:
+        if not jnp.issubdtype(self.storage.data.dtype, jnp.complexfloating):
+            return self.zero_like()
+        return TensorMap(self.space, jnp.imag(self.storage.data))
+
+    def complex(self) -> TensorMap:
+        if jnp.issubdtype(self.storage.data.dtype, jnp.complexfloating):
+            return self
+        return TensorMap(
+            self.space,
+            self.storage.data.astype(jnp.result_type(self.storage.data, 1j)),
+        )
 
     def trace(self) -> Array:
         return self.tr()
@@ -556,6 +605,31 @@ def norm(tensor: TensorMap, p: SupportsFloat = 2) -> Array:
 def normalize(tensor: TensorMap, p: SupportsFloat = 2) -> TensorMap:
     _require_tensor_map(tensor, "normalize")
     return tensor.normalize(p=p)
+
+
+def scalar(tensor: TensorMap) -> Array:
+    _require_tensor_map(tensor, "scalar")
+    return tensor.scalar()
+
+
+def adjoint(tensor: TensorMap) -> TensorMap:
+    _require_tensor_map(tensor, "adjoint")
+    return tensor.adjoint()
+
+
+def real(tensor: TensorMap) -> TensorMap:
+    _require_tensor_map(tensor, "real")
+    return tensor.real()
+
+
+def imag(tensor: TensorMap) -> TensorMap:
+    _require_tensor_map(tensor, "imag")
+    return tensor.imag()
+
+
+def complex(tensor: TensorMap) -> TensorMap:
+    _require_tensor_map(tensor, "complex")
+    return tensor.complex()
 
 
 def tr(tensor: TensorMap) -> Array:
