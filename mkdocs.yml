@@ -1,0 +1,14 @@
+site_name: Tensor0
+site_description: Rust-backed metadata and JAX-backed symmetric TensorMap core
+repo_url: https://github.com/yitan1/Tensor0
+docs_dir: docs
+site_dir: site
+theme:
+  name: readthedocs
+nav:
+  - Home: index.md
+  - Usage: usage.md
+  - Concepts: concepts.md
+  - API: api.md
+  - Examples: examples.md
+  - Development: development.md

@@ -2,6 +2,8 @@
 
 Tensor0 is an experimental symmetric tensor library with Rust-backed structural metadata and JAX-backed tensor storage; it is not yet a production-ready tensor-network framework, and the API may change while the core representation is being developed.
 
+Documentation: <https://yitan1.github.io/Tensor0/>
+
 ## Features
 
 - Built-in sector families including `U1Irrep`, `SU2Irrep`, cyclic `ZNIrrep`
@@ -45,7 +47,7 @@ uv run maturin develop
 Run the Python and Rust tests:
 
 ```bash
-uv run pytest tests/python -q
+uv run pytest tests -q
 cargo test
 ```
 

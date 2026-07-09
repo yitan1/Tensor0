@@ -16,7 +16,7 @@ Run the current verification set with:
 
 ```bash
 cargo test
-uv run pytest tests/python -q
+uv run pytest tests -q
 ```
 
 ## Supported Sector Families
