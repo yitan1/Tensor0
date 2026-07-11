@@ -11,6 +11,8 @@ from tensor0 import (
     permute,
     repartition,
     space,
+    tensorcontract,
+    twist,
 )
 from tests.cases import assert_allclose, float_data_for
 
@@ -38,6 +40,20 @@ def _u1_composition_tensors():
     return (
         TensorMap(a_space, float_data_for(a_space)),
         TensorMap(b_space, float_data_for(b_space)),
+    )
+
+
+def _partial_contraction_tensors():
+    a = space(U1Irrep, {0: 2})
+    x = space(U1Irrep, {0: 3})
+    c = space(U1Irrep, {0: 4})
+    b = space(U1Irrep, {0: 5})
+    d = space(U1Irrep, {0: 6})
+    left_space = hom((a, x), (c,))
+    right_space = hom((x.dual(), b), (d,))
+    return (
+        TensorMap(left_space, float_data_for(left_space)),
+        TensorMap(right_space, float_data_for(right_space)),
     )
 
 
@@ -110,6 +126,37 @@ def test_jitted_composition_uses_storage_as_dynamic_leaf():
     assert_allclose(result.storage.data, expected.storage.data)
 
 
+def test_jitted_tensorcontract_matches_eager_with_static_metadata():
+    left, right = _partial_contraction_tensors()
+    axes = ((1,), (0,))
+    output = (((0, 0), (1, 1)), ((0, 2), (1, 2)))
+    trace_count = 0
+
+    @jax.jit
+    def contract(a, b):
+        nonlocal trace_count
+        trace_count += 1
+        return tensorcontract(a, b, axes=axes, output=output)
+
+    result = contract(left, right)
+    expected = tensorcontract(left, right, axes=axes, output=output)
+
+    updated_left = TensorMap(left.space, left.storage.data * 2.0 + 1.0)
+    updated_result = contract(updated_left, right)
+    updated_expected = tensorcontract(
+        updated_left,
+        right,
+        axes=axes,
+        output=output,
+    )
+
+    assert result.space == expected.space
+    assert_allclose(result.storage.data, expected.storage.data)
+    assert updated_result.space == updated_expected.space
+    assert_allclose(updated_result.storage.data, updated_expected.storage.data)
+    assert trace_count == 1
+
+
 def test_value_and_grad_through_jitted_composition_loss():
     left, right = _u1_composition_tensors()
     right_blocks = dict(right.blocks())
@@ -118,6 +165,31 @@ def test_value_and_grad_through_jitted_composition_loss():
     def loss(a):
         composed = a @ right
         return jnp.sum(composed.storage.data * composed.storage.data)
+
+    value, gradient = jax.value_and_grad(loss)(left)
+
+    assert value.shape == ()
+    assert isinstance(gradient, TensorMap)
+    assert gradient.space == left.space
+    for coupled, left_block in left.blocks():
+        right_block = right_blocks[coupled]
+        expected = 2.0 * (left_block @ right_block) @ right_block.T
+        assert_allclose(gradient.block(coupled), expected)
+
+
+def test_value_and_grad_through_jitted_tensorcontract_matches_composition_rule():
+    left, right = _u1_composition_tensors()
+    right_blocks = dict(right.blocks())
+
+    @jax.jit
+    def loss(a):
+        result = tensorcontract(
+            a,
+            right,
+            axes=((1,), (0,)),
+            output=(((0, 0),), ((1, 1),)),
+        )
+        return jnp.sum(result.storage.data * result.storage.data)
 
     value, gradient = jax.value_and_grad(loss)(left)
 
@@ -196,3 +268,18 @@ def test_jitted_grad_through_fermion_odd_swap_phase():
     assert isinstance(gradient, TensorMap)
     assert gradient.space == tensor.space
     assert_allclose(gradient.storage.data, jnp.array([-1.0], dtype=jnp.float32))
+
+
+def test_grad_through_twist_preserves_fermionic_subblock_sign():
+    factor = space(FermionParity, {0: 1, 1: 1})
+    target = hom((factor,), (factor,))
+    tensor = TensorMap(target, jnp.array([2.0, 3.0]))
+    weights = jnp.array([5.0, 7.0])
+
+    def loss(value):
+        return jnp.sum(twist(value, 0).storage.data * weights)
+
+    gradient = jax.jit(jax.grad(loss))(tensor)
+
+    assert gradient.space == target
+    assert_allclose(gradient.storage.data, jnp.array([5.0, -7.0]))

@@ -78,6 +78,13 @@ pub trait Sector: Clone + Eq + Ord + std::hash::Hash + Sized + 'static {
         frobenius_schur_phase_from_f_symbol(a)
     }
     fn r_symbol(a: &Self, b: &Self, c: &Self) -> f64;
+    fn twist(&self) -> f64 {
+        let dim = self.quantum_dim() as f64;
+        self.fusion_outputs(self)
+            .into_iter()
+            .map(|output| output.quantum_dim() as f64 / dim * Self::r_symbol(self, self, &output))
+            .sum()
+    }
     fn fusion_tensor(a: &Self, b: &Self, c: &Self) -> Result<Array4<f64>> {
         unique_fusion_tensor::<Self>(a, b, c)
     }
@@ -107,6 +114,7 @@ pub trait SectorTuple: Clone + Eq + Ord + std::hash::Hash + Sized + 'static {
     fn n_symbol(a: &Self, b: &Self, c: &Self) -> usize;
     fn f_symbol(a: &Self, b: &Self, c: &Self, d: &Self, e: &Self, f: &Self) -> Result<f64>;
     fn r_symbol(a: &Self, b: &Self, c: &Self) -> f64;
+    fn twist(&self) -> f64;
     fn fusion_tensor(a: &Self, b: &Self, c: &Self) -> Result<Array4<f64>>;
     fn sort_key(&self) -> SortKey;
     fn sort_index(&self) -> Result<u128>;

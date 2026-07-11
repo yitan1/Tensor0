@@ -21,8 +21,9 @@ use space::{
     PyHomSpace, PyProductSpace,
 };
 use transform::{
-    tree_braider, tree_transposer, PyAbelianTransformData, PyGenericTransformData,
-    PyGenericTransformStructures, PyTreeTransformer,
+    tree_braider, tree_transposer, twist_is_trivial, twist_subblock_factors,
+    PyAbelianTransformData, PyGenericTransformData, PyGenericTransformStructures,
+    PyTreeTransformer,
 };
 
 #[pyfunction]
@@ -62,6 +63,8 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(fusiontree_pair_tensor, module)?)?;
     module.add_function(wrap_pyfunction!(product_axes, module)?)?;
     module.add_function(wrap_pyfunction!(product_dims, module)?)?;
+    module.add_function(wrap_pyfunction!(twist_is_trivial, module)?)?;
+    module.add_function(wrap_pyfunction!(twist_subblock_factors, module)?)?;
     module.add_function(wrap_pyfunction!(tree_braider, module)?)?;
     module.add_function(wrap_pyfunction!(tree_transposer, module)?)?;
 

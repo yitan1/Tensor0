@@ -7,8 +7,8 @@ import jax.numpy as jnp
 from .. import _native
 from ..structure.layout import get_degeneracystructure, get_sectorstructure
 from ._blocks import (
-    gather_subblock as _gather_subblock,
-    scatter_add_subblock as _scatter_add_subblock,
+    add_to_subblock as _add_to_subblock,
+    read_subblock as _read_subblock,
 )
 from .tensor_map import TensorMap
 
@@ -29,7 +29,7 @@ def to_dense(tensor: TensorMap) -> jnp.ndarray:
     ):
         axes = _tree_pair_axes(tensor.space, row_tree, col_tree)
         coeff = _pair_coeff(row_tree, col_tree, storage)
-        reduced = _gather_subblock(storage, subblock)
+        reduced = _read_subblock(storage, subblock)
         dense_block = _interleaved_product(reduced, coeff, axes)
         dense = dense.at[_dense_slices(axes)].add(dense_block)
 
@@ -62,7 +62,7 @@ def from_dense(
         dense_slice = dense[_dense_slices(axes)]
         reduced = _project_interleaved(dense_slice, coeff, axes)
         reduced = reduced / space.codomain.sector_spec.quantum_dim(row_tree.coupled)
-        storage = _scatter_add_subblock(storage, subblock, reduced)
+        storage = _add_to_subblock(storage, subblock, reduced)
 
     result = TensorMap(space, storage)
     tolerance = _default_tol(dense.dtype) if tol is None else tol

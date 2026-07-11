@@ -25,7 +25,7 @@ from ..structure.spaces import (
 )
 from ._blocks import (
     find_subblock_structure as _find_subblock_structure,
-    gather_subblock as _gather_subblock,
+    read_subblock as _read_subblock,
     normalize_fusiontree_pair_key as _normalize_fusiontree_pair_key,
     pack_blocks as _pack_blocks,
     pack_complete_blocks as _pack_complete_blocks,
@@ -232,7 +232,7 @@ class TensorMap:
         self, row_tree: _native.FusionTree, col_tree: _native.FusionTree
     ) -> Array:
         subblock = _find_subblock_structure(self.space, row_tree, col_tree)
-        return _gather_subblock(self.storage.data, subblock)
+        return _read_subblock(self.storage.data, subblock)
 
     def subblocks(
         self,
@@ -243,7 +243,7 @@ class TensorMap:
         return tuple(
             (
                 pair,
-                _gather_subblock(self.storage.data, subblock),
+                _read_subblock(self.storage.data, subblock),
             )
             for pair, subblock in zip(
                 sectorstructure.fusiontree_pairs,

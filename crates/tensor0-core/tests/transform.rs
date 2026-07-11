@@ -1,9 +1,11 @@
+use tensor0_core::layout::build_sector_structure;
 use tensor0_core::sector::{
     FermionNumber, FermionParity, FermionParitySU2Irrep, FermionParityU1SU2Irrep, SU2Irrep, Sector,
     U1Irrep, U1SU2Irrep,
 };
 use tensor0_core::space::{GradedSpace, HomSpace, ProductSpace};
 use tensor0_core::transform::{
+    reweighting::{twist_is_trivial, twist_subblock_factors},
     tree_permuter, tree_transposer, AbelianTransformData, GenericTransformData, TreeTransformer,
 };
 
@@ -48,6 +50,23 @@ fn one_factor(space: GradedSpace<U1Irrep>) -> ProductSpace<U1Irrep> {
 
 fn empty_product() -> ProductSpace<U1Irrep> {
     ProductSpace::new(vec![])
+}
+
+fn parity_hom_space() -> HomSpace<FermionParity> {
+    let factor = GradedSpace::new(vec![(parity(0), 1), (parity(1), 1)], false).unwrap();
+    HomSpace::from_factor_spaces(vec![factor.clone()], vec![factor])
+}
+
+fn classified_twist_subblock_factors<I: Sector>(
+    space: &HomSpace<I>,
+    indices: &[usize],
+    inv: bool,
+) -> tensor0_core::error::Result<Option<Vec<f64>>> {
+    if twist_is_trivial(space, indices)? {
+        return Ok(None);
+    }
+    let structure = build_sector_structure(space)?;
+    twist_subblock_factors(space, &structure, indices, inv)
 }
 
 fn expect_abelian(transformer: &TreeTransformer) -> &[AbelianTransformData] {
@@ -393,4 +412,73 @@ fn product_sector_transformer_uses_componentwise_symbols() {
 
         assert_generic_permute_scalar_coeff(src, &[1], &[0], braid * bend);
     }
+}
+
+#[test]
+fn twist_subblock_factors_follow_canonical_fusion_tree_pair_order() {
+    let space = parity_hom_space();
+
+    assert_eq!(
+        classified_twist_subblock_factors(&space, &[0], false).unwrap(),
+        Some(vec![1.0, -1.0])
+    );
+    assert_eq!(
+        classified_twist_subblock_factors(&space, &[1], false).unwrap(),
+        Some(vec![1.0, -1.0])
+    );
+    assert_eq!(
+        classified_twist_subblock_factors(&space, &[0, 1], false).unwrap(),
+        None
+    );
+    assert_eq!(
+        classified_twist_subblock_factors(&space, &[0], true).unwrap(),
+        Some(vec![1.0, -1.0])
+    );
+}
+
+#[test]
+fn twist_subblock_factors_distinguish_row_and_column_visible_indices() {
+    let odd = || GradedSpace::new(vec![(parity(1), 1)], false).unwrap();
+    let even = || GradedSpace::new(vec![(parity(0), 1)], false).unwrap();
+    let space = HomSpace::from_factor_spaces(vec![odd(), odd()], vec![even(), even()]);
+
+    assert_eq!(
+        classified_twist_subblock_factors(&space, &[0], false).unwrap(),
+        Some(vec![-1.0])
+    );
+    assert_eq!(
+        classified_twist_subblock_factors(&space, &[2], false).unwrap(),
+        None
+    );
+}
+
+#[test]
+fn twist_is_trivial_classifies_empty_and_bosonic_twists_as_identity() {
+    let parity_space = parity_hom_space();
+    assert!(twist_is_trivial(&parity_space, &[]).unwrap());
+
+    let factor = GradedSpace::new(vec![(u1(0), 1), (u1(1), 1)], false).unwrap();
+    let u1_space = HomSpace::from_factor_spaces(vec![factor.clone()], vec![factor]);
+    assert!(twist_is_trivial(&u1_space, &[0]).unwrap());
+
+    let even = GradedSpace::new(vec![(parity(0), 1)], false).unwrap();
+    let even_space = HomSpace::from_factor_spaces(vec![even.clone()], vec![even]);
+    assert!(twist_is_trivial(&even_space, &[0]).unwrap());
+}
+
+#[test]
+fn twist_metadata_rejects_invalid_visible_indices() {
+    let space = parity_hom_space();
+
+    let out_of_range = classified_twist_subblock_factors(&space, &[2], false).unwrap_err();
+    assert!(out_of_range.to_string().contains("out of range"));
+
+    let duplicate = classified_twist_subblock_factors(&space, &[0, 0], false).unwrap_err();
+    assert!(duplicate.to_string().contains("unique"));
+
+    let odd = GradedSpace::new(vec![(parity(1), 1)], false).unwrap();
+    let other_space = HomSpace::from_factor_spaces(vec![odd.clone()], vec![odd]);
+    let other_structure = build_sector_structure(&other_space).unwrap();
+    let mismatch = twist_subblock_factors(&space, &other_structure, &[0], false).unwrap_err();
+    assert!(mismatch.to_string().contains("does not match"));
 }

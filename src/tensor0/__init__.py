@@ -21,6 +21,7 @@ from ._native import (
     Z3Irrep,
     Z4Irrep,
 )
+from .contractions import tensorcontract
 from .factorizations import (
     cond,
     notrunc,
@@ -75,6 +76,7 @@ from .transforms import (
     permute,
     repartition,
     transpose,
+    twist,
 )
 
 __version__ = "0.0.0"
@@ -136,9 +138,11 @@ __all__ = [
     "svd_full",
     "svd_trunc",
     "svd_vals",
+    "tensorcontract",
     "to_dense",
     "transpose",
     "tr",
+    "twist",
     "truncerror",
     "truncrank",
     "truncspace",

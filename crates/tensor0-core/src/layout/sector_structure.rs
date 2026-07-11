@@ -15,7 +15,7 @@ pub struct SectorStructure<I: Sector> {
 }
 
 impl<I: Sector> SectorStructure<I> {
-    pub(super) fn matches_space(&self, space: &HomSpace<I>) -> bool {
+    pub(crate) fn matches_space(&self, space: &HomSpace<I>) -> bool {
         self.sector_key == sector_structure_key(space)
     }
 

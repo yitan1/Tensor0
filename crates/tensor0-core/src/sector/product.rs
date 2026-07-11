@@ -101,6 +101,10 @@ impl<T: SectorTuple> Sector for ProductSector<T> {
         T::r_symbol(&a.sectors, &b.sectors, &c.sectors)
     }
 
+    fn twist(&self) -> f64 {
+        self.sectors.twist()
+    }
+
     fn fusion_tensor(a: &Self, b: &Self, c: &Self) -> Result<Array4<f64>> {
         T::fusion_tensor(&a.sectors, &b.sectors, &c.sectors)
     }
@@ -242,6 +246,14 @@ macro_rules! impl_sector_tuple {
                     symbol *= $name::r_symbol(&a.$index, &b.$index, &c.$index);
                 )+
                 symbol
+            }
+
+            fn twist(&self) -> f64 {
+                let mut value = 1.0;
+                $(
+                    value *= self.$index.twist();
+                )+
+                value
             }
 
             fn fusion_tensor(a: &Self, b: &Self, c: &Self) -> Result<Array4<f64>> {

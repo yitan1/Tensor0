@@ -5,4 +5,4 @@ pub(crate) use degeneracy::{
     _build_degeneracystructure_from_sectorstructure, build_degeneracystructure, PyBlockStructure,
     PyDegeneracyStructure, PySubblockStructure,
 };
-pub(crate) use sector_structure::{build_sectorstructure, PySectorStructure};
+pub(crate) use sector_structure::{build_sectorstructure, PySectorStructure, SectorStructureInner};

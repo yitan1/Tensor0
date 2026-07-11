@@ -4,11 +4,15 @@ use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyTuple};
 use pyo3::IntoPyObject;
 use tensor0_core::transform::{
+    reweighting::{
+        twist_is_trivial as core_twist_is_trivial,
+        twist_subblock_factors as core_twist_subblock_factors,
+    },
     tree_braider as core_tree_braider, tree_transposer as core_tree_transposer,
     AbelianTransformData, GenericTransformData, GenericTransformStructures, TreeTransformer,
 };
 
-use crate::layout::PySubblockStructure;
+use crate::layout::{PySectorStructure, PySubblockStructure, SectorStructureInner};
 use crate::pyconv::{core_err, tuple_from_usizes};
 use crate::space::{HomSpaceInner, PyHomSpace};
 
@@ -69,6 +73,94 @@ macro_rules! dispatch_matching_homspaces {
             )),
         }
     };
+}
+
+macro_rules! dispatch_twist_is_trivial {
+    ($space:expr, $indices:expr) => {
+        match $space.inner() {
+            HomSpaceInner::U1Irrep(hom) => core_twist_is_trivial(hom, $indices),
+            HomSpaceInner::SU2Irrep(hom) => core_twist_is_trivial(hom, $indices),
+            HomSpaceInner::FermionParity(hom) => core_twist_is_trivial(hom, $indices),
+            HomSpaceInner::Z2Irrep(hom) => core_twist_is_trivial(hom, $indices),
+            HomSpaceInner::Z3Irrep(hom) => core_twist_is_trivial(hom, $indices),
+            HomSpaceInner::Z4Irrep(hom) => core_twist_is_trivial(hom, $indices),
+            HomSpaceInner::U1IrrepFermionParity(hom) => core_twist_is_trivial(hom, $indices),
+            HomSpaceInner::FermionParityU1Irrep(hom) => core_twist_is_trivial(hom, $indices),
+            HomSpaceInner::U1SU2Irrep(hom) => core_twist_is_trivial(hom, $indices),
+            HomSpaceInner::FermionParitySU2Irrep(hom) => core_twist_is_trivial(hom, $indices),
+            HomSpaceInner::FermionParityU1SU2Irrep(hom) => core_twist_is_trivial(hom, $indices),
+        }
+    };
+}
+
+macro_rules! dispatch_twist_subblock_factors {
+    ($space:expr, $structure:expr, $indices:expr, $inv:expr) => {
+        match ($space.inner(), &$structure.inner) {
+            (HomSpaceInner::U1Irrep(hom), SectorStructureInner::U1Irrep(structure)) => {
+                core_twist_subblock_factors(hom, structure, $indices, $inv).map_err(core_err)
+            }
+            (HomSpaceInner::SU2Irrep(hom), SectorStructureInner::SU2Irrep(structure)) => {
+                core_twist_subblock_factors(hom, structure, $indices, $inv).map_err(core_err)
+            }
+            (HomSpaceInner::FermionParity(hom), SectorStructureInner::FermionParity(structure)) => {
+                core_twist_subblock_factors(hom, structure, $indices, $inv).map_err(core_err)
+            }
+            (HomSpaceInner::Z2Irrep(hom), SectorStructureInner::Z2Irrep(structure)) => {
+                core_twist_subblock_factors(hom, structure, $indices, $inv).map_err(core_err)
+            }
+            (HomSpaceInner::Z3Irrep(hom), SectorStructureInner::Z3Irrep(structure)) => {
+                core_twist_subblock_factors(hom, structure, $indices, $inv).map_err(core_err)
+            }
+            (HomSpaceInner::Z4Irrep(hom), SectorStructureInner::Z4Irrep(structure)) => {
+                core_twist_subblock_factors(hom, structure, $indices, $inv).map_err(core_err)
+            }
+            (
+                HomSpaceInner::U1IrrepFermionParity(hom),
+                SectorStructureInner::U1IrrepFermionParity(structure),
+            ) => core_twist_subblock_factors(hom, structure, $indices, $inv).map_err(core_err),
+            (
+                HomSpaceInner::FermionParityU1Irrep(hom),
+                SectorStructureInner::FermionParityU1Irrep(structure),
+            ) => core_twist_subblock_factors(hom, structure, $indices, $inv).map_err(core_err),
+            (HomSpaceInner::U1SU2Irrep(hom), SectorStructureInner::U1SU2Irrep(structure)) => {
+                core_twist_subblock_factors(hom, structure, $indices, $inv).map_err(core_err)
+            }
+            (
+                HomSpaceInner::FermionParitySU2Irrep(hom),
+                SectorStructureInner::FermionParitySU2Irrep(structure),
+            ) => core_twist_subblock_factors(hom, structure, $indices, $inv).map_err(core_err),
+            (
+                HomSpaceInner::FermionParityU1SU2Irrep(hom),
+                SectorStructureInner::FermionParityU1SU2Irrep(structure),
+            ) => core_twist_subblock_factors(hom, structure, $indices, $inv).map_err(core_err),
+            _ => Err(PyValueError::new_err(
+                "sectorstructure must match HomSpace sector family",
+            )),
+        }
+    };
+}
+
+#[pyfunction]
+pub(crate) fn twist_is_trivial(
+    space: PyRef<'_, PyHomSpace>,
+    indices: Vec<usize>,
+) -> PyResult<bool> {
+    dispatch_twist_is_trivial!(space, &indices).map_err(core_err)
+}
+
+#[pyfunction(signature = (space, sectorstructure, indices, inv=false))]
+pub(crate) fn twist_subblock_factors(
+    py: Python<'_>,
+    space: PyRef<'_, PyHomSpace>,
+    sectorstructure: PyRef<'_, PySectorStructure>,
+    indices: Vec<usize>,
+    inv: bool,
+) -> PyResult<Option<Py<PyAny>>> {
+    let factors = dispatch_twist_subblock_factors!(space, sectorstructure, &indices, inv)?;
+    match factors {
+        Some(factors) => Ok(Some(PyTuple::new(py, factors)?.into_any().unbind())),
+        None => Ok(None),
+    }
 }
 
 #[pyfunction]

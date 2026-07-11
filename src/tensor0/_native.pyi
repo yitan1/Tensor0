@@ -203,6 +203,16 @@ def product_axes(
     sectors: Iterable[SectorKey],
 ) -> tuple[tuple[int, int, int, int], ...]: ...
 def product_dims(product_space: ProductSpace) -> tuple[int, ...]: ...
+def twist_is_trivial(
+    space: HomSpace,
+    indices: tuple[int, ...],
+) -> bool: ...
+def twist_subblock_factors(
+    space: HomSpace,
+    sectorstructure: SectorStructure,
+    indices: tuple[int, ...],
+    inv: bool = False,
+) -> tuple[float, ...] | None: ...
 def tree_braider(
     src_space: HomSpace,
     dst_space: HomSpace,

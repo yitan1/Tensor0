@@ -1,3 +1,5 @@
+pub mod reweighting;
+
 mod tree_transformers;
 
 pub use tree_transformers::{

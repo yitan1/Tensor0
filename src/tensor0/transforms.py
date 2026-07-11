@@ -8,12 +8,13 @@ from jax import Array
 import jax.numpy as jnp
 
 from . import _native
-from .structure.layout import get_degeneracystructure
+from .structure.layout import get_degeneracystructure, get_sectorstructure
 from .tensor._blocks import (
-    gather_strided as _gather_strided,
-    gather_subblock as _gather_subblock,
-    scatter_add_strided as _scatter_add_strided,
-    scatter_add_subblock as _scatter_add_subblock,
+    add_to_strided as _add_to_strided,
+    add_to_subblock as _add_to_subblock,
+    read_strided as _read_strided,
+    read_subblock as _read_subblock,
+    scale_subblock as _scale_subblock,
 )
 from .tensor.tensor_map import TensorMap
 
@@ -111,6 +112,43 @@ def repartition(
 
     p_codomain, p_domain = _repartition_p(tensor.space, nout, nin)
     return _transpose_normalized(tensor, p_codomain, p_domain)
+
+
+def twist(
+    tensor: TensorMap,
+    indices: int | tuple[int, ...],
+    inv: bool = False,
+) -> TensorMap:
+    if not isinstance(tensor, TensorMap):
+        raise TypeError("twist() requires a TensorMap")
+    normalized = _normalize_twist_indices(indices, tensor.space.numind)
+    if not isinstance(inv, bool):
+        raise TypeError("twist() requires inv to be a bool")
+    if not normalized:
+        return tensor
+
+    if _native.twist_is_trivial(tensor.space, normalized):
+        return tensor
+
+    sectorstructure = get_sectorstructure(tensor.space)
+    factors = _native.twist_subblock_factors(
+        tensor.space,
+        sectorstructure,
+        normalized,
+        inv,
+    )
+    if factors is None:
+        return tensor
+
+    degeneracystructure = get_degeneracystructure(tensor.space)
+    data = tensor.storage.data
+    subblocks = degeneracystructure.subblockstructure
+    for factor, subblock in zip(factors, subblocks, strict=True):
+        if factor == 1:
+            continue
+        coefficient = jnp.asarray(factor, dtype=data.dtype)
+        data = _scale_subblock(data, subblock, coefficient)
+    return TensorMap(tensor.space, data)
 
 
 def _treebraider(
@@ -227,10 +265,10 @@ def _add_abelian_transform(
     alpha: Array,
 ) -> Array:
     for entry in data:
-        block = _gather_subblock(source, entry.src, result.dtype)
+        block = _read_subblock(source, entry.src, result.dtype)
         block = _transpose_block(block, p)
         coeff = jnp.asarray(entry.coeff, dtype=result.dtype)
-        result = _scatter_add_subblock(result, entry.dst, alpha * coeff * block)
+        result = _add_to_subblock(result, entry.dst, alpha * coeff * block)
     return result
 
 
@@ -260,7 +298,7 @@ def _add_generic_transform(
 
         src_sizes = tuple(entry.src.sizes)
         src_rows = tuple(
-            _gather_strided(source, src_sizes, strides, offset, result.dtype).reshape(-1)
+            _read_strided(source, src_sizes, strides, offset, result.dtype).reshape(-1)
             for strides, offset in entry.src.strides_offsets
         )
         buffer_src = jnp.stack(src_rows, axis=0)
@@ -269,7 +307,7 @@ def _add_generic_transform(
         for row, (strides, offset) in enumerate(entry.dst.strides_offsets):
             block = buffer_dst[row, :].reshape(src_sizes)
             block = _transpose_block(block, p)
-            result = _scatter_add_strided(
+            result = _add_to_strided(
                 result,
                 tuple(entry.dst.sizes),
                 strides,
@@ -289,7 +327,7 @@ def _add_single_generic_transform(
 ) -> Array:
     src_strides, src_offset = entry.src.strides_offsets[0]
     dst_strides, dst_offset = entry.dst.strides_offsets[0]
-    block = _gather_strided(
+    block = _read_strided(
         source,
         tuple(entry.src.sizes),
         src_strides,
@@ -297,7 +335,7 @@ def _add_single_generic_transform(
         result.dtype,
     )
     block = _transpose_block(block, p)
-    return _scatter_add_strided(
+    return _add_to_strided(
         result,
         tuple(entry.dst.sizes),
         dst_strides,
@@ -368,6 +406,25 @@ def _normalize_axis_tuple(value: object, op_name: str) -> tuple[int, ...]:
             raise TypeError(f"{op_name}() requires p to contain integer visible indices")
         indices.append(index)
     return tuple(indices)
+
+
+def _normalize_twist_indices(indices: object, rank: int) -> tuple[int, ...]:
+    if isinstance(indices, bool):
+        raise TypeError("twist() requires integer visible indices")
+    if isinstance(indices, int):
+        indices = (indices,)
+    elif not isinstance(indices, tuple):
+        raise TypeError("twist() requires one integer or a tuple of integers")
+
+    if any(isinstance(index, bool) or not isinstance(index, int) for index in indices):
+        raise TypeError("twist() requires integer visible indices")
+    if any(index < 0 for index in indices):
+        raise ValueError("twist visible indices must be non-negative")
+    if any(index >= rank for index in indices):
+        raise ValueError(f"twist visible indices are out of range for rank {rank}")
+    if len(set(indices)) != len(indices):
+        raise ValueError("twist visible indices must be unique")
+    return indices
 
 
 def _normalize_levels(space: _native.HomSpace, levels: object) -> tuple[int, ...]:

@@ -39,12 +39,12 @@ def subblock_indices(subblock: _native.SubblockStructure) -> Array:
     )
 
 
-def gather_subblock(
+def read_subblock(
     storage: object,
     subblock: _native.SubblockStructure,
     dtype: jnp.dtype | None = None,
 ) -> Array:
-    return gather_strided(
+    return read_strided(
         storage,
         tuple(subblock.sizes),
         tuple(subblock.strides),
@@ -53,17 +53,31 @@ def gather_subblock(
     )
 
 
-def scatter_add_subblock(
+def add_to_subblock(
     storage: Array,
     subblock: _native.SubblockStructure,
     value: Array,
 ) -> Array:
-    return scatter_add_strided(
+    return add_to_strided(
         storage,
         tuple(subblock.sizes),
         tuple(subblock.strides),
         subblock.offset,
         value,
+    )
+
+
+def scale_subblock(
+    storage: Array,
+    subblock: _native.SubblockStructure,
+    factor: Array,
+) -> Array:
+    return scale_strided(
+        storage,
+        tuple(subblock.sizes),
+        tuple(subblock.strides),
+        subblock.offset,
+        factor,
     )
 
 
@@ -83,7 +97,7 @@ def _is_contiguous_strided(
     return True
 
 
-def gather_strided(
+def read_strided(
     storage: object,
     sizes: tuple[int, ...],
     strides: tuple[int, ...],
@@ -101,7 +115,7 @@ def gather_strided(
     return block.reshape(sizes)
 
 
-def scatter_add_strided(
+def add_to_strided(
     storage: Array,
     sizes: tuple[int, ...],
     strides: tuple[int, ...],
@@ -112,6 +126,19 @@ def scatter_add_strided(
         size = math.prod(sizes)
         return storage.at[offset : offset + size].add(value.reshape(-1))
     return storage.at[strided_indices(sizes, strides, offset)].add(value.reshape(-1))
+
+
+def scale_strided(
+    storage: Array,
+    sizes: tuple[int, ...],
+    strides: tuple[int, ...],
+    offset: int,
+    factor: Array,
+) -> Array:
+    if _is_contiguous_strided(sizes, strides) and not _is_traced_array(offset):
+        size = math.prod(sizes)
+        return storage.at[offset : offset + size].multiply(factor)
+    return storage.at[strided_indices(sizes, strides, offset)].multiply(factor)
 
 
 def pack_complete_blocks(

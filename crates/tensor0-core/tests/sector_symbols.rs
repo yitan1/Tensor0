@@ -213,6 +213,16 @@ fn frobenius_schur_phase_matches_tensorkit_conventions() {
 }
 
 #[test]
+fn sector_twists_match_tensorkit_symmetric_conventions() {
+    assert_close(u1(3).twist(), 1.0);
+    assert_close(su2(1).twist(), 1.0);
+    assert_close(fp(0).twist(), 1.0);
+    assert_close(fp(1).twist(), -1.0);
+    assert_close(fermion_number(0, 1).twist(), -1.0);
+    assert_close(u1_su2(0, 1).twist(), 1.0);
+}
+
+#[test]
 fn su2_f_symbol_matches_fusion_tensor_contraction() {
     let (h, singlet, triplet) = su2_half_channels();
     let three_half = su2(3);

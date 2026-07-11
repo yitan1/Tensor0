@@ -16,11 +16,11 @@ use crate::space::{HomSpaceInner, PyHomSpace};
 #[pyclass(name = "SectorStructure", skip_from_py_object)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PySectorStructure {
-    pub(in crate::layout) inner: SectorStructureInner,
+    pub(crate) inner: SectorStructureInner,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(in crate::layout) enum SectorStructureInner {
+pub(crate) enum SectorStructureInner {
     U1Irrep(SectorStructure<U1Irrep>),
     SU2Irrep(SectorStructure<SU2Irrep>),
     FermionParity(SectorStructure<FermionParity>),
