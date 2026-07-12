@@ -143,8 +143,10 @@ def _cache_set(
 
 
 def _sectorstructure_key(space: _native.HomSpace) -> tuple[object, ...]:
+    """Return the exact key shared by sector-layout and transform caches."""
     return (
         "hom-sectorstructure",
+        space.codomain.sector_spec.static_key,
         tuple(_factor_sectorstructure_key(factor) for factor in space.codomain),
         tuple(_factor_sectorstructure_key(factor) for factor in space.domain),
     )

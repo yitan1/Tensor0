@@ -60,6 +60,15 @@ def zero_based_float_data_for(space_obj: HomSpace):
     return jnp.arange(total_dim, dtype=jnp.float32)
 
 
+def is_contiguous_subblock(subblock):
+    expected_stride = 1
+    for size, stride in zip(reversed(subblock.sizes), reversed(subblock.strides)):
+        if size != 1 and stride != expected_stride:
+            return False
+        expected_stride *= size
+    return True
+
+
 def assert_allclose(left, right):
     assert left.shape == right.shape
     assert bool(jnp.allclose(left, right, rtol=1e-5, atol=1e-6))

@@ -21,9 +21,8 @@ use space::{
     PyHomSpace, PyProductSpace,
 };
 use transform::{
-    tree_braider, tree_transposer, twist_is_trivial, twist_subblock_factors,
-    PyAbelianTransformData, PyGenericTransformData, PyGenericTransformStructures,
-    PyTreeTransformer,
+    trace_transformer, tree_braider, tree_transposer, twist_is_trivial, twist_subblock_factors,
+    PyAbelianTransformData, PyGenericTransformData, PyTreeTransformer,
 };
 
 #[pyfunction]
@@ -46,7 +45,6 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyTreeTransformer>()?;
     module.add_class::<PyAbelianTransformData>()?;
     module.add_class::<PyGenericTransformData>()?;
-    module.add_class::<PyGenericTransformStructures>()?;
     module.add_function(wrap_pyfunction!(native_version, module)?)?;
     module.add_function(wrap_pyfunction!(make_space, module)?)?;
     module.add_function(wrap_pyfunction!(make_product_space, module)?)?;
@@ -65,6 +63,7 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(product_dims, module)?)?;
     module.add_function(wrap_pyfunction!(twist_is_trivial, module)?)?;
     module.add_function(wrap_pyfunction!(twist_subblock_factors, module)?)?;
+    module.add_function(wrap_pyfunction!(trace_transformer, module)?)?;
     module.add_function(wrap_pyfunction!(tree_braider, module)?)?;
     module.add_function(wrap_pyfunction!(tree_transposer, module)?)?;
 

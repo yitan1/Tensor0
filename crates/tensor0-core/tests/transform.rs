@@ -6,7 +6,9 @@ use tensor0_core::sector::{
 use tensor0_core::space::{GradedSpace, HomSpace, ProductSpace};
 use tensor0_core::transform::{
     reweighting::{twist_is_trivial, twist_subblock_factors},
-    tree_permuter, tree_transposer, AbelianTransformData, GenericTransformData, TreeTransformer,
+    trace_transformer, tree_permuter as build_tree_permuter,
+    tree_transposer as build_tree_transposer, AbelianTransformData, GenericTransformData,
+    TreeTransformer,
 };
 
 fn u1(charge2: i64) -> U1Irrep {
@@ -48,7 +50,7 @@ fn one_factor(space: GradedSpace<U1Irrep>) -> ProductSpace<U1Irrep> {
     ProductSpace::new(vec![space])
 }
 
-fn empty_product() -> ProductSpace<U1Irrep> {
+fn empty_product<I: Sector>() -> ProductSpace<I> {
     ProductSpace::new(vec![])
 }
 
@@ -69,6 +71,123 @@ fn classified_twist_subblock_factors<I: Sector>(
     twist_subblock_factors(space, &structure, indices, inv)
 }
 
+fn trace_metadata<I: Sector>(
+    src: &HomSpace<I>,
+    dst: &HomSpace<I>,
+) -> tensor0_core::error::Result<Vec<(usize, usize, f64)>> {
+    let src_structure = build_sector_structure(src)?;
+    let dst_structure = build_sector_structure(dst)?;
+    trace_metadata_from_structures(src, dst, &src_structure, &dst_structure)
+}
+
+fn trace_metadata_from_structures<I: Sector>(
+    src: &HomSpace<I>,
+    dst: &HomSpace<I>,
+    src_structure: &tensor0_core::layout::SectorStructure<I>,
+    dst_structure: &tensor0_core::layout::SectorStructure<I>,
+) -> tensor0_core::error::Result<Vec<(usize, usize, f64)>> {
+    let p_codomain = (0..src.numout()).collect::<Vec<_>>();
+    let p_domain = (src.numout()..src.numind()).collect::<Vec<_>>();
+    let transformer = composed_trace_transformer(
+        src,
+        dst,
+        src_structure,
+        dst_structure,
+        &p_codomain,
+        &p_domain,
+    )?;
+
+    let mut entries = match transformer {
+        TreeTransformer::Abelian(data) => data
+            .into_iter()
+            .map(|entry| (entry.src, entry.dst, entry.coeff))
+            .collect(),
+        TreeTransformer::Generic(groups) => {
+            let mut entries = Vec::new();
+            for group in groups {
+                for (row, dst) in group.dst_indices.iter().enumerate() {
+                    for (column, src) in group.src_indices.iter().enumerate() {
+                        let coefficient = group.transform[[row, column]];
+                        if coefficient != 0.0 {
+                            entries.push((*src, *dst, coefficient));
+                        }
+                    }
+                }
+            }
+            entries
+        }
+    };
+    entries.sort_by_key(|(src, dst, _)| (*src, *dst));
+    Ok(entries)
+}
+
+fn composed_trace_transformer<I: Sector>(
+    src: &HomSpace<I>,
+    dst: &HomSpace<I>,
+    src_structure: &tensor0_core::layout::SectorStructure<I>,
+    dst_structure: &tensor0_core::layout::SectorStructure<I>,
+    p_codomain: &[usize],
+    p_domain: &[usize],
+) -> tensor0_core::error::Result<TreeTransformer> {
+    let canonical = src.permute(p_codomain, p_domain)?;
+    let canonical_structure = if &canonical == src {
+        src_structure.clone()
+    } else {
+        build_sector_structure(&canonical)?
+    };
+    let basis_transformer = build_tree_permuter(
+        src,
+        &canonical,
+        src_structure,
+        &canonical_structure,
+        p_codomain,
+        p_domain,
+    )?;
+    trace_transformer(
+        &canonical,
+        dst,
+        &canonical_structure,
+        dst_structure,
+        &basis_transformer,
+    )
+}
+
+fn tree_permuter<I: Sector>(
+    src: &HomSpace<I>,
+    dst: &HomSpace<I>,
+    p_codomain: &[usize],
+    p_domain: &[usize],
+) -> tensor0_core::error::Result<TreeTransformer> {
+    let src_structure = build_sector_structure(src)?;
+    let dst_structure = build_sector_structure(dst)?;
+    build_tree_permuter(
+        src,
+        dst,
+        &src_structure,
+        &dst_structure,
+        p_codomain,
+        p_domain,
+    )
+}
+
+fn tree_transposer<I: Sector>(
+    src: &HomSpace<I>,
+    dst: &HomSpace<I>,
+    p_codomain: &[usize],
+    p_domain: &[usize],
+) -> tensor0_core::error::Result<TreeTransformer> {
+    let src_structure = build_sector_structure(src)?;
+    let dst_structure = build_sector_structure(dst)?;
+    build_tree_transposer(
+        src,
+        dst,
+        &src_structure,
+        &dst_structure,
+        p_codomain,
+        p_domain,
+    )
+}
+
 fn expect_abelian(transformer: &TreeTransformer) -> &[AbelianTransformData] {
     let TreeTransformer::Abelian(data) = transformer else {
         panic!("expected Abelian transformer");
@@ -83,33 +202,20 @@ fn expect_generic(transformer: &TreeTransformer) -> &[GenericTransformData] {
     data
 }
 
-fn assert_abelian_subblocks(
-    data: &[AbelianTransformData],
-    coeff: f64,
-    src_sizes: &[usize],
-    src_strides: &[usize],
-    dst_sizes: &[usize],
-    dst_strides: &[usize],
-) {
-    assert!(!data.is_empty());
-    assert!(data.iter().all(|m| m.coeff == coeff));
-    assert!(data.iter().all(|m| m.src.sizes == src_sizes));
-    assert!(data.iter().all(|m| m.src.strides == src_strides));
-    assert!(data.iter().all(|m| m.src.offset == 0));
-    assert!(data.iter().all(|m| m.dst.sizes == dst_sizes));
-    assert!(data.iter().all(|m| m.dst.strides == dst_strides));
-    assert!(data.iter().all(|m| m.dst.offset == 0));
+fn assert_single_abelian_mapping(data: &[AbelianTransformData], coeff: f64) {
+    assert_eq!(data.len(), 1);
+    assert_eq!(data[0].coeff, coeff);
+    assert_eq!(data[0].src, 0);
+    assert_eq!(data[0].dst, 0);
 }
 
 fn assert_single_generic_scalar_block(data: &[GenericTransformData], expected_coeff: f64) {
     assert_eq!(data.len(), 1);
     let block = &data[0];
-    assert_eq!(block.basis_transform.shape(), &[1, 1]);
-    assert_close(block.basis_transform[[0, 0]], expected_coeff);
-    assert_eq!(block.src.sizes, vec![1, 1]);
-    assert_eq!(block.dst.sizes, vec![1, 1]);
-    assert_eq!(block.src.strides_offsets, vec![(vec![1, 1], 0)]);
-    assert_eq!(block.dst.strides_offsets, vec![(vec![1, 1], 0)]);
+    assert_eq!(block.transform.shape(), &[1, 1]);
+    assert_close(block.transform[[0, 0]], expected_coeff);
+    assert_eq!(block.src_indices, vec![0]);
+    assert_eq!(block.dst_indices, vec![0]);
 }
 
 fn assert_abelian_permute_coeff<I: Sector>(
@@ -156,6 +262,78 @@ fn tree_transformer_rejects_incompatible_destination_for_permutation() {
 }
 
 #[test]
+fn tree_transformer_rejects_incompatible_cached_sector_layouts() {
+    let factor = GradedSpace::new(vec![(u1(0), 1)], false).unwrap();
+    let src = HomSpace::new(one_factor(factor.clone()), one_factor(factor));
+    let dst = src.permute(&[1], &[0]).unwrap();
+    let src_structure = build_sector_structure(&src).unwrap();
+    let dst_structure = build_sector_structure(&dst).unwrap();
+
+    let other = GradedSpace::new(vec![(u1(1), 1)], false).unwrap();
+    let wrong_src = HomSpace::new(one_factor(other.clone()), one_factor(other));
+    let wrong_src_structure = build_sector_structure(&wrong_src).unwrap();
+    let err = build_tree_permuter(&src, &dst, &wrong_src_structure, &dst_structure, &[1], &[0])
+        .unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "source sectorstructure does not match source HomSpace sector structure",
+    );
+
+    let wrong_dst = wrong_src.permute(&[1], &[0]).unwrap();
+    let wrong_dst_structure = build_sector_structure(&wrong_dst).unwrap();
+    let err = build_tree_permuter(&src, &dst, &src_structure, &wrong_dst_structure, &[1], &[0])
+        .unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "destination sectorstructure does not match destination HomSpace sector structure",
+    );
+}
+
+#[test]
+fn tree_transformer_reuses_sector_layout_across_degeneracy_dimensions() {
+    let cached_half = GradedSpace::new(vec![(su2(1), 1)], false).unwrap();
+    let target_half = GradedSpace::new(vec![(su2(1), 3)], false).unwrap();
+    let source = |half: &GradedSpace<SU2Irrep>| {
+        HomSpace::new(
+            ProductSpace::new(vec![half.clone(), half.clone(), half.clone(), half.clone()]),
+            empty_product::<SU2Irrep>(),
+        )
+    };
+    let cached_src = source(&cached_half);
+    let cached_dst = cached_src.permute(&[1, 2, 3], &[0]).unwrap();
+    let target_src = source(&target_half);
+    let target_dst = target_src.permute(&[1, 2, 3], &[0]).unwrap();
+    let cached_src_structure = build_sector_structure(&cached_src).unwrap();
+    let cached_dst_structure = build_sector_structure(&cached_dst).unwrap();
+    let target_src_structure = build_sector_structure(&target_src).unwrap();
+    let target_dst_structure = build_sector_structure(&target_dst).unwrap();
+
+    let reused = build_tree_transposer(
+        &target_src,
+        &target_dst,
+        &cached_src_structure,
+        &cached_dst_structure,
+        &[1, 2, 3],
+        &[0],
+    )
+    .unwrap();
+    let direct = build_tree_transposer(
+        &target_src,
+        &target_dst,
+        &target_src_structure,
+        &target_dst_structure,
+        &[1, 2, 3],
+        &[0],
+    )
+    .unwrap();
+
+    assert_eq!(reused, direct);
+    let data = expect_generic(&reused);
+    assert_eq!(data[0].src_indices, vec![0, 1]);
+    assert_eq!(data[0].dst_indices, vec![0, 1]);
+}
+
+#[test]
 fn u1_unique_fusion_transformers_preserve_subblock_contracts() {
     {
         let v = GradedSpace::new(vec![(u1(0), 2), (u1(1), 3)], false).unwrap();
@@ -182,24 +360,10 @@ fn u1_unique_fusion_transformers_preserve_subblock_contracts() {
 
         assert_eq!(dst.codomain().factors(), &[w]);
         assert_eq!(dst.domain().factors(), &[v.dual()]);
-        assert_abelian_subblocks(
-            expect_abelian(&transformer),
-            1.0,
-            &[2, 3],
-            &[3, 1],
-            &[3, 2],
-            &[2, 1],
-        );
+        assert_single_abelian_mapping(expect_abelian(&transformer), 1.0);
 
         let transposer = tree_transposer(&src, &dst, &[1], &[0]).unwrap();
-        assert_abelian_subblocks(
-            expect_abelian(&transposer),
-            1.0,
-            &[2, 3],
-            &[3, 1],
-            &[3, 2],
-            &[2, 1],
-        );
+        assert_single_abelian_mapping(expect_abelian(&transposer), 1.0);
     }
 
     {
@@ -215,14 +379,7 @@ fn u1_unique_fusion_transformers_preserve_subblock_contracts() {
 
         assert_eq!(dst.codomain().factors(), &[x.dual(), w.clone()]);
         assert_eq!(dst.domain().factors(), &[v.dual()]);
-        assert_abelian_subblocks(
-            expect_abelian(&transformer),
-            1.0,
-            &[2, 3, 5],
-            &[15, 5, 1],
-            &[5, 3, 2],
-            &[6, 2, 1],
-        );
+        assert_single_abelian_mapping(expect_abelian(&transformer), 1.0);
     }
 }
 
@@ -296,19 +453,13 @@ fn su2_simplefusion_identity_keeps_unit_coefficients() {
 
     assert!(!data.is_empty());
     for block in data {
-        assert_eq!(
-            block.basis_transform.nrows(),
-            block.dst.strides_offsets.len()
-        );
-        assert_eq!(
-            block.basis_transform.ncols(),
-            block.src.strides_offsets.len()
-        );
-        assert_eq!(block.basis_transform.nrows(), block.basis_transform.ncols());
-        for row in 0..block.basis_transform.nrows() {
-            for col in 0..block.basis_transform.ncols() {
+        assert_eq!(block.transform.nrows(), block.dst_indices.len());
+        assert_eq!(block.transform.ncols(), block.src_indices.len());
+        assert_eq!(block.transform.nrows(), block.transform.ncols());
+        for row in 0..block.transform.nrows() {
+            for col in 0..block.transform.ncols() {
                 let expected = if row == col { 1.0 } else { 0.0 };
-                assert!((block.basis_transform[[row, col]] - expected).abs() < 1.0e-12);
+                assert!((block.transform[[row, col]] - expected).abs() < 1.0e-12);
             }
         }
     }
@@ -349,11 +500,13 @@ fn su2_transpose_matches_tensorkit_multi_fmove_coefficients() {
 
     assert_eq!(data.len(), 1);
     let block = &data[0];
-    assert_eq!(block.basis_transform.shape(), &[2, 2]);
-    assert!((block.basis_transform[[0, 0]] + (1.0_f64 / 8.0).sqrt()).abs() < 1.0e-12);
-    assert!((block.basis_transform[[0, 1]] - (3.0_f64 / 8.0).sqrt()).abs() < 1.0e-12);
-    assert!((block.basis_transform[[1, 0]] - (3.0_f64 / 8.0).sqrt()).abs() < 1.0e-12);
-    assert!((block.basis_transform[[1, 1]] - (1.0_f64 / 8.0).sqrt()).abs() < 1.0e-12);
+    assert_eq!(block.transform.shape(), &[2, 2]);
+    assert_eq!(block.src_indices, vec![0, 1]);
+    assert_eq!(block.dst_indices, vec![0, 1]);
+    assert!((block.transform[[0, 0]] + (1.0_f64 / 8.0).sqrt()).abs() < 1.0e-12);
+    assert!((block.transform[[0, 1]] - (3.0_f64 / 8.0).sqrt()).abs() < 1.0e-12);
+    assert!((block.transform[[1, 0]] - (3.0_f64 / 8.0).sqrt()).abs() < 1.0e-12);
+    assert!((block.transform[[1, 1]] - (1.0_f64 / 8.0).sqrt()).abs() < 1.0e-12);
 }
 
 #[test]
@@ -376,9 +529,9 @@ fn u1_su2_recoupling_keeps_product_block_structure() {
 
     assert_eq!(data.len(), 1);
     let block = &data[0];
-    assert_eq!(block.basis_transform.shape(), &[2, 2]);
-    assert_eq!(block.src.strides_offsets.len(), 2);
-    assert_eq!(block.dst.strides_offsets.len(), 2);
+    assert_eq!(block.transform.shape(), &[2, 2]);
+    assert_eq!(block.src_indices, vec![0, 1]);
+    assert_eq!(block.dst_indices, vec![0, 1]);
 }
 
 #[test]
@@ -412,6 +565,225 @@ fn product_sector_transformer_uses_componentwise_symbols() {
 
         assert_generic_permute_scalar_coeff(src, &[1], &[0], braid * bend);
     }
+}
+
+#[test]
+fn u1_trace_metadata_omits_nonmatching_tails_and_coalesces_destinations() {
+    let factor = GradedSpace::new(vec![(u1(0), 1), (u1(1), 1)], false).unwrap();
+    let product = || ProductSpace::new(vec![factor.clone(), factor.clone()]);
+    let src = HomSpace::new(product(), product());
+    let dst = HomSpace::new(one_factor(factor.clone()), one_factor(factor));
+
+    assert_eq!(
+        trace_metadata(&src, &dst).unwrap(),
+        vec![(0, 0, 1.0), (1, 1, 1.0), (4, 0, 1.0), (5, 1, 1.0),],
+    );
+}
+
+#[test]
+fn u1_trace_metadata_splits_multiple_canonical_tail_pairs() {
+    let open = GradedSpace::new(vec![(u1(2), 1)], false).unwrap();
+    let first_trace = GradedSpace::new(vec![(u1(1), 1)], false).unwrap();
+    let second_trace = GradedSpace::new(vec![(u1(-1), 1)], false).unwrap();
+    let product = || {
+        ProductSpace::new(vec![
+            open.clone(),
+            first_trace.clone(),
+            second_trace.clone(),
+        ])
+    };
+    let src = HomSpace::new(product(), product());
+    let dst = HomSpace::new(one_factor(open.clone()), one_factor(open));
+
+    assert_eq!(trace_metadata(&src, &dst).unwrap(), vec![(0, 0, 1.0)],);
+}
+
+#[test]
+fn rank_zero_trace_metadata_handles_empty_source_and_destination_trees() {
+    let src = HomSpace::new(empty_product::<U1Irrep>(), empty_product());
+    let dst = HomSpace::new(empty_product::<U1Irrep>(), empty_product());
+
+    assert_eq!(trace_metadata(&src, &dst).unwrap(), vec![(0, 0, 1.0)],);
+}
+
+#[test]
+fn su2_trace_metadata_uses_tail_quantum_dimension_ratio() {
+    let half = GradedSpace::new(vec![(su2(1), 1)], false).unwrap();
+    let product = || ProductSpace::new(vec![half.clone(), half.clone()]);
+    let src = HomSpace::new(product(), product());
+    let dst = HomSpace::new(
+        ProductSpace::new(vec![half.clone()]),
+        ProductSpace::new(vec![half]),
+    );
+
+    assert_eq!(
+        trace_metadata(&src, &dst).unwrap(),
+        vec![(0, 0, 0.5), (1, 0, 1.5)],
+    );
+}
+
+#[test]
+fn su2_grouped_trace_fuses_nontrivial_permutation_matrix() {
+    let half = GradedSpace::new(vec![(su2(1), 1)], false).unwrap();
+    let src = HomSpace::new(
+        ProductSpace::new(vec![half.clone(), half.clone(), half.clone(), half.dual()]),
+        empty_product::<SU2Irrep>(),
+    );
+    let dst = HomSpace::new(
+        ProductSpace::new(vec![half.clone(), half]),
+        empty_product::<SU2Irrep>(),
+    );
+    let src_structure = build_sector_structure(&src).unwrap();
+    let dst_structure = build_sector_structure(&dst).unwrap();
+
+    let transformer =
+        composed_trace_transformer(&src, &dst, &src_structure, &dst_structure, &[1, 2, 3], &[0])
+            .unwrap();
+    let groups = expect_generic(&transformer);
+
+    assert_eq!(groups.len(), 1);
+    assert_eq!(groups[0].transform.shape(), &[1, 2]);
+    assert_eq!(groups[0].src_indices, vec![0, 1]);
+    assert_eq!(groups[0].dst_indices, vec![0]);
+    assert_close(groups[0].transform[[0, 0]], -(0.5_f64).sqrt());
+    assert_close(groups[0].transform[[0, 1]], (1.5_f64).sqrt());
+}
+
+#[test]
+fn su2_grouped_trace_coalesces_canonical_rows() {
+    let half = GradedSpace::new(vec![(su2(1), 1)], false).unwrap();
+    let product = || ProductSpace::new(vec![half.clone(), half.clone()]);
+    let src = HomSpace::new(product(), product());
+    let dst = HomSpace::new(
+        ProductSpace::new(vec![half.clone()]),
+        ProductSpace::new(vec![half]),
+    );
+    let src_structure = build_sector_structure(&src).unwrap();
+    let dst_structure = build_sector_structure(&dst).unwrap();
+
+    let transformer =
+        composed_trace_transformer(&src, &dst, &src_structure, &dst_structure, &[0, 1], &[2, 3])
+            .unwrap();
+    let groups = expect_generic(&transformer);
+
+    assert_eq!(groups.len(), 1);
+    assert_eq!(groups[0].transform.shape(), &[1, 2]);
+    assert_eq!(groups[0].src_indices, vec![0, 1]);
+    assert_eq!(groups[0].dst_indices, vec![0]);
+    assert_close(groups[0].transform[[0, 0]], 0.5);
+    assert_close(groups[0].transform[[0, 1]], 1.5);
+}
+
+#[test]
+fn fermion_trace_metadata_applies_twist_only_to_nondual_tail_sectors() {
+    let odd = || GradedSpace::new(vec![(parity(1), 1)], false).unwrap();
+    let odd_dual = || GradedSpace::new(vec![(parity(1), 1)], true).unwrap();
+    let dst = HomSpace::new(
+        empty_product::<FermionParity>(),
+        empty_product::<FermionParity>(),
+    );
+
+    let nondual_src = HomSpace::from_factor_spaces(vec![odd()], vec![odd()]);
+    assert_eq!(
+        trace_metadata(&nondual_src, &dst).unwrap(),
+        vec![(0, 0, -1.0)],
+    );
+
+    let dual_src = HomSpace::from_factor_spaces(vec![odd_dual()], vec![odd_dual()]);
+    assert_eq!(trace_metadata(&dual_src, &dst).unwrap(), vec![(0, 0, 1.0)],);
+}
+
+#[test]
+fn product_sector_full_trace_metadata_multiplies_dimension_and_twist() {
+    let odd_half = GradedSpace::new(vec![(parity_su2(1, 1), 1)], false).unwrap();
+    let src = HomSpace::from_factor_spaces(vec![odd_half.clone()], vec![odd_half]);
+    let dst = HomSpace::new(
+        empty_product::<FermionParitySU2Irrep>(),
+        empty_product::<FermionParitySU2Irrep>(),
+    );
+
+    assert_eq!(trace_metadata(&src, &dst).unwrap(), vec![(0, 0, -2.0)],);
+}
+
+#[test]
+fn trace_metadata_reuses_cached_structures_across_degeneracy_dimensions() {
+    let cached = GradedSpace::new(vec![(u1(0), 1)], false).unwrap();
+    let target = GradedSpace::new(vec![(u1(0), 3)], false).unwrap();
+    let cached_product = || ProductSpace::new(vec![cached.clone(), cached.clone()]);
+    let target_product = || ProductSpace::new(vec![target.clone(), target.clone()]);
+    let cached_src = HomSpace::new(cached_product(), cached_product());
+    let cached_dst = HomSpace::new(one_factor(cached.clone()), one_factor(cached));
+    let target_src = HomSpace::new(target_product(), target_product());
+    let target_dst = HomSpace::new(one_factor(target.clone()), one_factor(target));
+    let src_structure = build_sector_structure(&cached_src).unwrap();
+    let dst_structure = build_sector_structure(&cached_dst).unwrap();
+
+    assert_eq!(
+        trace_metadata_from_structures(&target_src, &target_dst, &src_structure, &dst_structure)
+            .unwrap(),
+        vec![(0, 0, 1.0)],
+    );
+}
+
+#[test]
+fn trace_metadata_rejects_incompatible_cached_sector_layouts() {
+    let open = GradedSpace::new(vec![(u1(0), 1)], false).unwrap();
+    let traced = GradedSpace::new(vec![(u1(1), 1)], false).unwrap();
+    let product = || ProductSpace::new(vec![open.clone(), traced.clone()]);
+    let src = HomSpace::new(product(), product());
+    let dst = HomSpace::new(one_factor(open.clone()), one_factor(open.clone()));
+    let src_structure = build_sector_structure(&src).unwrap();
+    let dst_structure = build_sector_structure(&dst).unwrap();
+    let basis_transformer =
+        build_tree_permuter(&src, &src, &src_structure, &src_structure, &[0, 1], &[2, 3]).unwrap();
+
+    let incompatible_canonical_spaces = [
+        {
+            let other = GradedSpace::new(vec![(u1(2), 1)], false).unwrap();
+            let product = || ProductSpace::new(vec![open.clone(), other.clone()]);
+            HomSpace::new(product(), product())
+        },
+        {
+            let product = || ProductSpace::new(vec![traced.clone(), open.clone()]);
+            HomSpace::new(product(), product())
+        },
+        {
+            let traced_dual = traced.dual();
+            let product = || ProductSpace::new(vec![open.clone(), traced_dual.clone()]);
+            HomSpace::new(product(), product())
+        },
+    ];
+
+    for incompatible_canonical in incompatible_canonical_spaces {
+        let canonical_structure = build_sector_structure(&incompatible_canonical).unwrap();
+        let err = trace_transformer(
+            &src,
+            &dst,
+            &canonical_structure,
+            &dst_structure,
+            &basis_transformer,
+        )
+        .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "canonical sectorstructure does not match canonical HomSpace sector structure",
+        );
+    }
+
+    let wrong_dst = HomSpace::new(one_factor(traced.clone()), one_factor(traced));
+    let wrong_dst_structure = build_sector_structure(&wrong_dst).unwrap();
+    let err = trace_transformer(
+        &src,
+        &dst,
+        &src_structure,
+        &wrong_dst_structure,
+        &basis_transformer,
+    )
+    .unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "destination sectorstructure does not match destination HomSpace sector structure",
+    );
 }
 
 #[test]

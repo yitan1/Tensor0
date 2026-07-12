@@ -1,10 +1,12 @@
 import pytest
 
 import tensor0
+import tensor0.structure.layout as layout_module
 from tensor0 import (
     SU2Irrep,
     U1Irrep,
     U1SU2Irrep,
+    Z2Irrep,
     _native,
     get_degeneracystructure,
     get_sectorstructure,
@@ -124,3 +126,38 @@ def test_get_structure_functions_reject_non_hom_space_inputs():
 
     with pytest.raises(TypeError, match="^get_degeneracystructure\\(\\) requires a HomSpace$"):
         get_degeneracystructure(object())  # pyright: ignore[reportArgumentType]
+
+
+def test_sectorstructure_key_tracks_visible_layout_not_degeneracy():
+    factor = space(U1Irrep, {0: 2, 1: 3})
+    same_support = space(U1Irrep, {0: 5, 1: 7})
+    source = hom((factor,), ())
+    key = layout_module._sectorstructure_key(source)
+
+    assert key == layout_module._sectorstructure_key(hom((same_support,), ()))
+    assert key != layout_module._sectorstructure_key(
+        hom((space(U1Irrep, {0: 2, 2: 3}),), ())
+    )
+    assert key != layout_module._sectorstructure_key(hom((factor.dual(),), ()))
+    assert key != layout_module._sectorstructure_key(hom((), (factor,)))
+    assert key != layout_module._sectorstructure_key(
+        hom((space(Z2Irrep, {0: 2, 1: 3}),), ())
+    )
+
+
+def test_sectorstructure_cache_separates_typed_empty_sector_families():
+    u1_empty = _native.make_product_space(U1Irrep, ())
+    su2_empty = _native.make_product_space(SU2Irrep, ())
+    u1_hom = _native.make_hom_products(u1_empty, u1_empty)
+    su2_hom = _native.make_hom_products(su2_empty, su2_empty)
+
+    layout_module._clear_layout_caches_for_tests()
+    try:
+        u1_structure = get_sectorstructure(u1_hom)
+        su2_structure = get_sectorstructure(su2_hom)
+
+        assert u1_structure is get_sectorstructure(u1_hom)
+        assert su2_structure is get_sectorstructure(su2_hom)
+        assert u1_structure is not su2_structure
+    finally:
+        layout_module._clear_layout_caches_for_tests()

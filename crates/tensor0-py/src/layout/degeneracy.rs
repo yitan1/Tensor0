@@ -31,12 +31,6 @@ pub(crate) struct PySubblockStructure {
     inner: SubblockStructure,
 }
 
-impl PySubblockStructure {
-    pub(crate) fn from_inner(inner: SubblockStructure) -> Self {
-        Self { inner }
-    }
-}
-
 #[pyfunction]
 pub(crate) fn build_degeneracystructure(
     space: PyRef<'_, PyHomSpace>,

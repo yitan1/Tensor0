@@ -131,35 +131,29 @@ class AbelianTransformData:
     @property
     def coeff(self) -> float: ...
     @property
-    def src(self) -> SubblockStructure: ...
+    def src(self) -> int: ...
     @property
-    def dst(self) -> SubblockStructure: ...
-
-
-class GenericTransformStructures:
-    @property
-    def sizes(self) -> tuple[int, ...]: ...
-    @property
-    def strides_offsets(self) -> tuple[tuple[tuple[int, ...], int], ...]: ...
+    def dst(self) -> int: ...
 
 
 class GenericTransformData:
     @property
-    def src(self) -> GenericTransformStructures: ...
+    def src_indices(self) -> tuple[int, ...]: ...
     @property
-    def dst(self) -> GenericTransformStructures: ...
+    def dst_indices(self) -> tuple[int, ...]: ...
     @property
-    def basis_transform(self) -> NDArray[np.float64]: ...
+    def transform(self) -> NDArray[np.float64]: ...
 
 
 class TreeTransformer:
     @property
     def kind(self) -> str: ...
     @property
+    def has_only_unit_coefficients(self) -> bool: ...
+    @property
     def abelian_data(self) -> tuple[AbelianTransformData, ...]: ...
     @property
     def generic_data(self) -> tuple[GenericTransformData, ...]: ...
-
 
 U1Irrep: SectorSpec
 SU2Irrep: SectorSpec
@@ -213,9 +207,18 @@ def twist_subblock_factors(
     indices: tuple[int, ...],
     inv: bool = False,
 ) -> tuple[float, ...] | None: ...
+def trace_transformer(
+    canonical_src: HomSpace,
+    dst: HomSpace,
+    canonical_sectorstructure: SectorStructure,
+    dst_sectorstructure: SectorStructure,
+    basis_transformer: TreeTransformer,
+) -> TreeTransformer: ...
 def tree_braider(
     src_space: HomSpace,
     dst_space: HomSpace,
+    src_sectorstructure: SectorStructure,
+    dst_sectorstructure: SectorStructure,
     p_codomain: tuple[int, ...],
     p_domain: tuple[int, ...],
     levels_codomain: tuple[int, ...],
@@ -224,6 +227,8 @@ def tree_braider(
 def tree_transposer(
     src_space: HomSpace,
     dst_space: HomSpace,
+    src_sectorstructure: SectorStructure,
+    dst_sectorstructure: SectorStructure,
     p_codomain: tuple[int, ...],
     p_domain: tuple[int, ...],
 ) -> TreeTransformer: ...

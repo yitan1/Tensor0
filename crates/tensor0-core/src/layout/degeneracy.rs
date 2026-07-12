@@ -1,9 +1,8 @@
 use crate::error::{Result, Tensor0Error};
-use crate::fusion_tree::{FusionTree, FusionTreePair};
+use crate::fusion_tree::FusionTree;
 use crate::sector::Sector;
 use crate::space::{HomSpace, ProductSpace};
 
-use super::indices::IndexedMappingRef;
 use super::sector_structure::{build_sector_structure, SectorStructure};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -28,9 +27,6 @@ pub struct DegeneracyStructure {
     pub subblockstructure: Vec<SubblockStructure>,
 }
 
-pub(crate) type SubblockStructureMapRef<'a, I> =
-    IndexedMappingRef<'a, FusionTreePair<I>, SubblockStructure>;
-
 #[derive(Clone, Debug)]
 struct DegeneracyTreeStructure {
     dim: usize,
@@ -53,16 +49,6 @@ pub fn build_degeneracy_structure_from_sector_structure<I: Sector>(
     }
 
     build_degeneracy_structure_unchecked(space, sectorstructure)
-}
-
-pub(crate) fn subblockstructure_ref<'a, I: Sector>(
-    sectorstructure: &'a SectorStructure<I>,
-    degeneracystructure: &'a DegeneracyStructure,
-) -> Result<SubblockStructureMapRef<'a, I>> {
-    IndexedMappingRef::new(
-        sectorstructure.fusiontree_pair_indices(),
-        &degeneracystructure.subblockstructure,
-    )
 }
 
 pub(super) fn build_degeneracy_structure_unchecked<I: Sector>(

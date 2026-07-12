@@ -8,6 +8,128 @@ use crate::error::{Result, Tensor0Error};
 use crate::fusion_tree::FusionTree;
 use crate::sector::Sector;
 
+/// Splits a canonical fusion tree after its first `prefix_len` uncoupled legs.
+pub fn split<I: Sector>(
+    tree: &FusionTree<I>,
+    prefix_len: usize,
+) -> Result<(FusionTree<I>, FusionTree<I>)> {
+    let arity = tree.uncoupled().len();
+    if prefix_len > arity {
+        return Err(Tensor0Error::Message(
+            "fusion tree split exceeds tree arity".to_string(),
+        ));
+    }
+
+    let boundary = if prefix_len == 0 {
+        I::unit()
+    } else if prefix_len == arity {
+        tree.coupled().clone()
+    } else if prefix_len == 1 {
+        tree.uncoupled()[0].clone()
+    } else {
+        tree.innerlines()[prefix_len - 2].clone()
+    };
+
+    let prefix = FusionTree::new(
+        tree.uncoupled()[..prefix_len].to_vec(),
+        boundary.clone(),
+        tree.is_dual()[..prefix_len].to_vec(),
+        tree.innerlines()[..prefix_len.saturating_sub(2)].to_vec(),
+        tree.vertices()[..prefix_len.saturating_sub(1)].to_vec(),
+    )?;
+
+    let mut suffix_uncoupled = Vec::with_capacity(arity - prefix_len + 1);
+    suffix_uncoupled.push(boundary);
+    suffix_uncoupled.extend_from_slice(&tree.uncoupled()[prefix_len..]);
+
+    let mut suffix_is_dual = Vec::with_capacity(arity - prefix_len + 1);
+    suffix_is_dual.push(false);
+    suffix_is_dual.extend_from_slice(&tree.is_dual()[prefix_len..]);
+
+    let mut extended_lines = Vec::with_capacity(arity.saturating_add(1));
+    if let Some(first) = tree.uncoupled().first() {
+        extended_lines.push(first.clone());
+    }
+    extended_lines.extend_from_slice(tree.innerlines());
+    extended_lines.push(tree.coupled().clone());
+    let suffix_innerline_count = (arity - prefix_len).saturating_sub(1);
+    let suffix_innerlines =
+        extended_lines[prefix_len..prefix_len + suffix_innerline_count].to_vec();
+
+    let mut extended_vertices = Vec::with_capacity(arity.saturating_add(1));
+    extended_vertices.push(0);
+    extended_vertices.extend_from_slice(tree.vertices());
+    let suffix_vertices = extended_vertices[prefix_len..arity].to_vec();
+
+    let suffix = FusionTree::new(
+        suffix_uncoupled,
+        tree.coupled().clone(),
+        suffix_is_dual,
+        suffix_innerlines,
+        suffix_vertices,
+    )?;
+    Ok((prefix, suffix))
+}
+
+/// Joins two canonical fusion trees along their shared, non-dual boundary sector.
+pub fn join<I: Sector>(prefix: &FusionTree<I>, suffix: &FusionTree<I>) -> Result<FusionTree<I>> {
+    let boundary = suffix.uncoupled().first().ok_or_else(|| {
+        Tensor0Error::Message("fusion tree suffix requires a boundary sector".to_string())
+    })?;
+    if prefix.coupled() != boundary || suffix.is_dual()[0] {
+        return Err(Tensor0Error::Message(
+            "fusion trees cannot be joined across the requested boundary".to_string(),
+        ));
+    }
+
+    let prefix_arity = prefix.uncoupled().len();
+    let suffix_arity = suffix.uncoupled().len();
+
+    let mut uncoupled = prefix.uncoupled().to_vec();
+    uncoupled.extend_from_slice(&suffix.uncoupled()[1..]);
+    let mut is_dual = prefix.is_dual().to_vec();
+    is_dual.extend_from_slice(&suffix.is_dual()[1..]);
+
+    let innerlines = if prefix_arity == 0 {
+        if suffix_arity <= 2 {
+            vec![]
+        } else {
+            suffix.innerlines()[1..].to_vec()
+        }
+    } else if prefix_arity == 1 {
+        suffix.innerlines().to_vec()
+    } else if suffix_arity == 1 {
+        prefix.innerlines().to_vec()
+    } else {
+        let mut innerlines = prefix.innerlines().to_vec();
+        innerlines.push(prefix.coupled().clone());
+        innerlines.extend_from_slice(suffix.innerlines());
+        innerlines
+    };
+
+    let vertices = if prefix_arity == 0 {
+        if suffix_arity <= 1 {
+            vec![]
+        } else {
+            suffix.vertices()[1..].to_vec()
+        }
+    } else if prefix_arity == 1 {
+        suffix.vertices().to_vec()
+    } else {
+        let mut vertices = prefix.vertices().to_vec();
+        vertices.extend_from_slice(suffix.vertices());
+        vertices
+    };
+
+    FusionTree::new(
+        uncoupled,
+        suffix.coupled().clone(),
+        is_dual,
+        innerlines,
+        vertices,
+    )
+}
+
 pub(crate) fn multi_fmove<I: Sector>(tree: &FusionTree<I>) -> Result<Vec<(FusionTree<I>, f64)>> {
     let arity = tree.uncoupled.len();
     match arity {
@@ -199,7 +321,7 @@ mod tests {
     use crate::fusion_tree::FusionTree;
     use crate::sector::SU2Irrep;
 
-    use super::{multi_fmove, multi_fmove_inv};
+    use super::{join, multi_fmove, multi_fmove_inv, split};
 
     fn su2(spin2: i64) -> SU2Irrep {
         SU2Irrep::spin2(spin2).unwrap()
@@ -215,13 +337,36 @@ mod tests {
     fn four_half_to_unit_tree() -> FusionTree<SU2Irrep> {
         let half = su2(1);
         FusionTree::new(
-            vec![half.clone(), half.clone(), half.clone(), half],
+            vec![half, half, half, half],
             su2(0),
             vec![false, false, false, false],
             vec![su2(0), su2(1)],
             vec![0, 0, 0],
         )
         .unwrap()
+    }
+
+    #[test]
+    fn split_and_join_are_inverse_at_every_boundary() {
+        let tree = four_half_to_unit_tree();
+
+        for prefix_len in 0..=tree.uncoupled().len() {
+            let (prefix, suffix) = split(&tree, prefix_len).unwrap();
+            assert_eq!(join(&prefix, &suffix).unwrap(), tree);
+        }
+
+        assert!(split(&tree, tree.uncoupled().len() + 1).is_err());
+    }
+
+    #[test]
+    fn join_rejects_invalid_boundaries() {
+        let tree = four_half_to_unit_tree();
+        let (prefix, _) = split(&tree, 2).unwrap();
+        let empty = FusionTree::new(vec![], su2(0), vec![], vec![], vec![]).unwrap();
+        assert!(join(&prefix, &empty).is_err());
+
+        let (_, incompatible_suffix) = split(&tree, 3).unwrap();
+        assert!(join(&prefix, &incompatible_suffix).is_err());
     }
 
     #[test]

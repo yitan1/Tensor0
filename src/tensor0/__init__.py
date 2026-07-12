@@ -21,7 +21,7 @@ from ._native import (
     Z3Irrep,
     Z4Irrep,
 )
-from .contractions import tensorcontract
+from .contractions import tensorcontract, tensortrace
 from .factorizations import (
     cond,
     notrunc,
@@ -139,6 +139,7 @@ __all__ = [
     "svd_trunc",
     "svd_vals",
     "tensorcontract",
+    "tensortrace",
     "to_dense",
     "transpose",
     "tr",

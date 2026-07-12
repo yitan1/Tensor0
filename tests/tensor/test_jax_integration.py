@@ -10,8 +10,10 @@ from tensor0 import (
     hom,
     permute,
     repartition,
+    scalar,
     space,
     tensorcontract,
+    tensortrace,
     twist,
 )
 from tests.cases import assert_allclose, float_data_for
@@ -55,6 +57,13 @@ def _partial_contraction_tensors():
         TensorMap(left_space, float_data_for(left_space)),
         TensorMap(right_space, float_data_for(right_space)),
     )
+
+
+def _partial_trace_tensor():
+    open_factor = space(U1Irrep, {0: 2})
+    traced = space(U1Irrep, {0: 3})
+    target = hom((open_factor, traced), (open_factor, traced))
+    return TensorMap(target, float_data_for(target))
 
 
 def _assert_jitted_transform_matches_eager(tensor, transform):
@@ -157,6 +166,42 @@ def test_jitted_tensorcontract_matches_eager_with_static_metadata():
     assert trace_count == 1
 
 
+def test_jitted_tensortrace_matches_eager_with_static_metadata():
+    tensor = _partial_trace_tensor()
+    trace_count = 0
+
+    @jax.jit
+    def trace(value):
+        nonlocal trace_count
+        trace_count += 1
+        return tensortrace(
+            value,
+            axes=((1,), (3,)),
+            output=((0,), (2,)),
+        )
+
+    result = trace(tensor)
+    expected = tensortrace(
+        tensor,
+        axes=((1,), (3,)),
+        output=((0,), (2,)),
+    )
+
+    updated = TensorMap(tensor.space, tensor.storage.data * 2.0 + 1.0)
+    updated_result = trace(updated)
+    updated_expected = tensortrace(
+        updated,
+        axes=((1,), (3,)),
+        output=((0,), (2,)),
+    )
+
+    assert result.space == expected.space
+    assert_allclose(result.storage.data, expected.storage.data)
+    assert updated_result.space == updated_expected.space
+    assert_allclose(updated_result.storage.data, updated_expected.storage.data)
+    assert trace_count == 1
+
+
 def test_value_and_grad_through_jitted_composition_loss():
     left, right = _u1_composition_tensors()
     right_blocks = dict(right.blocks())
@@ -200,6 +245,38 @@ def test_value_and_grad_through_jitted_tensorcontract_matches_composition_rule()
         right_block = right_blocks[coupled]
         expected = 2.0 * (left_block @ right_block) @ right_block.T
         assert_allclose(gradient.block(coupled), expected)
+
+
+def test_value_and_grad_through_jitted_tensortrace_storage_leaf():
+    factor = space(U1Irrep, {0: 2})
+    target = hom((factor,), (factor,))
+    tensor = TensorMap(
+        target,
+        jnp.asarray([1.0, 2.0, 3.0, 4.0], dtype=jnp.float32),
+    )
+
+    @jax.jit
+    def loss(value):
+        result = tensortrace(
+            value,
+            axes=((0,), (1,)),
+            output=((), ()),
+        )
+        traced = scalar(result)
+        return traced * traced
+
+    value, gradient = jax.value_and_grad(loss)(tensor)
+    gradient_leaves, _gradient_treedef = jax.tree_util.tree_flatten(gradient)
+
+    assert_allclose(value, jnp.asarray(25.0, dtype=jnp.float32))
+    assert isinstance(gradient, TensorMap)
+    assert gradient.space == target
+    assert len(gradient_leaves) == 1
+    assert gradient_leaves[0] is gradient.storage.data
+    assert_allclose(
+        gradient.storage.data,
+        jnp.asarray([10.0, 0.0, 0.0, 10.0], dtype=jnp.float32),
+    )
 
 
 def test_grad_through_jitted_composition_loss_handles_missing_middle_sector():
@@ -251,6 +328,25 @@ def test_jit_su2_permute_matches_eager_transform():
         tensor,
         lambda value: permute(value, ((1, 2), (0, 3))),
     )
+
+
+def test_jitted_grad_through_su2_nontrivial_basis_transform():
+    half = space(SU2Irrep, {1: 1})
+    target = hom((half, half, half, half), ())
+    data = jnp.asarray([1.0, 2.0], dtype=jnp.float32)
+
+    def loss(storage):
+        result = permute(
+            TensorMap(target, storage),
+            ((1, 2, 3), (0,)),
+        )
+        return jnp.sum(result.storage.data)
+
+    eager = jax.grad(loss)(data)
+    compiled = jax.jit(jax.grad(loss))(data)
+
+    assert_allclose(compiled, eager)
+    assert not bool(jnp.allclose(compiled, jnp.ones_like(compiled)))
 
 
 def test_jitted_grad_through_fermion_odd_swap_phase():

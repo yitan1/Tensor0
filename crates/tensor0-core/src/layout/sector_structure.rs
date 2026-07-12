@@ -58,10 +58,6 @@ impl<I: Sector> SectorStructure<I> {
     pub fn fusiontree_pair_index(&self, pair: &FusionTreePair<I>) -> Option<usize> {
         self.fusiontree_pairs.index_of(pair)
     }
-
-    pub(super) fn fusiontree_pair_indices(&self) -> &Indices<FusionTreePair<I>> {
-        &self.fusiontree_pairs
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

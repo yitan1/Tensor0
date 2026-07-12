@@ -8,11 +8,13 @@ from jax import Array
 import jax.numpy as jnp
 
 from . import _native
-from .structure.layout import get_degeneracystructure, get_sectorstructure
+from .structure.layout import (
+    _sectorstructure_key,
+    get_degeneracystructure,
+    get_sectorstructure,
+)
 from .tensor._blocks import (
-    add_to_strided as _add_to_strided,
     add_to_subblock as _add_to_subblock,
-    read_strided as _read_strided,
     read_subblock as _read_subblock,
     scale_subblock as _scale_subblock,
 )
@@ -35,12 +37,11 @@ def permute(tensor: TensorMap, p: Permutation) -> TensorMap:
         return tensor
 
     dst_space = tensor.space.permute(p_codomain, p_domain)
-    transformer = _treebraider(
+    transformer = _treepermuter(
         tensor.space,
         dst_space,
         p_codomain,
         p_domain,
-        _identity_levels(tensor.space),
     )
     return _transform_new(tensor, dst_space, p_codomain, p_domain, transformer)
 
@@ -87,18 +88,38 @@ def _transform_new(
     p_domain: tuple[int, ...],
     transformer: _native.TreeTransformer,
 ) -> TensorMap:
-    result_dtype = _transform_result_dtype(tensor.storage.data, transformer)
+    source = jnp.asarray(tensor.storage.data)
+    result_dtype = _transform_result_dtype(source, transformer)
+    src_degeneracy = get_degeneracystructure(tensor.space)
+    dst_degeneracy = get_degeneracystructure(dst_space)
     dst_data = jnp.zeros(
-        (get_degeneracystructure(dst_space).total_dim,),
+        (dst_degeneracy.total_dim,),
         dtype=result_dtype,
     )
-    dst_data = _add_transform(
-        dst_data,
-        tensor.storage.data,
-        p_codomain + p_domain,
-        transformer,
-        alpha=1.0,
-    )
+    p = p_codomain + p_domain
+    src_subblocks = src_degeneracy.subblockstructure
+    dst_subblocks = dst_degeneracy.subblockstructure
+    kind = transformer.kind
+    if kind == "abelian":
+        dst_data = _add_abelian_transform(
+            dst_data,
+            source,
+            p,
+            transformer.abelian_data,
+            src_subblocks,
+            dst_subblocks,
+        )
+    elif kind == "generic":
+        dst_data = _add_generic_transform(
+            dst_data,
+            source,
+            p,
+            transformer.generic_data,
+            src_subblocks,
+            dst_subblocks,
+        )
+    else:
+        raise ValueError(f"unsupported tree transformer kind {kind!r}")
     return TensorMap(dst_space, dst_data)
 
 
@@ -161,8 +182,8 @@ def _treebraider(
     levels_codomain = tuple(levels[: src_space.numout])
     levels_domain = tuple(levels[src_space.numout :])
     key = (
-        src_space.static_key,
-        dst_space.static_key,
+        _sectorstructure_key(src_space),
+        _sectorstructure_key(dst_space),
         p_codomain,
         p_domain,
         levels_codomain,
@@ -174,11 +195,28 @@ def _treebraider(
         lambda: _native.tree_braider(
             src_space,
             dst_space,
+            get_sectorstructure(src_space),
+            get_sectorstructure(dst_space),
             p_codomain,
             p_domain,
             levels_codomain,
             levels_domain,
         ),
+    )
+
+
+def _treepermuter(
+    src_space: _native.HomSpace,
+    dst_space: _native.HomSpace,
+    p_codomain: tuple[int, ...],
+    p_domain: tuple[int, ...],
+) -> _native.TreeTransformer:
+    return _treebraider(
+        src_space,
+        dst_space,
+        p_codomain,
+        p_domain,
+        _identity_levels(src_space),
     )
 
 
@@ -188,11 +226,23 @@ def _treetransposer(
     p_codomain: tuple[int, ...],
     p_domain: tuple[int, ...],
 ) -> _native.TreeTransformer:
-    key = (src_space.static_key, dst_space.static_key, p_codomain, p_domain)
+    key = (
+        _sectorstructure_key(src_space),
+        _sectorstructure_key(dst_space),
+        p_codomain,
+        p_domain,
+    )
     return _cached_transformer(
         _TREE_TRANSPOSER_CACHE,
         key,
-        lambda: _native.tree_transposer(src_space, dst_space, p_codomain, p_domain),
+        lambda: _native.tree_transposer(
+            src_space,
+            dst_space,
+            get_sectorstructure(src_space),
+            get_sectorstructure(dst_space),
+            p_codomain,
+            p_domain,
+        ),
     )
 
 
@@ -214,46 +264,15 @@ def _cached_transformer(
     return transformer
 
 
-def _add_transform(
-    dst_data: Array,
-    src_data: Array,
-    p: tuple[int, ...],
-    transformer: _native.TreeTransformer,
-    *,
-    alpha: object = 1.0,
-) -> Array:
-    result = jnp.asarray(dst_data)
-    source = jnp.asarray(src_data)
-    alpha_value = jnp.asarray(alpha, dtype=result.dtype)
-
-    if transformer.kind == "abelian":
-        return _add_abelian_transform(
-            result,
-            source,
-            p,
-            transformer.abelian_data,
-            alpha_value,
-        )
-    if transformer.kind == "generic":
-        return _add_generic_transform(
-            result,
-            source,
-            p,
-            transformer.generic_data,
-            alpha_value,
-        )
-    raise ValueError(f"unsupported tree transformer kind {transformer.kind!r}")
-
-
 def _transform_result_dtype(
     src_data: Array,
     transformer: _native.TreeTransformer,
 ) -> jnp.dtype:
-    if transformer.kind == "abelian" and all(
-        entry.coeff == 1.0 or entry.coeff == -1.0
-        for entry in transformer.abelian_data
+    if (
+        transformer.kind == "abelian"
+        and transformer.has_only_unit_coefficients
     ):
-        return jnp.asarray(src_data).dtype
+        return src_data.dtype
     return jnp.result_type(src_data, jnp.float32)
 
 
@@ -262,13 +281,18 @@ def _add_abelian_transform(
     source: Array,
     p: tuple[int, ...],
     data: tuple[_native.AbelianTransformData, ...],
-    alpha: Array,
+    src_subblocks: tuple[_native.SubblockStructure, ...],
+    dst_subblocks: tuple[_native.SubblockStructure, ...],
 ) -> Array:
     for entry in data:
-        block = _read_subblock(source, entry.src, result.dtype)
+        block = _read_subblock(source, src_subblocks[entry.src], result.dtype)
         block = _transpose_block(block, p)
         coeff = jnp.asarray(entry.coeff, dtype=result.dtype)
-        result = _add_to_subblock(result, entry.dst, alpha * coeff * block)
+        result = _add_to_subblock(
+            result,
+            dst_subblocks[entry.dst],
+            coeff * block,
+        )
     return result
 
 
@@ -277,71 +301,53 @@ def _add_generic_transform(
     source: Array,
     p: tuple[int, ...],
     data: tuple[_native.GenericTransformData, ...],
-    alpha: Array,
+    src_subblocks: tuple[_native.SubblockStructure, ...],
+    dst_subblocks: tuple[_native.SubblockStructure, ...],
 ) -> Array:
     for entry in data:
-        basis_transform = jnp.asarray(entry.basis_transform, dtype=result.dtype)
+        transform = jnp.asarray(entry.transform, dtype=result.dtype)
+        src_indices = entry.src_indices
+        dst_indices = entry.dst_indices
         if (
-            basis_transform.size == 1
-            and len(entry.src.strides_offsets) == 1
-            and len(entry.dst.strides_offsets) == 1
+            transform.size == 1
+            and len(src_indices) == 1
+            and len(dst_indices) == 1
         ):
-            result = _add_single_generic_transform(
-                result,
+            block = _read_subblock(
                 source,
-                p,
-                entry,
-                basis_transform.reshape(()),
-                alpha,
+                src_subblocks[src_indices[0]],
+                result.dtype,
+            )
+            block = _transpose_block(block, p)
+            result = _add_to_subblock(
+                result,
+                dst_subblocks[dst_indices[0]],
+                transform.reshape(()) * block,
             )
             continue
 
-        src_sizes = tuple(entry.src.sizes)
+        src_sizes = tuple(src_subblocks[src_indices[0]].sizes)
         src_rows = tuple(
-            _read_strided(source, src_sizes, strides, offset, result.dtype).reshape(-1)
-            for strides, offset in entry.src.strides_offsets
+            _read_subblock(source, src_subblocks[index], result.dtype).reshape(-1)
+            for index in src_indices
         )
         buffer_src = jnp.stack(src_rows, axis=0)
-        buffer_dst = basis_transform @ buffer_src
+        buffer_dst = transform @ buffer_src
 
-        for row, (strides, offset) in enumerate(entry.dst.strides_offsets):
+        for row, destination_index in enumerate(dst_indices):
             block = buffer_dst[row, :].reshape(src_sizes)
             block = _transpose_block(block, p)
-            result = _add_to_strided(
+            result = _add_to_subblock(
                 result,
-                tuple(entry.dst.sizes),
-                strides,
-                offset,
-                alpha * block,
+                dst_subblocks[destination_index],
+                block,
             )
     return result
 
 
-def _add_single_generic_transform(
-    result: Array,
-    source: Array,
-    p: tuple[int, ...],
-    entry: _native.GenericTransformData,
-    coeff: Array,
-    alpha: Array,
-) -> Array:
-    src_strides, src_offset = entry.src.strides_offsets[0]
-    dst_strides, dst_offset = entry.dst.strides_offsets[0]
-    block = _read_strided(
-        source,
-        tuple(entry.src.sizes),
-        src_strides,
-        src_offset,
-        result.dtype,
-    )
-    block = _transpose_block(block, p)
-    return _add_to_strided(
-        result,
-        tuple(entry.dst.sizes),
-        dst_strides,
-        dst_offset,
-        alpha * coeff * block,
-    )
+def _clear_tree_transformer_caches_for_tests() -> None:
+    _TREE_BRAIDER_CACHE.clear()
+    _TREE_TRANSPOSER_CACHE.clear()
 
 
 def _normalize_p(space: _native.HomSpace, p: object, op_name: str) -> Permutation:
@@ -384,6 +390,8 @@ def _repartition_p(
     nout = _normalize_count("nout", nout)
     total = space.numind
     if nin is None:
+        if nout > total:
+            raise ValueError("repartition nout must not exceed tensor rank")
         nin = total - nout
     else:
         nin = _normalize_count("nin", nin)
