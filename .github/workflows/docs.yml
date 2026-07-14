@@ -31,7 +31,7 @@ jobs:
           enable-cache: true
 
       - name: Build MkDocs site
-        run: uv run --with mkdocs mkdocs build --strict
+        run: uv run --with mkdocs==1.6.1 mkdocs build --strict
 
       - name: Configure Pages
         uses: actions/configure-pages@v5

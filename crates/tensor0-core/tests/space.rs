@@ -541,7 +541,7 @@ fn hom_space_factor_constructor_and_dual_match_arrow_semantics() {
 
     let hom = HomSpace::from_factor_spaces(vec![v.clone(), w.clone()], vec![x.clone()]);
     assert_eq!(hom.codomain().factors(), &[v.clone(), w.clone()]);
-    assert_eq!(hom.domain().factors(), &[x.clone()]);
+    assert_eq!(hom.domain().factors(), std::slice::from_ref(&x));
 
     let dual = hom.dual();
     assert_eq!(dual.codomain().factors(), &[x]);

@@ -429,7 +429,7 @@ mod tests {
     fn four_out_half_block() -> FusionTreeBlock<SU2Irrep> {
         let half = su2(1);
         FusionTreeBlock::new(
-            vec![half.clone(), half.clone(), half.clone(), half],
+            vec![half, half, half, half],
             vec![false, false, false, false],
             vec![],
             vec![],

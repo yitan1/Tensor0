@@ -27,6 +27,16 @@ Blocks are accessed by coupled sector. Transform helpers such as `permute(...)`,
 `braid(...)`, `transpose(...)`, and `repartition(...)` update the visible index
 structure and move reduced block data consistently with the symmetry metadata.
 
+## Visible Indices and Contractions
+
+Visible axes are ordered as codomain axes followed by domain axes. Contraction
+operations therefore specify both output axis order and the output
+codomain/domain partition. Contracted spaces must be dual-compatible.
+
+`tensorcontract` and `tensortrace` express this structure with integer axis
+references. The `contract` and `ncon` frontends attach labels to the same
+visible axes and lower to those primitive operations.
+
 ## JAX Integration
 
 `TensorMap` is a JAX pytree. Storage arrays are dynamic leaves, while `HomSpace`

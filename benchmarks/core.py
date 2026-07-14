@@ -1,14 +1,6 @@
 from __future__ import annotations
 
-import argparse
-from collections.abc import Callable, Iterable
-from dataclasses import asdict, dataclass
-import json
-from pathlib import Path
 import platform
-import shlex
-import statistics
-import time
 from typing import Any
 
 import jax
@@ -34,55 +26,16 @@ from tensor0 import (
 )
 from tensor0.tensor import _blocks as block_module
 
+from _runner import (
+    Operation,
+    Scenario,
+    block_until_ready as _block_until_ready,
+    run_cli as _run_cli,
+    scenario as _scenario,
+)
+
 
 jax.config.update("jax_enable_x64", True)
-
-Operation = Callable[[], object]
-
-QUICK_WARMUP = 1
-QUICK_REPEAT = 2
-FULL_WARMUP = 2
-FULL_REPEAT = 7
-
-
-@dataclass(frozen=True)
-class Scenario:
-    id: str
-    group: str
-    description: str
-    scenario_profile: str
-    dtype: str
-    size_label: str
-    execution: str
-    cache_policy: str
-    factory: Callable[[], Operation]
-
-
-@dataclass(frozen=True)
-class BenchmarkResult:
-    id: str
-    group: str
-    description: str
-    scenario_profile: str
-    dtype: str
-    size_label: str
-    execution: str
-    cache_policy: str
-    warmup: int
-    repeat: int
-    min_ms: float
-    median_ms: float
-    iqr_ms: float
-    max_ms: float
-    times_ms: list[float]
-
-
-def _iqr(values: list[float]) -> float:
-    if len(values) < 2:
-        return 0.0
-    quartiles = statistics.quantiles(values, n=4, method="inclusive")
-    return quartiles[2] - quartiles[0]
-
 
 def _data_for(hom_space: HomSpace, *, dtype: str, scale: float = 0.1):
     total_dim = get_degeneracystructure(hom_space).total_dim
@@ -94,28 +47,10 @@ def _data_for(hom_space: HomSpace, *, dtype: str, scale: float = 0.1):
     raise ValueError(f"unsupported benchmark dtype: {dtype}")
 
 
-def _block_until_ready(value: Any) -> None:
-    if hasattr(value, "storage") and hasattr(value.storage, "data"):
-        _block_until_ready(value.storage.data)
-        return
-    if hasattr(value, "block_until_ready"):
-        value.block_until_ready()
-        return
-    if isinstance(value, (tuple, list)):
-        for item in value:
-            _block_until_ready(item)
-        return
-    if isinstance(value, dict):
-        for item in value.values():
-            _block_until_ready(item)
-
-
-def _clear_jax_caches() -> bool:
+def _clear_jax_caches() -> None:
     clear_caches = getattr(jax, "clear_caches", None)
-    if clear_caches is None:
-        return False
-    clear_caches()
-    return True
+    if clear_caches is not None:
+        clear_caches()
 
 
 def _clear_layout_caches() -> None:
@@ -157,32 +92,30 @@ def _layout_su2_four_half_hom() -> HomSpace:
     return hom((half, half, half, half), ())
 
 
-def _layout_operation(hom_space: HomSpace, *, clear_each_run: bool) -> Operation:
-    if not clear_each_run:
+def _layout_operation(hom_space: HomSpace, *, warm_cache: bool) -> Operation:
+    if warm_cache:
         _block_until_ready((get_sectorstructure(hom_space), get_degeneracystructure(hom_space)))
 
     def run() -> object:
-        if clear_each_run:
-            _clear_layout_caches()
         return (get_sectorstructure(hom_space), get_degeneracystructure(hom_space))
 
     return run
 
 
 def _layout_u1_two_factor_cold() -> Operation:
-    return _layout_operation(_layout_u1_two_factor_hom(), clear_each_run=True)
+    return _layout_operation(_layout_u1_two_factor_hom(), warm_cache=False)
 
 
 def _layout_u1_two_factor_cached() -> Operation:
-    return _layout_operation(_layout_u1_two_factor_hom(), clear_each_run=False)
+    return _layout_operation(_layout_u1_two_factor_hom(), warm_cache=True)
 
 
 def _layout_su2_four_half_cold() -> Operation:
-    return _layout_operation(_layout_su2_four_half_hom(), clear_each_run=True)
+    return _layout_operation(_layout_su2_four_half_hom(), warm_cache=False)
 
 
 def _layout_su2_four_half_cached() -> Operation:
-    return _layout_operation(_layout_su2_four_half_hom(), clear_each_run=False)
+    return _layout_operation(_layout_su2_four_half_hom(), warm_cache=True)
 
 
 def _composition_tensors(
@@ -307,91 +240,83 @@ def _u1_permute_tensor(*, dtype: str = "float64", size_label: str = "small") -> 
     return TensorMap(hom_space, _data_for(hom_space, dtype=dtype, scale=1.0))
 
 
-def _transform_u1_permute(*, clear_each_run: bool, size_label: str = "small") -> Operation:
+def _transform_u1_permute(*, warm_cache: bool, size_label: str = "small") -> Operation:
     tensor = _u1_permute_tensor(size_label=size_label)
     permutation = ((1,), (0, 2))
-    if not clear_each_run:
+    if warm_cache:
         _block_until_ready(permute(tensor, permutation))
 
     def run() -> object:
-        if clear_each_run:
-            _clear_braider_cache()
         return permute(tensor, permutation)
 
     return run
 
 
 def _transform_u1_permute_cold() -> Operation:
-    return _transform_u1_permute(clear_each_run=True)
+    return _transform_u1_permute(warm_cache=False)
 
 
 def _transform_u1_permute_cached() -> Operation:
-    return _transform_u1_permute(clear_each_run=False)
+    return _transform_u1_permute(warm_cache=True)
 
 
 def _transform_u1_permute_large_cold() -> Operation:
-    return _transform_u1_permute(clear_each_run=True, size_label="large")
+    return _transform_u1_permute(warm_cache=False, size_label="large")
 
 
 def _transform_u1_permute_large_cached() -> Operation:
-    return _transform_u1_permute(clear_each_run=False, size_label="large")
+    return _transform_u1_permute(warm_cache=True, size_label="large")
 
 
-def _transform_u1_repartition(*, clear_each_run: bool) -> Operation:
+def _transform_u1_repartition(*, warm_cache: bool) -> Operation:
     v = space(U1Irrep, {0: 2})
     w = space(U1Irrep, {0: 3})
     x = space(U1Irrep, {0: 5})
     hom_space = hom((v,), (w, x))
     tensor = TensorMap(hom_space, _data_for(hom_space, dtype="float64", scale=1.0))
-    if not clear_each_run:
+    if warm_cache:
         _block_until_ready(repartition(tensor, 2))
 
     def run() -> object:
-        if clear_each_run:
-            _clear_transposer_cache()
         return repartition(tensor, 2)
 
     return run
 
 
 def _transform_u1_repartition_cold() -> Operation:
-    return _transform_u1_repartition(clear_each_run=True)
+    return _transform_u1_repartition(warm_cache=False)
 
 
 def _transform_u1_repartition_cached() -> Operation:
-    return _transform_u1_repartition(clear_each_run=False)
+    return _transform_u1_repartition(warm_cache=True)
 
 
-def _transform_su2_permute(*, clear_each_run: bool) -> Operation:
+def _transform_su2_permute(*, warm_cache: bool) -> Operation:
     half = space(SU2Irrep, {1: 1})
     hom_space = hom((half, half, half), (half,))
     tensor = TensorMap(hom_space, _data_for(hom_space, dtype="float64", scale=1.0))
     permutation = ((1, 2), (0, 3))
-    if not clear_each_run:
+    if warm_cache:
         _block_until_ready(permute(tensor, permutation))
 
     def run() -> object:
-        if clear_each_run:
-            _clear_braider_cache()
         return permute(tensor, permutation)
 
     return run
 
 
 def _transform_su2_permute_cold() -> Operation:
-    return _transform_su2_permute(clear_each_run=True)
+    return _transform_su2_permute(warm_cache=False)
 
 
 def _transform_su2_permute_cached() -> Operation:
-    return _transform_su2_permute(clear_each_run=False)
+    return _transform_su2_permute(warm_cache=True)
 
 
 def _jax_composition_jit_compile_and_run() -> Operation:
     left, right = _u1_composition_tensors(dtype="float64", size_label="small")
 
     def run() -> object:
-        _clear_jax_caches()
-
         @jax.jit
         def compose(left_value: TensorMap, right_value: TensorMap) -> TensorMap:
             return left_value @ right_value
@@ -432,30 +357,6 @@ def _jax_composition_value_and_grad_cached() -> Operation:
     return run
 
 
-def _scenario(
-    id: str,
-    group: str,
-    description: str,
-    scenario_profile: str,
-    dtype: str,
-    size_label: str,
-    execution: str,
-    cache_policy: str,
-    factory: Callable[[], Operation],
-) -> Scenario:
-    return Scenario(
-        id=id,
-        group=group,
-        description=description,
-        scenario_profile=scenario_profile,
-        dtype=dtype,
-        size_label=size_label,
-        execution=execution,
-        cache_policy=cache_policy,
-        factory=factory,
-    )
-
-
 def _scenarios() -> tuple[Scenario, ...]:
     quick = (
         _scenario(
@@ -468,6 +369,7 @@ def _scenarios() -> tuple[Scenario, ...]:
             "metadata",
             "cold_layout",
             _layout_u1_two_factor_cold,
+            before_each=_clear_layout_caches,
         ),
         _scenario(
             "layout.su2_four_half.cold",
@@ -479,6 +381,7 @@ def _scenarios() -> tuple[Scenario, ...]:
             "metadata",
             "cold_layout",
             _layout_su2_four_half_cold,
+            before_each=_clear_layout_caches,
         ),
         _scenario(
             "composition.u1.eager",
@@ -512,6 +415,7 @@ def _scenarios() -> tuple[Scenario, ...]:
             "eager",
             "cold_transform",
             _transform_u1_permute_cold,
+            before_each=_clear_braider_cache,
         ),
         _scenario(
             "transform.u1_repartition.cold",
@@ -523,6 +427,7 @@ def _scenarios() -> tuple[Scenario, ...]:
             "eager",
             "cold_transform",
             _transform_u1_repartition_cold,
+            before_each=_clear_transposer_cache,
         ),
         _scenario(
             "transform.su2_permute.cold",
@@ -534,6 +439,7 @@ def _scenarios() -> tuple[Scenario, ...]:
             "eager",
             "cold_transform",
             _transform_su2_permute_cold,
+            before_each=_clear_braider_cache,
         ),
         _scenario(
             "jax.composition.jit_compile_and_run",
@@ -545,6 +451,7 @@ def _scenarios() -> tuple[Scenario, ...]:
             "jit_compile_and_run",
             "clear_jax_caches",
             _jax_composition_jit_compile_and_run,
+            before_each=_clear_jax_caches,
         ),
         _scenario(
             "jax.composition.jit_cached_run",
@@ -569,7 +476,7 @@ def _scenarios() -> tuple[Scenario, ...]:
             _jax_composition_value_and_grad_cached,
         ),
     )
-    full_only = (
+    additional = (
         _scenario(
             "layout.u1_two_factor.cached",
             "layout",
@@ -764,6 +671,7 @@ def _scenarios() -> tuple[Scenario, ...]:
             "eager",
             "cold_transform",
             _transform_u1_permute_large_cold,
+            before_each=_clear_braider_cache,
         ),
         _scenario(
             "transform.u1_permute.large.cached",
@@ -777,57 +685,7 @@ def _scenarios() -> tuple[Scenario, ...]:
             _transform_u1_permute_large_cached,
         ),
     )
-    return quick + full_only
-
-
-def _selected_scenarios(selected_ids: Iterable[str] | None, *, quick: bool) -> tuple[Scenario, ...]:
-    scenarios = _scenarios()
-    if selected_ids is None:
-        if quick:
-            return tuple(scenario for scenario in scenarios if scenario.scenario_profile == "quick")
-        return tuple(scenario for scenario in scenarios if scenario.scenario_profile != "explicit-only")
-
-    by_id = {scenario.id: scenario for scenario in scenarios}
-    selected: list[Scenario] = []
-    for scenario_id in selected_ids:
-        try:
-            selected.append(by_id[scenario_id])
-        except KeyError:
-            valid = ", ".join(sorted(by_id))
-            raise SystemExit(f"unknown scenario {scenario_id!r}; valid scenarios: {valid}")
-    return tuple(selected)
-
-
-def _measure_scenario(scenario: Scenario, *, warmup: int, repeat: int) -> BenchmarkResult:
-    operation = scenario.factory()
-
-    for _ in range(warmup):
-        _block_until_ready(operation())
-
-    times_ms: list[float] = []
-    for _ in range(repeat):
-        start = time.perf_counter_ns()
-        _block_until_ready(operation())
-        stop = time.perf_counter_ns()
-        times_ms.append((stop - start) / 1_000_000.0)
-
-    return BenchmarkResult(
-        id=scenario.id,
-        group=scenario.group,
-        description=scenario.description,
-        scenario_profile=scenario.scenario_profile,
-        dtype=scenario.dtype,
-        size_label=scenario.size_label,
-        execution=scenario.execution,
-        cache_policy=scenario.cache_policy,
-        warmup=warmup,
-        repeat=repeat,
-        min_ms=min(times_ms),
-        median_ms=statistics.median(times_ms),
-        iqr_ms=_iqr(times_ms),
-        max_ms=max(times_ms),
-        times_ms=times_ms,
-    )
+    return quick + additional
 
 
 def _environment() -> dict[str, str | bool]:
@@ -842,28 +700,6 @@ def _environment() -> dict[str, str | bool]:
     }
 
 
-def _run_payload(
-    scenarios: tuple[Scenario, ...],
-    *,
-    profile: str,
-    warmup: int,
-    repeat: int,
-) -> dict[str, Any]:
-    return {
-        "environment": _environment(),
-        "config": {
-            "profile": profile,
-            "warmup": warmup,
-            "repeat": repeat,
-            "scenario_count": len(scenarios),
-        },
-        "results": [
-            asdict(_measure_scenario(scenario, warmup=warmup, repeat=repeat))
-            for scenario in scenarios
-        ],
-    }
-
-
 def _render_markdown(payload: dict[str, Any], *, command: str) -> str:
     results = payload["results"]
     ranked = sorted(results, key=lambda result: result["median_ms"], reverse=True)
@@ -871,9 +707,9 @@ def _render_markdown(payload: dict[str, Any], *, command: str) -> str:
     first = top[0] if top else None
 
     lines = [
-        "# Tensor0 v0 Benchmark Baseline",
+        "# Tensor0 Core Benchmark Baseline",
         "",
-        "This report is a local planning artifact. It ranks Tensor0 v0",
+        "This report is a local planning artifact. It ranks Tensor0 core",
         "investigation targets and does not define a public performance commitment.",
         "",
         "## Measurement Scope",
@@ -937,7 +773,7 @@ def _render_markdown(payload: dict[str, Any], *, command: str) -> str:
 
     lines.extend(["", "## Recommendation", ""])
     if first is None:
-        lines.append("- No scenario was measured, so Phase 7 has no optimization evidence.")
+        lines.append("- No scenario was measured, so there is no optimization evidence.")
     else:
         lines.append(
             f"- Start follow-up investigation with `{first['id']}` because it has "
@@ -955,7 +791,8 @@ def _render_markdown(payload: dict[str, Any], *, command: str) -> str:
             "",
             "- Exact `Trivial` sector parity is deferred.",
             "- Broad `Z2Irrep` parity is deferred; FermionParity is only a stable analogue.",
-            "- Mutating TensorKit-style operations such as `mul!`, `tsvd!`, and `permute!` are deferred.",
+            "- Mutating TensorKit-style operations such as `mul!`, `tsvd!`, "
+            "and `permute!` are deferred.",
             "- TensorNetwork contraction scenarios such as MPO, PEPO, and MERA are deferred.",
             "- Cross-library performance comparisons are deferred.",
             "",
@@ -964,74 +801,14 @@ def _render_markdown(payload: dict[str, Any], *, command: str) -> str:
     return "\n".join(lines)
 
 
-def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run Tensor0 v0 benchmarks.")
-    parser.add_argument("--quick", action="store_true", help="Use quick smoke timing and scenario selection.")
-    parser.add_argument("--json", action="store_true", help="Write JSON payload to stdout.")
-    parser.add_argument(
-        "--markdown",
-        type=Path,
-        help="Write a Markdown report to this path.",
-    )
-    parser.add_argument(
-        "--scenario",
-        action="append",
-        help="Run one scenario id; repeat this flag to select multiple scenarios.",
-    )
-    parser.add_argument(
-        "--list-scenarios",
-        action="store_true",
-        help="Print every registered scenario id and exit.",
-    )
-    parser.add_argument("--repeat", type=int, help="Override measured iteration count.")
-    parser.add_argument("--warmup", type=int, help="Override warmup iteration count.")
-    return parser.parse_args()
-
-
-def _command_from_args(args: argparse.Namespace) -> str:
-    parts = ["uv", "run", "python", "benchmarks/v0_benchmarks.py"]
-    if args.quick:
-        parts.append("--quick")
-    for scenario_id in args.scenario or ():
-        parts.extend(("--scenario", scenario_id))
-    if args.json:
-        parts.append("--json")
-    if args.markdown is not None:
-        parts.extend(("--markdown", str(args.markdown)))
-    if args.repeat is not None:
-        parts.extend(("--repeat", str(args.repeat)))
-    if args.warmup is not None:
-        parts.extend(("--warmup", str(args.warmup)))
-    return " ".join(shlex.quote(part) for part in parts)
-
-
 def main() -> None:
-    args = _parse_args()
-
-    if args.list_scenarios:
-        for scenario in _scenarios():
-            print(scenario.id)
-        return
-
-    profile = "quick" if args.quick else "full"
-    warmup = args.warmup if args.warmup is not None else (QUICK_WARMUP if args.quick else FULL_WARMUP)
-    repeat = args.repeat if args.repeat is not None else (QUICK_REPEAT if args.quick else FULL_REPEAT)
-    if warmup < 0:
-        raise SystemExit("--warmup must be non-negative")
-    if repeat < 1:
-        raise SystemExit("--repeat must be at least 1")
-
-    scenarios = _selected_scenarios(args.scenario, quick=args.quick)
-    payload = _run_payload(scenarios, profile=profile, warmup=warmup, repeat=repeat)
-
-    if args.markdown is not None:
-        args.markdown.parent.mkdir(parents=True, exist_ok=True)
-        args.markdown.write_text(
-            _render_markdown(payload, command=_command_from_args(args)),
-            encoding="utf-8",
-        )
-    if args.json:
-        print(json.dumps(payload, indent=2, sort_keys=True))
+    _run_cli(
+        description="Run Tensor0 core benchmarks.",
+        script_path="benchmarks/core.py",
+        scenarios=_scenarios(),
+        environment=_environment,
+        render_markdown=_render_markdown,
+    )
 
 
 if __name__ == "__main__":

@@ -711,9 +711,9 @@ mod tests {
     fn two_out_two_in_half_block() -> FusionTreeBlock<SU2Irrep> {
         let half = su2(1);
         FusionTreeBlock::new(
-            vec![half.clone(), half.clone()],
+            vec![half, half],
             vec![false, false],
-            vec![half.clone(), half],
+            vec![half, half],
             vec![false, false],
         )
         .unwrap()

@@ -67,6 +67,18 @@ hand-written overview, not generated API reference.
 - `braid`
 - `transpose`
 - `repartition`
+- `twist`
+
+## Contractions
+
+- `idx`
+- `tensorcontract`
+- `tensortrace`
+- `contract`
+- `ncon`
+
+See the [contraction guide](contractions.md) for axes, labels, output
+partitions, order, and scalar-result conventions.
 
 ## Factorizations and Truncation
 

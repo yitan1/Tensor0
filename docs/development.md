@@ -16,6 +16,7 @@ uv run maturin develop
 cargo test
 uv run pytest tests -q
 uv run python examples/basic_usage.py
+uv run python examples/contractions.py
 ```
 
 ## Documentation Site
@@ -23,7 +24,7 @@ uv run python examples/basic_usage.py
 Build the documentation site locally with:
 
 ```bash
-uv run --with mkdocs mkdocs build --strict
+uv run --with mkdocs==1.6.1 mkdocs build --strict
 ```
 
 The public documentation site is deployed to GitHub Pages by

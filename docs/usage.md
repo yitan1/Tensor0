@@ -97,6 +97,9 @@ c = a @ b
 assert c.space == hom((v,), (x,))
 ```
 
+For partial contractions, traces, named tensor networks, and integer-label
+networks, see the [contraction guide](contractions.md).
+
 ## SVD
 
 `svd_vals(...)` returns singular values as a `SectorVector` over the infimum
@@ -234,7 +237,7 @@ Tensor0 currently does not include:
 - GenericFusion
 - anyonic braiding
 - arbitrary dynamic product sector families
-- general einsum or contraction planning
+- full NumPy einsum syntax or automatic contraction-order optimization
 - mutable block views or in-place public APIs
 - production dense conversion
 - native JAX kernels

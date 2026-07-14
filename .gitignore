@@ -17,6 +17,7 @@ dist/
 .coverage.*
 htmlcov/
 coverage.xml
+site/
 
 target/
 Cargo.lock

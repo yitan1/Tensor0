@@ -48,7 +48,7 @@ fn empty_fusiontree_tensor_is_unit_channel_scalar() -> Result<()> {
 #[test]
 fn one_leg_dual_fusiontree_tensor_uses_z_isomorphism() -> Result<()> {
     let half = su2(1);
-    let tree = fusion_tree(vec![half.clone()], half, vec![true], vec![], vec![]);
+    let tree = fusion_tree(vec![half], half, vec![true], vec![], vec![]);
 
     let tensor = fusiontree_tensor(&tree)?;
 
@@ -60,7 +60,7 @@ fn one_leg_dual_fusiontree_tensor_uses_z_isomorphism() -> Result<()> {
 fn two_leg_fusiontree_tensor_selects_vertex_slice() -> Result<()> {
     let half = su2(1);
     let tree = fusion_tree(
-        vec![half.clone(), half],
+        vec![half, half],
         su2(0),
         vec![false, false],
         vec![],
@@ -83,13 +83,7 @@ fn two_leg_fusiontree_tensor_selects_vertex_slice() -> Result<()> {
 #[test]
 fn two_leg_fusiontree_tensor_applies_second_dual_leg_in_place() -> Result<()> {
     let half = su2(1);
-    let tree = fusion_tree(
-        vec![half.clone(), half],
-        su2(0),
-        vec![false, true],
-        vec![],
-        vec![0],
-    );
+    let tree = fusion_tree(vec![half, half], su2(0), vec![false, true], vec![], vec![0]);
 
     let tensor = fusiontree_tensor(&tree)?;
 
@@ -108,7 +102,7 @@ fn two_leg_fusiontree_tensor_applies_second_dual_leg_in_place() -> Result<()> {
 fn multi_leg_fusiontree_tensor_contracts_innerlines() -> Result<()> {
     let half = su2(1);
     let tree = fusion_tree(
-        vec![half.clone(), half.clone(), half.clone(), half],
+        vec![half, half, half, half],
         su2(0),
         vec![false, false, false, false],
         vec![su2(0), su2(1)],
@@ -133,7 +127,7 @@ fn multi_leg_fusiontree_tensor_contracts_innerlines() -> Result<()> {
 #[test]
 fn fusiontree_pair_tensor_contracts_shared_coupled_axis() -> Result<()> {
     let half = su2(1);
-    let row = fusion_tree(vec![half.clone()], half, vec![false], vec![], vec![]);
+    let row = fusion_tree(vec![half], half, vec![false], vec![], vec![]);
     let col = row.clone();
 
     let tensor = fusiontree_pair_tensor(&row, &col)?;
@@ -146,14 +140,14 @@ fn fusiontree_pair_tensor_contracts_shared_coupled_axis() -> Result<()> {
 fn fusiontree_pair_tensor_rejects_mismatched_coupled_sector() {
     let half = su2(1);
     let singlet_tree = fusion_tree(
-        vec![half.clone(), half.clone()],
+        vec![half, half],
         su2(0),
         vec![false, false],
         vec![],
         vec![0],
     );
     let triplet_tree = fusion_tree(
-        vec![half.clone(), half],
+        vec![half, half],
         su2(2),
         vec![false, false],
         vec![],
@@ -170,13 +164,13 @@ fn fusiontree_constructor_rejects_inconsistent_tree_shapes() {
     let half = su2(1);
     let cases = [
         (
-            FusionTree::new(vec![half.clone()], half.clone(), vec![], vec![], vec![]),
+            FusionTree::new(vec![half], half, vec![], vec![], vec![]),
             "dual flag arity",
         ),
         (
             FusionTree::new(
-                vec![half.clone(), half.clone(), half.clone()],
-                half.clone(),
+                vec![half, half, half],
+                half,
                 vec![false, false, false],
                 vec![],
                 vec![0, 0],
@@ -184,13 +178,7 @@ fn fusiontree_constructor_rejects_inconsistent_tree_shapes() {
             "innerline arity",
         ),
         (
-            FusionTree::new(
-                vec![half.clone(), half],
-                su2(0),
-                vec![false, false],
-                vec![],
-                vec![],
-            ),
+            FusionTree::new(vec![half, half], su2(0), vec![false, false], vec![], vec![]),
             "vertex arity",
         ),
     ];

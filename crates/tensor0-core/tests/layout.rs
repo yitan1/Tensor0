@@ -345,7 +345,7 @@ fn single_factor_layout_preserves_visible_order_dims_and_dual_flags() {
         let row = &pair.row;
         let col = &pair.col;
         assert_subblock(subblock, &[dim, dim], &[dim, 1], start);
-        assert_eq!(row.uncoupled(), &[sector.clone()]);
+        assert_eq!(row.uncoupled(), &[sector]);
         assert_eq!(row.coupled(), &sector);
         assert_eq!(row.is_dual(), &[false]);
         assert_eq!(col, row);

@@ -486,7 +486,7 @@ mod tests {
     #[test]
     fn enumerate_su2_four_half_to_unit_records_right_recursive_innerlines() {
         let half = su2(1);
-        let uncoupled = vec![half.clone(), half.clone(), half.clone(), half];
+        let uncoupled = vec![half, half, half, half];
 
         let trees =
             enumerate_fusion_trees(&uncoupled, &[false, false, false, false], &su2(0)).unwrap();
@@ -503,7 +503,7 @@ mod tests {
     #[test]
     fn fusion_tree_block_orders_su2_pairs_by_coupled_then_row_then_column() {
         let half = su2(1);
-        let uncoupled = vec![half.clone(), half.clone(), half.clone(), half];
+        let uncoupled = vec![half, half, half, half];
 
         let block =
             FusionTreeBlock::new(uncoupled.clone(), vec![false; 4], uncoupled, vec![false; 4])

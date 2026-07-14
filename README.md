@@ -13,6 +13,8 @@ Documentation: <https://yitan1.github.io/Tensor0/>
 - `TensorMap` storage backed by JAX arrays.
 - Block access, blockwise composition, compact SVD, and truncation helpers.
 - `permute`, `braid`, `transpose`, and `repartition` transform helpers.
+- Symmetry-aware `twist`, binary `tensorcontract`, single-tensor
+  `tensortrace`, named-label `contract`, and integer-label `ncon` operations.
 - `to_dense(...)` and `from_dense(...)` for small correctness checks.
 - JAX `jit` and `grad` support through pytree registration.
 
@@ -55,6 +57,7 @@ Run the public example:
 
 ```bash
 uv run python examples/basic_usage.py
+uv run python examples/contractions.py
 ```
 
 ## Minimal Example
@@ -74,7 +77,8 @@ for sector, block in tensor.blocks():
     print(sector, block.shape)
 ```
 
-See `docs/usage.md` and `examples/basic_usage.py` for more examples.
+See `docs/usage.md`, `docs/contractions.md`, and the two scripts under
+`examples/` for more examples.
 
 ## Acknowledgments
 

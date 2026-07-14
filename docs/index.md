@@ -9,10 +9,14 @@ evolving, and Tensor0 is not yet a production-ready tensor-network framework.
 ## Start Here
 
 - [Usage Guide](usage.md): current public API examples and boundaries.
+- [Contractions](contractions.md): primitive and tensor-network contraction
+  interfaces.
 - `examples/basic_usage.py`: executable public example covered by pytest.
+- `examples/contractions.py`: executable contraction and JAX example.
 
 ## Current Scope
 
 Tensor0 currently covers typed sector metadata, graded spaces, `TensorMap`
-storage, block access, composition, SVD helpers, transforms, correctness-first
-dense conversion, and JAX `jit` / `grad` smoke gates.
+storage, block access, composition, SVD helpers, transforms, symmetry-aware
+contractions, correctness-first dense conversion, and JAX `jit` / `grad`
+smoke gates.

@@ -8,6 +8,7 @@ theme:
 nav:
   - Home: index.md
   - Usage: usage.md
+  - Contractions: contractions.md
   - Concepts: concepts.md
   - API: api.md
   - Examples: examples.md
