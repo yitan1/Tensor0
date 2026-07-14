@@ -21,7 +21,7 @@ from ._native import (
     Z3Irrep,
     Z4Irrep,
 )
-from .operations.contractions import contract, idx, tensorcontract, tensortrace
+from .operations.contractions import contract, idx, ncon, tensorcontract, tensortrace
 from .factorizations import (
     cond,
     notrunc,
@@ -125,6 +125,7 @@ __all__ = [
     "inner",
     "isdiag",
     "norm",
+    "ncon",
     "normalize",
     "notrunc",
     "ones",

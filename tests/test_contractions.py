@@ -21,6 +21,7 @@ from tensor0 import (
     get_degeneracystructure,
     hom,
     idx,
+    ncon,
     permute,
     scalar,
     space,
@@ -889,6 +890,51 @@ def test_tensortrace_nonunit_coefficient_promotes_float16_storage():
     assert_allclose(scalar(result), jnp.asarray(6, dtype=jnp.float32))
 
 
+# Default and explicit contraction order.
+def test_contract_and_ncon_default_and_custom_order_match_references():
+    a = space(U1Irrep, {0: 5})
+    x = space(U1Irrep, {0: 2})
+    y = space(U1Irrep, {0: 3})
+    b = space(U1Irrep, {0: 2})
+    left = _tensor(hom((a,), (x,)))
+    middle = _tensor(hom((x,), (y,)))
+    right = _tensor(hom((y,), (b,)))
+
+    named_default = contract(
+        idx(left, "a,x"),
+        idx(middle, "x,y"),
+        idx(right, "y,b"),
+        output=("a", "b"),
+    )
+    named_custom = contract(
+        idx(left, "a,x"),
+        idx(middle, "x,y"),
+        idx(right, "y,b"),
+        output=("a", "b"),
+        order=["y", "x"],
+    )
+    integer_result = ncon(
+        (left, middle, right),
+        ((-1, 1), (1, 2), (2, -2)),
+    )
+    custom_result = ncon(
+        (left, middle, right),
+        ((-1, 1), (1, 2), (2, -2)),
+        order=(2, 1),
+    )
+    expected = (left @ middle) @ right
+    custom_expected = left @ (middle @ right)
+
+    assert named_default.space == expected.space
+    assert named_custom.space == custom_expected.space
+    assert integer_result.space == expected.space
+    assert custom_result.space == custom_expected.space
+    assert_allclose(named_default.storage.data, expected.storage.data)
+    assert_allclose(named_custom.storage.data, custom_expected.storage.data)
+    assert_allclose(integer_result.storage.data, expected.storage.data)
+    assert_allclose(custom_result.storage.data, custom_expected.storage.data)
+
+
 # Named-index frontend.
 def test_idx_and_output_forms_normalize_labels_and_empty_groups():
     factor = space(U1Irrep, {0: 1})
@@ -979,6 +1025,31 @@ def test_contract_rejects_invalid_output_strings(output, match):
 
     with pytest.raises(ValueError, match=match):
         contract(idx(tensor, "a"), output=output)
+
+
+@pytest.mark.parametrize(
+    ("order", "error", "match"),
+    [
+        ("x", TypeError, "order.*tuple or list"),
+        ((1,), TypeError, "order.*only strings"),
+        (("x y",), ValueError, "invalid label"),
+        ((), ValueError, "every contracted label"),
+        (("x", "x"), ValueError, "every contracted label"),
+        (("x", "unknown"), ValueError, "every contracted label"),
+    ],
+)
+def test_contract_rejects_invalid_order(order, error, match):
+    factor = space(U1Irrep, {0: 1})
+    left = _tensor(hom((factor,), (factor,)))
+    right = _tensor(hom((factor,), (factor,)))
+
+    with pytest.raises(error, match=match):
+        contract(
+            idx(left, "a,x"),
+            idx(right, "x,b"),
+            output=("a", "b"),
+            order=order,
+        )
 
 
 def test_contract_rejects_missing_or_non_tensor_operands():
@@ -1135,7 +1206,11 @@ def test_contract_single_tensor_trace_matches_primitive():
     x = space(U1Irrep, {0: 3})
     tensor = _tensor(hom((a, x), (a, x)))
 
-    result = contract(idx(tensor, "a,x,a,x"), output=("", ""))
+    result = contract(
+        idx(tensor, "a,x,a,x"),
+        output=("", ""),
+        order=("a", "x"),
+    )
     expected = tensortrace(
         tensor,
         axes=((0, 1), (2, 3)),
@@ -1204,6 +1279,7 @@ def test_contract_multiple_shared_labels_matches_binary_primitive():
         idx(left, "a,x,y"),
         idx(right, "x,y,b"),
         output=("a", "b"),
+        order=("y", "x"),
     )
     expected = tensorcontract(
         left,
@@ -1248,6 +1324,7 @@ def test_contract_disconnected_network_uses_tensor_product():
         idx(first, "a"),
         idx(second, "b"),
         output=("b", "a"),
+        order=(),
     )
     expected = tensorcontract(
         first,
@@ -1289,3 +1366,224 @@ def test_contract_composition_across_sector_families(
 
     assert result.space == expected.space
     assert_allclose(result.storage.data, expected.storage.data)
+
+
+def test_ncon_default_and_explicit_output_match_named_contract():
+    a = space(U1Irrep, {0: 2})
+    x = space(U1Irrep, {0: 3})
+    b = space(U1Irrep, {0: 4})
+    left = _tensor(hom((a,), (x,)))
+    right = _tensor(hom((x,), (b,)))
+
+    default_result = ncon(
+        [left, right],
+        [[-1, 1], [1, -2]],
+    )
+    default_expected = contract(
+        idx(left, "a,x"),
+        idx(right, "x,b"),
+        output=("a", "b"),
+    )
+    explicit_result = ncon(
+        (left, right),
+        ((-1, 1), (1, -2)),
+        output=[[-2], [-1]],
+    )
+    explicit_expected = contract(
+        idx(left, "a,x"),
+        idx(right, "x,b"),
+        output=("b", "a"),
+    )
+
+    assert default_result.space == default_expected.space
+    assert explicit_result.space == explicit_expected.space
+    assert_allclose(default_result.storage.data, default_expected.storage.data)
+    assert_allclose(explicit_result.storage.data, explicit_expected.storage.data)
+
+
+def test_ncon_default_output_sorts_negative_labels_within_each_side():
+    first = space(U1Irrep, {0: 2})
+    second = space(U1Irrep, {0: 3})
+    third = space(U1Irrep, {0: 4})
+    tensor = _tensor(hom((first, second), (third,)))
+
+    result = ncon((tensor,), ((-3, -1, -2),))
+    expected = contract(
+        idx(tensor, "first,second,third"),
+        output=("second,first", "third"),
+    )
+
+    assert result.space == expected.space
+    assert_allclose(result.storage.data, expected.storage.data)
+
+
+def test_ncon_custom_order_contracts_all_shared_labels_together():
+    a = space(U1Irrep, {0: 2})
+    x = space(U1Irrep, {0: 3})
+    y = space(U1Irrep, {0: 4})
+    b = space(U1Irrep, {0: 5})
+    left = _tensor(hom((a,), (x, y)))
+    right = _tensor(hom((x, y), (b,)))
+
+    result = ncon(
+        (left, right),
+        ((-1, 1, 2), (1, 2, -2)),
+        order=[2, 1],
+    )
+    expected = tensorcontract(
+        left,
+        right,
+        axes=((1, 2), (0, 1)),
+        output=(((0, 0),), ((1, 2),)),
+    )
+
+    assert result.space == expected.space
+    assert_allclose(result.storage.data, expected.storage.data)
+
+
+def test_ncon_self_trace_conjugation_consumes_order_label():
+    a = space(U1Irrep, {0: 2})
+    b = space(U1Irrep, {0: 3})
+    x = space(U1Irrep, {0: 4})
+    tensor = _tensor(hom((a, x), (b, x)), jnp.complex64)
+
+    result = ncon(
+        (tensor,),
+        ((-1, 1, -2, 1),),
+        conjugate=(True,),
+        order=(1,),
+    )
+    expected = contract(
+        idx(tensor, "a,x,b,x", conjugate=True),
+        output=("b", "a"),
+    )
+
+    assert result.space == expected.space
+    assert_allclose(result.storage.data, expected.storage.data)
+
+
+def test_ncon_empty_order_disconnected_and_rank_zero_networks():
+    a = space(U1Irrep, {0: 2})
+    b = space(U1Irrep, {0: 3})
+    tensor = _tensor(hom((a,), (b,)))
+
+    copied = ncon((tensor,), ((-1, -2),), order=())
+    assert copied.space == tensor.space
+    assert_allclose(copied.storage.data, tensor.storage.data)
+
+    first = _tensor(hom((a,), ()))
+    second = _tensor(hom((b,), ()))
+    disconnected = ncon(
+        (first, second),
+        ((-1,), (-2,)),
+    )
+    disconnected_expected = contract(
+        idx(first, "a"),
+        idx(second, "b"),
+        output=("a,b", ""),
+    )
+    assert disconnected.space == disconnected_expected.space
+    assert_allclose(
+        disconnected.storage.data,
+        disconnected_expected.storage.data,
+    )
+
+    factor = space(U1Irrep, {0: 2})
+    left = _tensor(hom((factor,), (factor,)))
+    right = _tensor(hom((factor,), (factor,)))
+    rank_zero = ncon(
+        (left, right),
+        ((1, 2), (2, 1)),
+        order=(1, 2),
+    )
+    rank_zero_expected = contract(
+        idx(left, "x,y"),
+        idx(right, "y,x"),
+        output=("", ""),
+    )
+    assert rank_zero.numind == 0
+    assert rank_zero.space == rank_zero_expected.space
+    assert_allclose(rank_zero.storage.data, rank_zero_expected.storage.data)
+
+
+def test_ncon_rejects_invalid_containers_labels_and_conjugation():
+    factor = space(U1Irrep, {0: 1})
+    tensor = _tensor(hom((factor,), (factor,)))
+
+    with pytest.raises(TypeError, match="tensors.*tuple or list"):
+        ncon(tensor, ((-1, -2),))  # pyright: ignore[reportArgumentType]
+    with pytest.raises(TypeError, match="labels.*tuple or list"):
+        ncon((tensor,), object())  # pyright: ignore[reportArgumentType]
+    with pytest.raises(ValueError, match="at least one tensor"):
+        ncon((), ())
+    with pytest.raises(ValueError, match="same length"):
+        ncon((tensor,), ())
+    with pytest.raises(TypeError, match="TensorMap"):
+        ncon((object(),), ((-1, -2),))  # pyright: ignore[reportArgumentType]
+    with pytest.raises(TypeError, match="labels for tensor 0.*tuple or list"):
+        ncon((tensor,), ("-1,-2",))  # pyright: ignore[reportArgumentType]
+    with pytest.raises(TypeError, match="only integers"):
+        ncon((tensor,), ((True, -2),))
+    with pytest.raises(ValueError, match="label 0"):
+        ncon((tensor,), ((0, -1),))
+    with pytest.raises(ValueError, match="visible rank"):
+        ncon((tensor,), ((-1,),))
+    with pytest.raises(TypeError, match="conjugate.*tuple or list"):
+        ncon((tensor,), ((-1, -2),), conjugate=True)  # pyright: ignore[reportArgumentType]
+    with pytest.raises(ValueError, match="number of tensors"):
+        ncon((tensor,), ((-1, -2),), conjugate=())
+    with pytest.raises(TypeError, match="only bool"):
+        ncon((tensor,), ((-1, -2),), conjugate=(0,))  # pyright: ignore[reportArgumentType]
+
+
+def test_ncon_rejects_invalid_occurrences_order_and_output():
+    factor = space(U1Irrep, {0: 1})
+    tensor = _tensor(hom((factor,), (factor,)))
+    left = _tensor(hom((factor,), (factor,)))
+    right = _tensor(hom((factor,), (factor,)))
+    tensors = (left, right)
+    labels = ((-1, 1), (1, -2))
+
+    with pytest.raises(ValueError, match="positive label 1.*twice"):
+        ncon((tensor,), ((-1, 1),))
+    with pytest.raises(ValueError, match="negative label -1.*once"):
+        ncon((tensor,), ((-1, -1),))
+    with pytest.raises(ValueError, match="every positive label"):
+        ncon(tensors, labels, order=())
+    with pytest.raises(ValueError, match="only positive"):
+        ncon(tensors, labels, order=(-1,))
+    with pytest.raises(ValueError, match="every positive label"):
+        ncon(tensors, labels, order=(1, 1))
+    with pytest.raises(TypeError, match="output partitions"):
+        ncon(tensors, labels, output=(-1, -2))  # pyright: ignore[reportArgumentType]
+    with pytest.raises(ValueError, match="codomain and domain"):
+        ncon(tensors, labels, output=((-1,),))  # pyright: ignore[reportArgumentType]
+    with pytest.raises(ValueError, match="only negative"):
+        ncon(tensors, labels, output=((1,), (-2,)))
+    with pytest.raises(ValueError, match="every negative label"):
+        ncon(tensors, labels, output=((-1,), ()))
+
+
+def test_ncon_validates_complete_network_before_storage_access():
+    neutral = space(U1Irrep, {0: 1})
+    one = space(U1Irrep, {1: 1})
+    two = space(U1Irrep, {2: 1})
+    first = _metadata_only_tensor(hom((neutral,), (neutral,)))
+    second = _metadata_only_tensor(hom((neutral,), (one,)))
+    third = _metadata_only_tensor(hom((two,), (neutral,)))
+
+    with pytest.raises(ValueError, match="label 2.*dual-compatible"):
+        ncon(
+            (first, second, third),
+            ((-1, 1), (1, 2), (2, -2)),
+        )
+
+    u1 = space(U1Irrep, {0: 1})
+    z2 = space(Z2Irrep, {0: 1})
+    u1_tensor = _metadata_only_tensor(hom((u1,), ()))
+    z2_tensor = _metadata_only_tensor(hom((z2,), ()))
+    with pytest.raises(ValueError, match="same sector family"):
+        ncon(
+            (u1_tensor, z2_tensor),
+            ((-1,), (-2,)),
+        )
