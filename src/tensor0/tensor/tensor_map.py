@@ -266,7 +266,7 @@ class TensorMap:
         return self.storage.data[0]
 
     def permute(self, p: tuple[tuple[int, ...], tuple[int, ...]]) -> TensorMap:
-        from ..transforms import permute
+        from ..operations.transforms import permute
 
         return permute(self, p)
 
@@ -275,7 +275,7 @@ class TensorMap:
         p: tuple[tuple[int, ...], tuple[int, ...]],
         levels: tuple[int, ...],
     ) -> TensorMap:
-        from ..transforms import braid
+        from ..operations.transforms import braid
 
         return braid(self, p, levels)
 
@@ -283,12 +283,12 @@ class TensorMap:
         self,
         p: tuple[tuple[int, ...], tuple[int, ...]] | None = None,
     ) -> TensorMap:
-        from ..transforms import transpose
+        from ..operations.transforms import transpose
 
         return transpose(self, p)
 
     def repartition(self, nout: int, nin: int | None = None) -> TensorMap:
-        from ..transforms import repartition
+        from ..operations.transforms import repartition
 
         return repartition(self, nout, nin)
 

@@ -4,15 +4,15 @@ from typing import TypeAlias
 
 import jax.numpy as jnp
 
-from . import _native
-from .structure.layout import get_degeneracystructure, get_sectorstructure
-from .structure.spaces import hom
-from .tensor._blocks import (
+from ... import _native
+from ...structure.layout import get_degeneracystructure, get_sectorstructure
+from ...structure.spaces import hom
+from ...tensor._blocks import (
     add_to_subblock as _add_to_subblock,
     read_subblock as _read_subblock,
 )
-from .tensor.tensor_map import TensorMap
-from .transforms import _treepermuter, permute, twist
+from ...tensor.tensor_map import TensorMap
+from ..transforms import _treepermuter, permute, twist
 
 AxisRef: TypeAlias = tuple[int, int]
 OutputRefs: TypeAlias = tuple[tuple[AxisRef, ...], tuple[AxisRef, ...]]

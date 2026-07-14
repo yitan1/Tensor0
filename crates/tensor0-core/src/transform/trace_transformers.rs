@@ -1,4 +1,4 @@
-//! Fused permutation and rank-reducing trace metadata.
+//! Fused permutation and rank-reducing trace-transform metadata.
 //!
 //! Source and destination indices refer directly to their supplied
 //! [`SectorStructure`] canonical pair orders. Permutation basis changes and

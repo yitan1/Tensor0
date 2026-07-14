@@ -21,7 +21,7 @@ from ._native import (
     Z3Irrep,
     Z4Irrep,
 )
-from .contractions import tensorcontract, tensortrace
+from .operations.contractions import contract, idx, tensorcontract, tensortrace
 from .factorizations import (
     cond,
     notrunc,
@@ -71,7 +71,7 @@ from .tensor import (
     zero_like,
     zeros,
 )
-from .transforms import (
+from .operations.transforms import (
     braid,
     permute,
     repartition,
@@ -111,6 +111,7 @@ __all__ = [
     "adjoint",
     "complex",
     "cond",
+    "contract",
     "diag",
     "diagm",
     "dot",
@@ -119,6 +120,7 @@ __all__ = [
     "get_degeneracystructure",
     "get_sectorstructure",
     "hom",
+    "idx",
     "imag",
     "inner",
     "isdiag",

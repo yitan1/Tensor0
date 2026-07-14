@@ -7,18 +7,18 @@ from typing import TypeAlias
 from jax import Array
 import jax.numpy as jnp
 
-from . import _native
-from .structure.layout import (
+from .. import _native
+from ..structure.layout import (
     _sectorstructure_key,
     get_degeneracystructure,
     get_sectorstructure,
 )
-from .tensor._blocks import (
+from ..tensor._blocks import (
     add_to_subblock as _add_to_subblock,
     read_subblock as _read_subblock,
     scale_subblock as _scale_subblock,
 )
-from .tensor.tensor_map import TensorMap
+from ..tensor.tensor_map import TensorMap
 
 Permutation: TypeAlias = tuple[tuple[int, ...], tuple[int, ...]]
 _TransformerCache: TypeAlias = OrderedDict[object, _native.TreeTransformer]
@@ -43,7 +43,13 @@ def permute(tensor: TensorMap, p: Permutation) -> TensorMap:
         p_codomain,
         p_domain,
     )
-    return _transform_new(tensor, dst_space, p_codomain, p_domain, transformer)
+    return _apply_tree_transform(
+        tensor,
+        dst_space,
+        p_codomain,
+        p_domain,
+        transformer,
+    )
 
 
 def braid(tensor: TensorMap, p: Permutation, levels: tuple[int, ...]) -> TensorMap:
@@ -57,7 +63,13 @@ def braid(tensor: TensorMap, p: Permutation, levels: tuple[int, ...]) -> TensorM
 
     dst_space = tensor.space.permute(p_codomain, p_domain)
     transformer = _treebraider(tensor.space, dst_space, p_codomain, p_domain, levels)
-    return _transform_new(tensor, dst_space, p_codomain, p_domain, transformer)
+    return _apply_tree_transform(
+        tensor,
+        dst_space,
+        p_codomain,
+        p_domain,
+        transformer,
+    )
 
 
 def transpose(tensor: TensorMap, p: Permutation | None = None) -> TensorMap:
@@ -78,10 +90,16 @@ def _transpose_normalized(
 
     dst_space = tensor.space.permute(p_codomain, p_domain)
     transformer = _treetransposer(tensor.space, dst_space, p_codomain, p_domain)
-    return _transform_new(tensor, dst_space, p_codomain, p_domain, transformer)
+    return _apply_tree_transform(
+        tensor,
+        dst_space,
+        p_codomain,
+        p_domain,
+        transformer,
+    )
 
 
-def _transform_new(
+def _apply_tree_transform(
     tensor: TensorMap,
     dst_space: _native.HomSpace,
     p_codomain: tuple[int, ...],

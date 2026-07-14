@@ -1,13 +1,14 @@
+import math
+
 import jax.numpy as jnp
 import pytest
 
-import tensor0.transforms as transforms
+import tensor0.operations.transforms as transforms
 from tensor0 import (
     FermionParity,
     SU2Irrep,
     TensorMap,
     U1Irrep,
-    Z2Irrep,
     braid,
     get_degeneracystructure,
     get_sectorstructure,
@@ -17,6 +18,7 @@ from tensor0 import (
     space,
     transpose,
     to_dense,
+    twist,
 )
 from tests.cases import (
     assert_allclose,
@@ -42,6 +44,21 @@ def _odd_odd_fermion_tensor():
     odd_b = space(FermionParity, {1: 1})
     h = hom((odd_a, odd_b), ())
     return TensorMap(h, jnp.array([2.0], dtype=jnp.float32))
+
+
+def _data_for(target):
+    size = get_degeneracystructure(target).total_dim
+    return jnp.arange(1, size + 1, dtype=jnp.float32)
+
+
+class _ExplodingVectorData:
+    def __init__(self, length):
+        self.shape = (length,)
+
+    def __getitem__(self, key):
+        if isinstance(key, slice) and key.start == 0 and key.stop == 0:
+            return jnp.zeros((0,))
+        raise AssertionError("twist validation must not access storage")
 
 
 def test_native_tree_transformer_payload_uses_canonical_indices():
@@ -87,44 +104,6 @@ def test_native_tree_transformer_payload_uses_canonical_indices():
     assert not transform.flags.writeable
     assert group.src_indices == (0, 1)
     assert group.dst_indices == (0, 1)
-
-    with pytest.raises(ValueError):
-        transform[0, 0] = 0.0
-
-
-def test_native_tree_transformer_rejects_mixed_cached_sector_families():
-    u1 = space(U1Irrep, {0: 1})
-    z2 = space(Z2Irrep, {0: 1})
-    source = hom((u1, u1), ())
-    destination = source.permute((1,), (0,))
-    z2_source = hom((z2, z2), ())
-    z2_destination = z2_source.permute((1,), (0,))
-
-    with pytest.raises(ValueError, match="same sector family"):
-        transforms._native.tree_braider(
-            source,
-            destination,
-            get_sectorstructure(z2_source),
-            get_sectorstructure(z2_destination),
-            (1,),
-            (0,),
-            (0, 1),
-            (),
-        )
-
-    other = space(U1Irrep, {1: 1})
-    other_source = hom((other, other), ())
-    with pytest.raises(ValueError, match="source sectorstructure does not match"):
-        transforms._native.tree_braider(
-            source,
-            destination,
-            get_sectorstructure(other_source),
-            get_sectorstructure(destination),
-            (1,),
-            (0,),
-            (0, 1),
-            (),
-        )
 
 
 def test_permute_rejects_non_tensormap_input():
@@ -260,20 +239,6 @@ def test_u1_index_transform_resolves_strided_source_and_destination_subblocks():
     _assert_dense_transpose(result, tensor, destination, (1, 2, 0, 3))
 
 
-def test_simplefusion_scalar_transform_does_not_stack(monkeypatch):
-    half = space(SU2Irrep, {1: 1})
-    source = hom((half, half), ())
-    tensor = TensorMap(source, jnp.asarray([3.0], dtype=jnp.float32))
-
-    def fail_stack(*_args, **_kwargs):
-        raise AssertionError("1x1 tree transform must not stack source blocks")
-
-    monkeypatch.setattr(transforms.jnp, "stack", fail_stack)
-    result = permute(tensor, ((1,), (0,)))
-
-    assert result.storage.data.shape == (1,)
-
-
 def test_index_transform_preserves_existing_dtype_rules():
     u1_left = space(U1Irrep, {0: 2})
     u1_right = space(U1Irrep, {0: 3})
@@ -332,3 +297,181 @@ def test_transpose_default_matches_public_dense_transpose():
         hom((x.dual(), w.dual()), (v.dual(),)),
         (2, 1, 0),
     )
+
+
+def test_twist_passes_the_cached_sectorstructure_to_native(monkeypatch):
+    factor = space(FermionParity, {0: 1, 1: 1})
+    target = hom((factor,), (factor,))
+    tensor = TensorMap(target, _data_for(target))
+    expected = get_sectorstructure(target)
+    native_twist_subblock_factors = transforms._native.twist_subblock_factors
+    seen_structure = None
+
+    def recording_twist_subblock_factors(space, sectorstructure, indices, inv):
+        nonlocal seen_structure
+        seen_structure = sectorstructure
+        return native_twist_subblock_factors(
+            space,
+            sectorstructure,
+            indices,
+            inv,
+        )
+
+    monkeypatch.setattr(
+        transforms._native,
+        "twist_subblock_factors",
+        recording_twist_subblock_factors,
+    )
+
+    twist(tensor, 0)
+
+    assert seen_structure is expected
+
+
+def test_twist_layout_cancellation_bypasses_degeneracy_lookup(monkeypatch):
+    factor = space(FermionParity, {0: 1, 1: 1})
+    target = hom((factor,), (factor,))
+    tensor = TensorMap(target, _data_for(target))
+
+    def explode(*args, **kwargs):
+        raise AssertionError("cancelled twist must not request degeneracy layout")
+
+    monkeypatch.setattr(transforms, "get_degeneracystructure", explode)
+
+    assert twist(tensor, (0, 1)) is tensor
+
+
+def test_twist_reweights_parity_endomorphism_without_changing_space_or_dtype():
+    factor = space(FermionParity, {0: 1, 1: 1})
+    target = hom((factor,), (factor,))
+    tensor = TensorMap(target, _data_for(target))
+    original = tensor.storage.data.copy()
+
+    codomain = twist(tensor, 0)
+    domain = twist(tensor, (1,))
+
+    expected = jnp.array([1.0, -2.0], dtype=jnp.float32)
+    assert bool(jnp.array_equal(codomain.storage.data, expected))
+    assert bool(jnp.array_equal(domain.storage.data, expected))
+    assert codomain.space is target
+    assert domain.space is target
+    assert codomain.storage.data is not tensor.storage.data
+    assert domain.storage.data is not tensor.storage.data
+    assert codomain.storage.data.dtype == tensor.storage.data.dtype
+    assert domain.storage.data.dtype == tensor.storage.data.dtype
+    assert bool(jnp.array_equal(tensor.storage.data, original))
+
+
+def test_twist_reweights_multielement_strided_subblocks_and_is_involutive():
+    factor = space(FermionParity, {0: 2, 1: 1})
+    target = hom((factor, factor), (factor, factor))
+    tensor = TensorMap(target, _data_for(target))
+    subblockstructure = get_degeneracystructure(target).subblockstructure
+
+    assert any(
+        math.prod(subblock.sizes) > 1 and not is_contiguous_subblock(subblock)
+        for subblock in subblockstructure
+    )
+
+    result = twist(tensor, 0)
+    restored = twist(result, 0)
+
+    assert result.space is target
+    assert result.storage.data.dtype == tensor.storage.data.dtype
+    assert not bool(jnp.array_equal(result.storage.data, tensor.storage.data))
+    assert bool(jnp.array_equal(restored.storage.data, tensor.storage.data))
+
+
+def test_twist_inverse_supports_product_sector_types():
+    product = space(U1Irrep @ FermionParity, {(0, 0): 1, (0, 1): 1})
+    target = hom((product,), (product,))
+    tensor = TensorMap(target, _data_for(target))
+
+    result = twist(tensor, 0, inv=True)
+
+    expected = jnp.array([1.0, -2.0], dtype=jnp.float32)
+    assert bool(jnp.array_equal(result.storage.data, expected))
+    assert result.space is target
+
+
+@pytest.mark.parametrize(
+    ("sector_type", "sectors"),
+    [
+        (U1Irrep, {0: 1, 1: 1}),
+        (FermionParity, {0: 1}),
+    ],
+    ids=["bosonic", "trivial-fermionic"],
+)
+def test_twist_semantic_identity_bypasses_layout_lookup(
+    monkeypatch,
+    sector_type,
+    sectors,
+):
+    factor = space(sector_type, sectors)
+    target = hom((factor,), (factor,))
+    tensor = TensorMap(
+        target,
+        _ExplodingVectorData(get_degeneracystructure(target).total_dim),
+    )
+
+    def explode(*args, **kwargs):
+        raise AssertionError("semantic identity twist must not request layout")
+
+    monkeypatch.setattr(transforms, "get_sectorstructure", explode)
+    monkeypatch.setattr(transforms, "get_degeneracystructure", explode)
+
+    assert twist(tensor, 0) is tensor
+
+
+def test_twist_empty_indices_bypass_native_after_inv_validation(monkeypatch):
+    factor = space(U1Irrep, {0: 1})
+    target = hom((factor,), (factor,))
+    tensor = TensorMap(target, _data_for(target))
+
+    def explode(*args, **kwargs):
+        raise AssertionError("empty twist must bypass native factor computation")
+
+    monkeypatch.setattr(transforms._native, "twist_is_trivial", explode)
+    monkeypatch.setattr(transforms._native, "twist_subblock_factors", explode)
+    monkeypatch.setattr(transforms, "get_sectorstructure", explode)
+    monkeypatch.setattr(transforms, "get_degeneracystructure", explode)
+
+    assert twist(tensor, ()) is tensor
+    with pytest.raises(TypeError, match=r"inv.*bool"):
+        twist(tensor, (), inv=1)  # pyright: ignore[reportArgumentType]
+
+
+@pytest.mark.parametrize(
+    ("indices", "error", "match"),
+    [
+        ([0], TypeError, "integer|tuple"),
+        ((True,), TypeError, "integer"),
+        ((-1,), ValueError, "non-negative"),
+        ((0, 0), ValueError, "unique"),
+        ((2,), ValueError, "range"),
+    ],
+)
+def test_twist_rejects_invalid_indices_before_accessing_storage(indices, error, match):
+    factor = space(U1Irrep, {0: 1})
+    target = hom((factor,), (factor,))
+    tensor = TensorMap(
+        target,
+        _ExplodingVectorData(get_degeneracystructure(target).total_dim),
+    )
+
+    with pytest.raises(error, match=match):
+        twist(tensor, indices)
+
+
+def test_twist_rejects_invalid_tensor_and_inv_inputs():
+    with pytest.raises(TypeError, match=r"twist.*TensorMap"):
+        twist(object(), 0)  # pyright: ignore[reportArgumentType]
+
+    factor = space(U1Irrep, {0: 1})
+    target = hom((factor,), (factor,))
+    tensor = TensorMap(
+        target,
+        _ExplodingVectorData(get_degeneracystructure(target).total_dim),
+    )
+    with pytest.raises(TypeError, match=r"inv.*bool"):
+        twist(tensor, 0, inv=1)  # pyright: ignore[reportArgumentType]

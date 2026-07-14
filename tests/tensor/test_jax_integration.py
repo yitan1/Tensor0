@@ -7,7 +7,9 @@ from tensor0 import (
     SU2Irrep,
     TensorMap,
     U1Irrep,
+    contract,
     hom,
+    idx,
     permute,
     repartition,
     scalar,
@@ -200,6 +202,94 @@ def test_jitted_tensortrace_matches_eager_with_static_metadata():
     assert updated_result.space == updated_expected.space
     assert_allclose(updated_result.storage.data, updated_expected.storage.data)
     assert trace_count == 1
+
+
+def test_jitted_network_contract_reuses_static_labels_for_new_storage():
+    left, right = _u1_composition_tensors()
+    trace_count = 0
+
+    @jax.jit
+    def network(a, b):
+        nonlocal trace_count
+        trace_count += 1
+        return contract(
+            (a, "a,x"),
+            (b, "x,b"),
+            output="a;b",
+        )
+
+    result = network(left, right)
+    expected = contract(
+        (left, "a,x"),
+        (right, "x,b"),
+        output=("a", "b"),
+    )
+    updated = TensorMap(left.space, left.storage.data * 2.0 + 1.0)
+    updated_result = network(updated, right)
+    updated_expected = contract(
+        (updated, "a,x"),
+        (right, "x,b"),
+        output=("a", "b"),
+    )
+
+    assert result.space == expected.space
+    assert_allclose(result.storage.data, expected.storage.data)
+    assert updated_result.space == updated_expected.space
+    assert_allclose(updated_result.storage.data, updated_expected.storage.data)
+    assert trace_count == 1
+
+
+def test_jitted_network_contract_retraces_for_labels_output_or_homspace():
+    tensor = TensorMap(_u1_hom(), _u1_data())
+    changed_storage = TensorMap(tensor.space, _u1_data() + 10)
+    changed_space = TensorMap(
+        _u1_hom_same_total_dim_with_different_metadata(),
+        _u1_data(),
+    )
+    trace_count = 0
+
+    def network(value, labels, output):
+        nonlocal trace_count
+        trace_count += 1
+        return contract(idx(value, labels), output=output)
+
+    compiled = jax.jit(network, static_argnames=("labels", "output"))
+    compiled(tensor, "a,b", ("a", "b"))
+    compiled(changed_storage, "a,b", ("a", "b"))
+    compiled(tensor, "a,b", ("b", "a"))
+    compiled(tensor, "b,a", ("a", "b"))
+    compiled(changed_space, "a,b", ("a", "b"))
+
+    assert trace_count == 4
+
+
+def test_value_and_grad_through_three_operand_network():
+    v = space(U1Irrep, {0: 2})
+    x = space(U1Irrep, {0: 3})
+    y = space(U1Irrep, {0: 4})
+    w = space(U1Irrep, {0: 2})
+    tensors = (
+        TensorMap(hom((v,), (x,)), float_data_for(hom((v,), (x,)))),
+        TensorMap(hom((x,), (y,)), float_data_for(hom((x,), (y,)))),
+        TensorMap(hom((y,), (w,)), float_data_for(hom((y,), (w,)))),
+    )
+
+    def loss(a, b, c):
+        result = contract(
+            idx(a, "v,x"),
+            idx(b, "x,y"),
+            idx(c, "y,w"),
+            output=("v", "w"),
+        )
+        return jnp.sum(result.storage.data**2)
+
+    eager = jax.value_and_grad(loss, argnums=(0, 1, 2))(*tensors)
+    compiled = jax.jit(jax.value_and_grad(loss, argnums=(0, 1, 2)))(*tensors)
+
+    assert_allclose(compiled[0], eager[0])
+    for actual, expected in zip(compiled[1], eager[1], strict=True):
+        assert actual.space == expected.space
+        assert_allclose(actual.storage.data, expected.storage.data)
 
 
 def test_value_and_grad_through_jitted_composition_loss():

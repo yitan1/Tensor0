@@ -16,7 +16,7 @@ import jax.numpy as jnp
 
 import tensor0
 import tensor0.structure.layout as layout_module
-import tensor0.transforms as transforms_module
+import tensor0.operations.transforms as transforms_module
 from tensor0 import (
     FermionParity,
     HomSpace,

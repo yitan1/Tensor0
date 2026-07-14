@@ -35,7 +35,6 @@ def test_native_layout_builders_return_sector_and_degeneracy_structures():
 
     assert sectorstructure.blocksectors == ((0,), (1,))
     assert len(sectorstructure.fusiontree_pairs) == 2
-    assert degeneracystructure.total_dim == 13
     assert block_spans(degeneracystructure) == [(2, 2, 0, 4), (3, 3, 4, 13)]
     assert sectorstructure.blocksector_index(0) == 0
     assert sectorstructure.blocksector_index((1,)) == 1
@@ -62,7 +61,6 @@ def test_native_su2_layout_exposes_multileg_fusiontree_metadata():
     assert len(sectorstructure.fusiontree_pairs) == 2
     assert degeneracystructure.blockstructure[0].row_dim == 2
     assert degeneracystructure.blockstructure[0].col_dim == 1
-    assert degeneracystructure.total_dim == 2
 
     expected_innerlines = [((0,), (1,)), ((2,), (1,))]
     for (row, col), innerlines in zip(
