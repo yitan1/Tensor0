@@ -12,8 +12,8 @@ use dense::{product_axes, product_dims};
 use fusion_tree::{fusiontree_pair_tensor, fusiontree_tensor, PyFusionTree};
 use layout::{
     _build_degeneracystructure_from_sectorstructure, build_degeneracystructure,
-    build_sectorstructure, PyBlockStructure, PyDegeneracyStructure, PySectorStructure,
-    PySubblockStructure,
+    build_sectorstructure, unique_fusiontree_pair_index, PyBlockStructure, PyDegeneracyStructure,
+    PySectorStructure, PySubblockStructure,
 };
 use sector_type::{add_sector_constants, PySectorSpec};
 use space::{
@@ -52,6 +52,7 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(fuse, module)?)?;
     module.add_function(wrap_pyfunction!(infimum_space, module)?)?;
     module.add_function(wrap_pyfunction!(build_sectorstructure, module)?)?;
+    module.add_function(wrap_pyfunction!(unique_fusiontree_pair_index, module)?)?;
     module.add_function(wrap_pyfunction!(build_degeneracystructure, module)?)?;
     module.add_function(wrap_pyfunction!(
         _build_degeneracystructure_from_sectorstructure,

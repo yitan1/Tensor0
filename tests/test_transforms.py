@@ -383,6 +383,34 @@ def test_twist_reweights_parity_endomorphism_without_changing_space_or_dtype():
     assert bool(jnp.array_equal(tensor.storage.data, original))
 
 
+def test_twist_only_materializes_nontrivial_subblock_metadata(monkeypatch):
+    factor = space(FermionParity, {0: 1, 1: 1})
+    target = hom((factor,), (factor,))
+    tensor = TensorMap(target, _data_for(target))
+    degeneracystructure = get_degeneracystructure(target)
+    accessed = []
+
+    class DegeneracyStructureProxy:
+        @property
+        def subblockstructure(self):
+            raise AssertionError("twist must not materialize all subblock metadata")
+
+        def subblock_at(self, index):
+            accessed.append(index)
+            return degeneracystructure.subblock_at(index)
+
+    monkeypatch.setattr(
+        transforms,
+        "get_degeneracystructure",
+        lambda _space: DegeneracyStructureProxy(),
+    )
+
+    result = twist(tensor, 0)
+
+    assert accessed == [1]
+    assert bool(jnp.array_equal(result.storage.data, jnp.array([1.0, -2.0])))
+
+
 def test_twist_reweights_multielement_strided_subblocks_and_is_involutive():
     factor = space(FermionParity, {0: 2, 1: 1})
     target = hom((factor, factor), (factor, factor))

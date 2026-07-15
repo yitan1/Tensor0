@@ -118,6 +118,39 @@ def test_tensormap_pytree_aux_uses_static_space_metadata():
     assert first_treedef != different_treedef
 
 
+def test_jitted_sector_indexing_and_lazy_subblock_iteration_match_eager():
+    factor = space(U1Irrep, {0: 1, 1: 2})
+    target = hom((factor,), (factor,))
+    tensor = TensorMap(target, float_data_for(target))
+
+    def read(value):
+        total = jnp.asarray(0, dtype=value.storage.data.dtype)
+        for _pair, block in value.subblocks():
+            total = total + jnp.sum(block)
+        return value[1, -1], total
+
+    indexed, total = jax.jit(read)(tensor)
+    expected_indexed, expected_total = read(tensor)
+
+    assert_allclose(indexed, expected_indexed)
+    assert_allclose(total, expected_total)
+
+    pair = tensor.fusiontrees[1]
+
+    def sector_objective(data):
+        block = TensorMap(target, data)[1, -1]
+        return jnp.sum(block**2)
+
+    def tree_objective(data):
+        block = TensorMap(target, data)[pair]
+        return jnp.sum(block**2)
+
+    assert_allclose(
+        jax.jit(jax.grad(sector_objective))(tensor.storage.data),
+        jax.grad(tree_objective)(tensor.storage.data),
+    )
+
+
 def test_jitted_composition_uses_storage_as_dynamic_leaf():
     left, right = _u1_composition_tensors()
     same_space_left = TensorMap(left.space, left.storage.data * 2.0 + 1.0)

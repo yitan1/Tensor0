@@ -2,16 +2,23 @@ from dataclasses import FrozenInstanceError
 
 import tensor0
 import tensor0.tensor as tensor_api
+import tensor0.tensor.tensor_map as tensor_map_module
 import jax
 import jax.numpy as jnp
 import pytest
 
 from tensor0 import (
+    FermionNumber,
+    FermionParity,
+    FermionParityU1Irrep,
     SU2Irrep,
     SectorDict,
     TensorMap,
     U1Irrep,
     VectorStorage,
+    Z2Irrep,
+    Z3Irrep,
+    Z4Irrep,
     _native,
     from_dense,
     get_degeneracystructure,
@@ -884,14 +891,169 @@ def test_tensormap_diagm_rejects_missing_unexpected_and_wrong_shape_blocks():
     assert_allclose(tensor.block(0), jnp.diag(jnp.arange(2)))
 
 
-def test_tensormap_subblocks_match_indexed_subblock_access():
+def test_tensormap_subblocks_are_lazy_reiterable_and_match_indexed_access(monkeypatch):
     tensor = _tensor_for(_u1_hom())
+    sectorstructure = get_sectorstructure(tensor.space)
+    degeneracystructure = get_degeneracystructure(tensor.space)
+    expected_count = sectorstructure.fusiontree_pair_count
+    native_get_subblock = tensor_map_module._get_subblock
+    get_calls = 0
+
+    class SectorStructureProxy:
+        def __getattr__(self, name):
+            return getattr(sectorstructure, name)
+
+        @property
+        def fusiontree_pairs(self):
+            raise AssertionError("subblocks() must not materialize all fusion tree pairs")
+
+    class DegeneracyStructureProxy:
+        def __getattr__(self, name):
+            return getattr(degeneracystructure, name)
+
+        @property
+        def subblockstructure(self):
+            raise AssertionError("subblocks() must not materialize all subblock structures")
+
+    def count_gets(*args, **kwargs):
+        nonlocal get_calls
+        get_calls += 1
+        return native_get_subblock(*args, **kwargs)
+
+    monkeypatch.setattr(tensor_map_module, "_get_subblock", count_gets)
+    monkeypatch.setattr(
+        tensor_map_module,
+        "get_sectorstructure",
+        lambda _space: SectorStructureProxy(),
+    )
+    monkeypatch.setattr(
+        tensor_map_module,
+        "get_degeneracystructure",
+        lambda _space: DegeneracyStructureProxy(),
+    )
+
     subblocks = tensor.subblocks()
 
-    assert len(subblocks) == len(tensor.fusiontrees)
-    for (row_tree, col_tree), subblock in subblocks:
+    assert len(subblocks) == expected_count
+    assert not hasattr(subblocks, "index")
+    assert not hasattr(subblocks, "count")
+    assert get_calls == 0
+
+    first_item = next(iter(subblocks))
+    assert get_calls == 1
+
+    first = tuple(subblocks)
+    assert get_calls == 1 + expected_count
+    second = tuple(subblocks)
+    assert get_calls == 1 + 2 * expected_count
+    assert first_item[0] == first[0][0]
+    assert_allclose(first_item[1], first[0][1])
+
+    indexed_pair, indexed = subblocks[0]
+    assert indexed_pair == first[0][0]
+    assert_allclose(indexed, first[0][1])
+
+    last_pair, last = subblocks[-1]
+    assert last_pair == first[-1][0]
+    assert_allclose(last, first[-1][1])
+
+    sliced = subblocks[:1]
+    assert isinstance(sliced, tuple)
+    assert sliced[0][0] == first[0][0]
+    assert_allclose(sliced[0][1], first[0][1])
+
+    with pytest.raises(IndexError, match="subblock index out of range"):
+        subblocks[expected_count]
+
+    for ((row_tree, col_tree), subblock), (repeated_pair, repeated) in zip(
+        first,
+        second,
+        strict=True,
+    ):
+        assert repeated_pair == (row_tree, col_tree)
+        assert_allclose(repeated, subblock)
         assert_allclose(tensor.subblock(row_tree, col_tree), subblock)
+        assert_allclose(tensor.subblock((row_tree, col_tree)), subblock)
         assert_allclose(tensor[row_tree, col_tree], subblock)
+
+
+@pytest.mark.parametrize(
+    ("sector_type", "sector", "visible_dual"),
+    [
+        (U1Irrep, 1, -1),
+        (FermionParity, 1, 1),
+        (Z2Irrep, 1, 1),
+        (Z3Irrep, 1, 2),
+        (Z4Irrep, 1, 3),
+        (FermionNumber, (1, 1), (-1, 1)),
+        (FermionParityU1Irrep, (1, 1), (1, -1)),
+    ],
+)
+def test_tensormap_sector_indexing_supports_all_unique_fusion_families(
+    sector_type,
+    sector,
+    visible_dual,
+):
+    factor = space(sector_type, {sector: 1})
+    tensor = _tensor_for(hom((factor,), (factor,)))
+    pair = tensor.fusiontrees[0]
+
+    assert_allclose(tensor[(sector, visible_dual)], tensor[pair])
+
+
+def test_tensormap_unique_fusion_sector_indexing_uses_visible_domain_sectors():
+    factor = space(U1Irrep, {1: 2})
+    target = hom((factor,), (factor,))
+    tensor = _tensor_for(target)
+    row_tree, col_tree = tensor.fusiontrees[0]
+    expected = tensor[row_tree, col_tree]
+
+    assert_allclose(tensor.subblock((1, -1)), expected)
+    assert_allclose(tensor[1, -1], expected)
+
+    dual_factor = space(U1Irrep, {1: 1}, dual=True)
+    dual_tensor = _tensor_for(hom((dual_factor,), (dual_factor,)))
+    dual_pair = dual_tensor.fusiontrees[0]
+    assert_allclose(dual_tensor[-1, 1], dual_tensor[dual_pair])
+
+    product = space(FermionNumber, {(1, 1): 1})
+    product_tensor = _tensor_for(hom((product,), (product,)))
+    product_pair = product_tensor.fusiontrees[0]
+    assert_allclose(
+        product_tensor[(1, 1), (-1, 1)],
+        product_tensor[product_pair],
+    )
+
+    unit_product = space(FermionNumber, {(0, 0): 1})
+    empty_product = _native.make_product_space(FermionNumber, ())
+    rank_one = _tensor_for(hom((unit_product,), empty_product))
+    assert_allclose(rank_one[((0, 0),)], rank_one[rank_one.fusiontrees[0]])
+
+
+def test_tensormap_sector_indexing_validates_style_rank_and_channel():
+    factor = space(U1Irrep, {1: 1})
+    tensor = _tensor_for(hom((factor,), (factor,)))
+
+    with pytest.raises(ValueError, match="length 2"):
+        tensor[(1,)]
+    with pytest.raises(KeyError):
+        tensor[0, -1]
+
+    multi_factor = space(U1Irrep, {0: 1, 1: 1})
+    multi_tensor = _tensor_for(
+        hom((multi_factor, multi_factor), (multi_factor, multi_factor))
+    )
+    with pytest.raises(KeyError):
+        multi_tensor[1, 0, 0, 0]
+
+    half = space(SU2Irrep, {1: 1})
+    su2_tensor = _tensor_for(hom((half,), (half,)))
+    with pytest.raises(ValueError, match="UniqueFusion"):
+        su2_tensor[1, 1]
+
+    empty = _native.make_product_space(U1Irrep, ())
+    scalar = _tensor_for(hom(empty, empty))
+    assert_allclose(scalar[()], scalar.storage.data.reshape(()))
 
 
 def test_tensormap_subblock_rejects_invalid_tree_inputs():
@@ -908,8 +1070,14 @@ def test_tensormap_subblock_rejects_invalid_tree_inputs():
     with pytest.raises(TypeError, match="FusionTree"):
         tensor.subblock(object(), col_tree)  # pyright: ignore[reportArgumentType]
 
+    with pytest.raises(TypeError, match="two arguments.*FusionTree"):
+        tensor.subblock(1, -1)  # pyright: ignore[reportArgumentType]
+
     with pytest.raises(TypeError, match="FusionTree"):
-        tensor[0]  # pyright: ignore[index]
+        tensor.subblock((row_tree, -1))  # pyright: ignore[reportArgumentType]
+
+    with pytest.raises(TypeError, match="FusionTree|tuple of sectors"):
+        tensor[0]  # pyright: ignore[reportArgumentType]
 
     with pytest.raises(KeyError):
         tensor.subblock(other_tree, col_tree)

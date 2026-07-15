@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 
 use crate::error::{Result, Tensor0Error};
-use crate::fusion_tree::FusionTreePair;
+use crate::fusion_tree::{FusionTreeBlock, FusionTreePair};
 use crate::sector::{FusionStyle, Sector};
 use crate::space::{HomSpace, ProductSpace};
 
@@ -57,6 +57,53 @@ impl<I: Sector> SectorStructure<I> {
     /// Returns the canonical subblock layout index for a fusion tree pair.
     pub fn fusiontree_pair_index(&self, pair: &FusionTreePair<I>) -> Option<usize> {
         self.fusiontree_pairs.index_of(pair)
+    }
+
+    /// Returns the canonical subblock layout index for UniqueFusion uncoupled sectors.
+    pub fn unique_fusiontree_pair_index(
+        &self,
+        space: &HomSpace<I>,
+        row_uncoupled: &[I],
+        col_uncoupled: &[I],
+    ) -> Result<Option<usize>> {
+        if I::fusion_style() != FusionStyle::UniqueFusion {
+            return Err(Tensor0Error::Message(
+                "sector indexing requires a UniqueFusion sector family".to_string(),
+            ));
+        }
+        if !self.matches_space(space) {
+            return Err(Tensor0Error::Message(
+                "sectorstructure does not match HomSpace sector structure".to_string(),
+            ));
+        }
+        if row_uncoupled.len() != space.numout() || col_uncoupled.len() != space.numin() {
+            return Ok(None);
+        }
+
+        let block = FusionTreeBlock::new(
+            row_uncoupled.to_vec(),
+            space
+                .codomain()
+                .factors()
+                .iter()
+                .map(|factor| factor.is_dual())
+                .collect(),
+            col_uncoupled.to_vec(),
+            space
+                .domain()
+                .factors()
+                .iter()
+                .map(|factor| factor.is_dual())
+                .collect(),
+        )?;
+
+        match block.trees() {
+            [] => Ok(None),
+            [pair] => Ok(self.fusiontree_pair_index(pair)),
+            _ => Err(Tensor0Error::Message(
+                "UniqueFusion sectors produced multiple fusion tree pairs".to_string(),
+            )),
+        }
     }
 }
 

@@ -35,6 +35,7 @@ def test_native_layout_builders_return_sector_and_degeneracy_structures():
 
     assert sectorstructure.blocksectors == ((0,), (1,))
     assert len(sectorstructure.fusiontree_pairs) == 2
+    assert sectorstructure.fusiontree_pair_count == 2
     assert block_spans(degeneracystructure) == [(2, 2, 0, 4), (3, 3, 4, 13)]
     assert sectorstructure.blocksector_index(0) == 0
     assert sectorstructure.blocksector_index((1,)) == 1
@@ -44,10 +45,38 @@ def test_native_layout_builders_return_sector_and_degeneracy_structures():
         sectorstructure.blocksector_index("bad")
 
     row, col = sectorstructure.fusiontree_pairs[0]
+    same_row, same_col = sectorstructure.fusiontree_pair_at(0)
     assert row.uncoupled == ((0,),)
     assert row.coupled == (0,)
     assert row.is_dual == (False,)
     assert col.static_key == row.static_key
+    assert (same_row, same_col) == (row, col)
+    assert {(row, col): "block"}[(same_row, same_col)] == "block"
+    assert row != object()
+    assert sectorstructure.fusiontree_pair_index(same_row, same_col) == 0
+    assert sectorstructure.fusiontree_pair_at(2) is None
+    assert degeneracystructure.subblock_at(0).static_key == (
+        degeneracystructure.subblockstructure[0].static_key
+    )
+    assert degeneracystructure.subblock_at(2) is None
+
+
+def test_native_unique_fusiontree_pair_index_uses_visible_domain_sectors():
+    v = space(U1Irrep, {0: 2, 1: 3})
+    h = hom((v,), (v,))
+    sectorstructure = _native.build_sectorstructure(h)
+
+    assert _native.unique_fusiontree_pair_index(h, sectorstructure, (0, 0)) == 0
+    assert _native.unique_fusiontree_pair_index(h, sectorstructure, (1, -1)) == 1
+    assert _native.unique_fusiontree_pair_index(h, sectorstructure, (1, 0)) is None
+
+    other = hom((space(U1Irrep, {0: 1}),), (space(U1Irrep, {0: 1}),))
+    with pytest.raises(ValueError, match="does not match HomSpace"):
+        _native.unique_fusiontree_pair_index(
+            h,
+            _native.build_sectorstructure(other),
+            (0, 0),
+        )
 
 
 def test_native_su2_layout_exposes_multileg_fusiontree_metadata():

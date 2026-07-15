@@ -164,6 +164,25 @@ fn sectorstructure_indexes_visible_sectors_and_fusion_tree_pairs() {
     for (index, pair) in sectorstructure.fusiontree_pairs().enumerate() {
         assert_eq!(sectorstructure.fusiontree_pair_index(pair), Some(index));
     }
+
+    assert_eq!(
+        sectorstructure
+            .unique_fusiontree_pair_index(&h, &[u1(1)], &[u1(1)])
+            .unwrap(),
+        Some(1),
+    );
+    assert_eq!(
+        sectorstructure
+            .unique_fusiontree_pair_index(&h, &[u1(1)], &[u1(0)])
+            .unwrap(),
+        None,
+    );
+    assert_eq!(
+        sectorstructure
+            .unique_fusiontree_pair_index(&h, &[u1(2)], &[u1(2)])
+            .unwrap(),
+        None,
+    );
 }
 
 fn one_factor(space: GradedSpace<U1Irrep>) -> ProductSpace<U1Irrep> {

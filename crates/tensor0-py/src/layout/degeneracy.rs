@@ -122,6 +122,14 @@ impl PyDegeneracyStructure {
         subblockstructures_py(py, &self.inner.subblockstructure)
     }
 
+    fn subblock_at(&self, index: usize) -> Option<PySubblockStructure> {
+        self.inner
+            .subblockstructure
+            .get(index)
+            .cloned()
+            .map(|inner| PySubblockStructure { inner })
+    }
+
     #[getter]
     fn static_key(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         degeneracy_structure_static_key_py(py, &self.inner)

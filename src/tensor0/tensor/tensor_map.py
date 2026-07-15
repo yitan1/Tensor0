@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
-from typing import Any, SupportsFloat
+from typing import Any, SupportsFloat, TypeAlias, overload
 
 import jax.numpy as jnp
 from jax import Array
@@ -17,6 +17,7 @@ from ..structure.layout import (
     get_sectorstructure,
 )
 from ..structure.sector_dict import SectorDict
+from ..structure.sector_type import SectorKey
 from ..structure.spaces import (
     _as_hom_space,
     _as_product_space_input,
@@ -24,13 +25,16 @@ from ..structure.spaces import (
     hom,
 )
 from ._blocks import (
-    find_subblock_structure as _find_subblock_structure,
     get_subblock as _get_subblock,
     normalize_fusiontree_pair_key as _normalize_fusiontree_pair_key,
     pack_blocks as _pack_blocks,
     pack_complete_blocks as _pack_complete_blocks,
 )
 from .storage import VectorStorage, _validate_vector_storage_data
+
+_FusionTreePair: TypeAlias = tuple[_native.FusionTree, _native.FusionTree]
+_VisibleSectorTuple: TypeAlias = tuple[SectorKey, ...]
+_MISSING = object()
 
 
 @dataclass(frozen=True, eq=False, init=False)
@@ -218,42 +222,48 @@ class TensorMap:
             for coupled, block in get_blockstructure(self.space).items()
         )
 
+    @overload
     def subblock(
-        self, row_tree: _native.FusionTree, col_tree: _native.FusionTree
-    ) -> Array:
-        if not isinstance(row_tree, _native.FusionTree) or not isinstance(
-            col_tree,
-            _native.FusionTree,
-        ):
-            raise TypeError("subblock() requires a pair of FusionTree objects")
-        return self._subblock(row_tree, col_tree)
+        self,
+        key: _native.FusionTree,
+        col_tree: _native.FusionTree,
+    ) -> Array: ...
 
-    def _subblock(
-        self, row_tree: _native.FusionTree, col_tree: _native.FusionTree
-    ) -> Array:
-        subblock = _find_subblock_structure(self.space, row_tree, col_tree)
+    @overload
+    def subblock(
+        self,
+        key: _FusionTreePair | _VisibleSectorTuple,
+    ) -> Array: ...
+
+    def subblock(self, key: object, col_tree: object = _MISSING) -> Array:
+        if col_tree is not _MISSING:
+            if not isinstance(key, _native.FusionTree) or not isinstance(
+                col_tree,
+                _native.FusionTree,
+            ):
+                raise TypeError(
+                    "subblock() with two arguments requires a pair of FusionTree objects"
+                )
+            key = (key, col_tree)
+        return self._subblock_at(_resolve_subblock_index(self.space, key))
+
+    def _subblock_at(self, index: int) -> Array:
+        subblock = get_degeneracystructure(self.space).subblock_at(index)
+        if subblock is None:
+            raise KeyError(index)
         return _get_subblock(self.storage.data, subblock)
 
     def subblocks(
         self,
-    ) -> tuple[tuple[tuple[_native.FusionTree, _native.FusionTree], Array], ...]:
-        sectorstructure = get_sectorstructure(self.space)
-        degeneracystructure = get_degeneracystructure(self.space)
-
-        return tuple(
-            (
-                pair,
-                _get_subblock(self.storage.data, subblock),
-            )
-            for pair, subblock in zip(
-                sectorstructure.fusiontree_pairs,
-                degeneracystructure.subblockstructure,
-            )
+    ) -> _SubblocksView:
+        return _SubblocksView(
+            self,
+            get_sectorstructure(self.space),
+            get_degeneracystructure(self.space),
         )
 
-    def __getitem__(self, key: object) -> Array:
-        row_tree, col_tree = _normalize_fusiontree_pair_key(key)
-        return self._subblock(row_tree, col_tree)
+    def __getitem__(self, key: _FusionTreePair | _VisibleSectorTuple) -> Array:
+        return self._subblock_at(_resolve_subblock_index(self.space, key))
 
     def to_dense(self) -> Array:
         from .dense import to_dense
@@ -485,6 +495,73 @@ class TensorMap:
 
     def __truediv__(self, other: object) -> TensorMap:
         return self.scale(1 / jnp.asarray(other))
+
+
+@dataclass(frozen=True)
+class _SubblocksView:
+    tensor: TensorMap
+    _sectorstructure: _native.SectorStructure
+    _degeneracystructure: _native.DegeneracyStructure
+
+    def __len__(self) -> int:
+        return self._sectorstructure.fusiontree_pair_count
+
+    @overload
+    def __getitem__(self, index: int) -> tuple[_FusionTreePair, Array]: ...
+
+    @overload
+    def __getitem__(
+        self,
+        index: slice,
+    ) -> tuple[tuple[_FusionTreePair, Array], ...]: ...
+
+    def __getitem__(
+        self,
+        index: int | slice,
+    ) -> tuple[_FusionTreePair, Array] | tuple[tuple[_FusionTreePair, Array], ...]:
+        if isinstance(index, slice):
+            return tuple(self[item] for item in range(*index.indices(len(self))))
+
+        length = len(self)
+        if index < 0:
+            index += length
+        if index < 0 or index >= length:
+            raise IndexError("subblock index out of range")
+
+        pair = self._sectorstructure.fusiontree_pair_at(index)
+        subblock = self._degeneracystructure.subblock_at(index)
+        if pair is None or subblock is None:
+            raise RuntimeError("sector and degeneracy structures are inconsistent")
+        return pair, _get_subblock(self.tensor.storage.data, subblock)
+
+    def __iter__(
+        self,
+    ) -> Iterator[tuple[_FusionTreePair, Array]]:
+        for index in range(len(self)):
+            yield self[index]
+
+
+def _resolve_subblock_index(
+    space: _native.HomSpace,
+    key: object,
+) -> int:
+    sectorstructure = get_sectorstructure(space)
+    if isinstance(key, tuple) and any(
+        isinstance(value, _native.FusionTree) for value in key
+    ):
+        row_tree, col_tree = _normalize_fusiontree_pair_key(key)
+        index = sectorstructure.fusiontree_pair_index(row_tree, col_tree)
+    else:
+        if not isinstance(key, tuple):
+            raise TypeError(
+                "TensorMap indices must be a pair of FusionTree objects "
+                "or a tuple of sectors"
+            )
+        index = _native.unique_fusiontree_pair_index(space, sectorstructure, key)
+
+    if index is None:
+        raise KeyError(key)
+    return index
 
 
 def zeros(space: _native.HomSpace, dtype: DTypeLike | None = None) -> TensorMap:

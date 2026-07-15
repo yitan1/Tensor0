@@ -61,11 +61,27 @@ tensor = TensorMap(h, jnp.arange(total_dim, dtype=jnp.float32))
 sector_0_block = tensor.block(0)
 sector_1_block = tensor.block((1,))
 ordered_blocks = tensor.blocks()
+
+subblocks = tensor.subblocks()
+(row_tree, col_tree), reduced = next(iter(subblocks))
+assert tensor[row_tree, col_tree].shape == reduced.shape
+
+# U1 has UniqueFusion. Domain indices use visible (dual) sector labels.
+charge_one = tensor[1, -1]
 ```
 
 `TensorMap` stores a `HomSpace` and a 1D `VectorStorage`-compatible JAX array.
 The storage length must match `get_degeneracystructure(h).total_dim`.
 Use `scalar(tensor)` only for scalar TensorMaps with no visible indices.
+`tensor.subblocks()` is a reusable lazy view in canonical fusion-tree order;
+each iteration creates and reads one subblock at a time. The view supports
+`len(view)`, integer and negative indexing, and slices; a slice returns an
+ordinary tuple. Use either
+`tensor[row_tree, col_tree]` / `tensor.subblock(row_tree, col_tree)` or a tuple
+of visible sectors for `UniqueFusion` families, such as `tensor[1, -1]` /
+`tensor.subblock((1, -1))`. A tuple-valued product sector on a rank-one tensor
+needs an outer tuple, for example `tensor[((0, 0),)]`. Returned JAX arrays are
+immutable values rather than write-through views.
 
 ## Composition
 

@@ -182,10 +182,12 @@ def twist(
 
     degeneracystructure = get_degeneracystructure(tensor.space)
     data = tensor.storage.data
-    subblocks = degeneracystructure.subblockstructure
-    for factor, subblock in zip(factors, subblocks, strict=True):
+    for index, factor in enumerate(factors):
         if factor == 1:
             continue
+        subblock = degeneracystructure.subblock_at(index)
+        if subblock is None:
+            raise RuntimeError("twist factors and degeneracy structure are inconsistent")
         coefficient = jnp.asarray(factor, dtype=data.dtype)
         data = _scale_subblock(data, subblock, coefficient)
     return TensorMap(tensor.space, data)

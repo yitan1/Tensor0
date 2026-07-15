@@ -13,17 +13,17 @@ use tensor0_core::sector::{
 };
 
 use crate::pyconv::{
-    arrayd_to_numpy, core_err, sector_spec_static_key, sector_tuple_py, sectors_tuple_py,
+    arrayd_to_numpy, core_err, py_hash, sector_spec_static_key, sector_tuple_py, sectors_tuple_py,
     tuple_from_usizes,
 };
 
 #[pyclass(name = "FusionTree", skip_from_py_object)]
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct PyFusionTree {
-    inner: FusionTreeInner,
+    pub(crate) inner: FusionTreeInner,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum FusionTreeInner {
     U1Irrep(FusionTree<U1Irrep>),
     SU2Irrep(FusionTree<SU2Irrep>),
@@ -255,6 +255,14 @@ impl PyFusionTree {
     fn static_key(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         self.inner.static_key_py(py)
     }
+
+    fn __eq__(&self, other: PyRef<'_, PyFusionTree>) -> bool {
+        self.inner == other.inner
+    }
+
+    fn __hash__(&self) -> isize {
+        py_hash("FusionTree", &self.inner)
+    }
 }
 
 fn fusiontree_tensor_for<I: Sector>(
@@ -286,25 +294,35 @@ where
 {
     let items = pairs
         .into_iter()
-        .map(|pair| {
-            let row = Py::new(
-                py,
-                PyFusionTree {
-                    inner: wrap(pair.row.clone()),
-                },
-            )?
-            .into_any();
-            let col = Py::new(
-                py,
-                PyFusionTree {
-                    inner: wrap(pair.col.clone()),
-                },
-            )?
-            .into_any();
-            Ok(PyTuple::new(py, [row, col])?.into_any().unbind())
-        })
+        .map(|pair| fusiontree_pair_py(py, pair, wrap))
         .collect::<PyResult<Vec<_>>>()?;
     Ok(PyTuple::new(py, items)?.into_any().unbind())
+}
+
+pub(crate) fn fusiontree_pair_py<I, F>(
+    py: Python<'_>,
+    pair: &FusionTreePair<I>,
+    wrap: F,
+) -> PyResult<Py<PyAny>>
+where
+    I: Sector,
+    F: Fn(FusionTree<I>) -> FusionTreeInner + Copy,
+{
+    let row = Py::new(
+        py,
+        PyFusionTree {
+            inner: wrap(pair.row.clone()),
+        },
+    )?
+    .into_any();
+    let col = Py::new(
+        py,
+        PyFusionTree {
+            inner: wrap(pair.col.clone()),
+        },
+    )?
+    .into_any();
+    Ok(PyTuple::new(py, [row, col])?.into_any().unbind())
 }
 
 pub(crate) fn fusiontree_static_key_py<I: Sector>(

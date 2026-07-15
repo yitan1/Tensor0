@@ -7,6 +7,7 @@ from typing import Any
 
 import jax
 from jax import Array
+from jax.core import Tracer
 import jax.numpy as jnp
 from jax.typing import DTypeLike
 
@@ -14,7 +15,6 @@ from .. import _native
 from ..structure.layout import (
     get_blockstructure,
     get_degeneracystructure,
-    get_sectorstructure,
 )
 from ..structure.sector_dict import SectorDict
 
@@ -251,23 +251,6 @@ def normalize_fusiontree_pair_key(
     return row_tree, col_tree
 
 
-def find_subblock_structure(
-    space: _native.HomSpace,
-    row_tree: _native.FusionTree,
-    col_tree: _native.FusionTree,
-) -> _native.SubblockStructure:
-    key = (row_tree.static_key, col_tree.static_key)
-    sectorstructure = get_sectorstructure(space)
-    degeneracystructure = get_degeneracystructure(space)
-    for pair, subblock in zip(
-        sectorstructure.fusiontree_pairs,
-        degeneracystructure.subblockstructure,
-    ):
-        if (pair[0].static_key, pair[1].static_key) == key:
-            return subblock
-    raise KeyError(key)
-
-
 def _strided_indices_cache_key(
     sizes: tuple[int, ...],
     strides: tuple[int, ...],
@@ -283,7 +266,7 @@ def _clear_strided_indices_cache_for_tests() -> None:
 
 
 def _is_traced_array(value: object) -> bool:
-    return isinstance(value, jax.core.Tracer)
+    return isinstance(value, Tracer)
 
 
 def _build_strided_indices(
