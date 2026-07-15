@@ -4,6 +4,7 @@ use pyo3::prelude::*;
 use pyo3::sync::PyOnceLock;
 use pyo3::types::{PyAny, PyTuple};
 use tensor0_core::transform::{
+    flip_entries as core_flip_entries,
     reweighting::{
         twist_is_trivial as core_twist_is_trivial,
         twist_subblock_factors as core_twist_subblock_factors,
@@ -296,6 +297,36 @@ pub(crate) fn tree_transposer(
     )?;
 
     Ok(PyTreeTransformer::from_inner(inner))
+}
+
+#[pyfunction(signature = (src, dst, src_sectorstructure, dst_sectorstructure, indices, inv=false))]
+pub(crate) fn flip_entries(
+    py: Python<'_>,
+    src: PyRef<'_, PyHomSpace>,
+    dst: PyRef<'_, PyHomSpace>,
+    src_sectorstructure: PyRef<'_, PySectorStructure>,
+    dst_sectorstructure: PyRef<'_, PySectorStructure>,
+    indices: Vec<usize>,
+    inv: bool,
+) -> PyResult<Py<PyAny>> {
+    let entries = dispatch_matching_homspaces_and_structures!(
+        src,
+        dst,
+        src_sectorstructure,
+        dst_sectorstructure,
+        |src_hom, dst_hom, src_structure, dst_structure| {
+            core_flip_entries(
+                src_hom,
+                dst_hom,
+                src_structure,
+                dst_structure,
+                &indices,
+                inv,
+            )
+            .map_err(core_err)
+        }
+    )?;
+    Ok(PyTuple::new(py, entries)?.into_any().unbind())
 }
 
 impl PyTreeTransformer {

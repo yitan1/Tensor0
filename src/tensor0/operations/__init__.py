@@ -1,6 +1,7 @@
 from .contractions import contract, idx, ncon, tensorcontract, tensortrace
 from .transforms import (
     braid,
+    flip,
     permute,
     repartition,
     transpose,
@@ -10,6 +11,7 @@ from .transforms import (
 __all__ = [
     "braid",
     "contract",
+    "flip",
     "idx",
     "ncon",
     "permute",

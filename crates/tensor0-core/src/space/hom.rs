@@ -78,6 +78,36 @@ impl<I: Sector> HomSpace<I> {
         visible
     }
 
+    pub fn flip(&self, indices: &[usize]) -> Result<Self> {
+        let rank = self.numind();
+        let mut seen = vec![false; rank];
+        for &index in indices {
+            if index >= rank {
+                return Err(Tensor0Error::Message(format!(
+                    "flip visible index {index} is out of range for rank {rank}",
+                )));
+            }
+            if seen[index] {
+                return Err(Tensor0Error::Message(
+                    "flip visible indices must be unique".to_string(),
+                ));
+            }
+            seen[index] = true;
+        }
+
+        let mut codomain = self.codomain.factors().to_vec();
+        let mut domain = self.domain.factors().to_vec();
+        for &index in indices {
+            if index < self.numout() {
+                codomain[index] = codomain[index].flip();
+            } else {
+                let domain_index = index - self.numout();
+                domain[domain_index] = domain[domain_index].flip();
+            }
+        }
+        Ok(HomSpace::from_factor_spaces(codomain, domain))
+    }
+
     pub fn permute(&self, p_codomain: &[usize], p_domain: &[usize]) -> Result<Self> {
         validate_visible_permutation(self.numind(), p_codomain, p_domain)?;
         let visible = self.visible_legs();

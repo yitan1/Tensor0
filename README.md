@@ -13,7 +13,7 @@ Documentation: <https://yitan1.github.io/Tensor0/>
 - `TensorMap` storage backed by JAX arrays.
 - Block access, blockwise composition, compact SVD, and truncation helpers.
 - `permute`, `braid`, `transpose`, and `repartition` transform helpers.
-- Symmetry-aware `twist`, binary `tensorcontract`, single-tensor
+- Symmetry-aware index `flip` and `twist`, binary `tensorcontract`, single-tensor
   `tensortrace`, named-label `contract`, and integer-label `ncon` operations.
 - `to_dense(...)` and `from_dense(...)` for small correctness checks.
 - JAX `jit` and `grad` support through pytree registration.

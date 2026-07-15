@@ -21,8 +21,8 @@ use space::{
     PyHomSpace, PyProductSpace,
 };
 use transform::{
-    trace_transformer, tree_braider, tree_transposer, twist_is_trivial, twist_subblock_factors,
-    PyAbelianTransformData, PyGenericTransformData, PyTreeTransformer,
+    flip_entries, trace_transformer, tree_braider, tree_transposer, twist_is_trivial,
+    twist_subblock_factors, PyAbelianTransformData, PyGenericTransformData, PyTreeTransformer,
 };
 
 #[pyfunction]
@@ -65,6 +65,7 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(twist_subblock_factors, module)?)?;
     module.add_function(wrap_pyfunction!(trace_transformer, module)?)?;
     module.add_function(wrap_pyfunction!(tree_braider, module)?)?;
+    module.add_function(wrap_pyfunction!(flip_entries, module)?)?;
     module.add_function(wrap_pyfunction!(tree_transposer, module)?)?;
 
     add_sector_constants(py, module)?;

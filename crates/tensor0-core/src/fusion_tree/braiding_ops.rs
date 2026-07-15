@@ -1,4 +1,4 @@
-//! Braiding and permutation operations on fusion-tree bases.
+//! Braiding, permutation, and index-flip operations on fusion-tree bases.
 //!
 //! Permutation is represented using TensorKit's repartition-braid-repartition
 //! structure. Future anyonic support should add explicit braid-word operations
@@ -76,6 +76,52 @@ pub(crate) fn braid_block<I: Sector>(
         let (dst, step) = repartition_block(&dst, p_codomain.len())?;
         Ok((dst, step.dot(&transform)))
     }
+}
+
+/// Flips already-validated visible indices on one fusion-tree pair.
+///
+/// `indices` must be unique and in range for `src`.
+pub(crate) fn flip_pair<I: Sector>(
+    src: &FusionTreePair<I>,
+    indices: &[usize],
+    inv: bool,
+) -> Result<(FusionTreePair<I>, f64)> {
+    let mut dst = src.clone();
+    let mut factor = 1.0;
+    for &index in indices {
+        let step = flip_visible_index(&mut dst, index, inv)?;
+        factor *= step;
+    }
+    Ok((dst, factor))
+}
+
+fn flip_visible_index<I: Sector>(
+    pair: &mut FusionTreePair<I>,
+    index: usize,
+    inv: bool,
+) -> Result<f64> {
+    let numout = pair.row.uncoupled.len();
+    let factor = if index < numout {
+        let sector = &pair.row.uncoupled[index];
+        let was_dual = pair.row.is_dual[index];
+        pair.row.is_dual[index] = !was_dual;
+        if was_dual != inv {
+            I::frobenius_schur_phase(sector)? * sector.twist()
+        } else {
+            1.0
+        }
+    } else {
+        let col_index = index - numout;
+        let sector = &pair.col.uncoupled[col_index];
+        let was_dual = pair.col.is_dual[col_index];
+        pair.col.is_dual[col_index] = !was_dual;
+        if was_dual == inv {
+            sector.twist()
+        } else {
+            I::frobenius_schur_phase(sector)?
+        }
+    };
+    Ok(factor)
 }
 
 fn braid_tree<I: Sector>(

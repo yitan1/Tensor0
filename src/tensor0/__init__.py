@@ -73,6 +73,7 @@ from .tensor import (
 )
 from .operations.transforms import (
     braid,
+    flip,
     permute,
     repartition,
     transpose,
@@ -117,6 +118,7 @@ __all__ = [
     "dot",
     "from_blocks",
     "from_dense",
+    "flip",
     "get_degeneracystructure",
     "get_sectorstructure",
     "hom",

@@ -9,7 +9,7 @@ from ...structure.layout import get_degeneracystructure, get_sectorstructure
 from ...structure.spaces import hom
 from ...tensor._blocks import (
     add_to_subblock as _add_to_subblock,
-    read_subblock as _read_subblock,
+    get_subblock as _get_subblock,
 )
 from ...tensor.tensor_map import TensorMap
 from ..transforms import _treepermuter, permute, twist
@@ -466,7 +466,7 @@ def _trace_source_subblock(
     num_open_out: int,
     trace_count: int,
 ) -> jnp.ndarray:
-    value = _read_subblock(source_data, source_subblock, result_dtype)
+    value = _get_subblock(source_data, source_subblock, result_dtype)
     if permutation:
         value = jnp.transpose(value, permutation)
     for trace_index in reversed(range(trace_count)):

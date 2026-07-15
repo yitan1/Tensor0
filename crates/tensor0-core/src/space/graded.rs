@@ -76,6 +76,20 @@ impl<I: Sector> GradedSpace<I> {
         }
     }
 
+    /// Toggle the duality presentation while preserving visible sectors.
+    pub fn flip(&self) -> Self {
+        let mut sector_dims = self
+            .sector_dims
+            .iter()
+            .map(|(sector, dim)| (sector.dual(), *dim))
+            .collect::<Vec<_>>();
+        sector_dims.sort_by(|left, right| left.0.cmp(&right.0));
+        GradedSpace {
+            sector_dims,
+            is_dual: !self.is_dual,
+        }
+    }
+
     pub fn is_dual(&self) -> bool {
         self.is_dual
     }

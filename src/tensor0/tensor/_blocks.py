@@ -39,12 +39,12 @@ def subblock_indices(subblock: _native.SubblockStructure) -> Array:
     )
 
 
-def read_subblock(
+def get_subblock(
     storage: object,
     subblock: _native.SubblockStructure,
     dtype: jnp.dtype | None = None,
 ) -> Array:
-    return read_strided(
+    return get_strided(
         storage,
         tuple(subblock.sizes),
         tuple(subblock.strides),
@@ -59,6 +59,20 @@ def add_to_subblock(
     value: Array,
 ) -> Array:
     return add_to_strided(
+        storage,
+        tuple(subblock.sizes),
+        tuple(subblock.strides),
+        subblock.offset,
+        value,
+    )
+
+
+def set_subblock(
+    storage: Array,
+    subblock: _native.SubblockStructure,
+    value: Array,
+) -> Array:
+    return set_strided(
         storage,
         tuple(subblock.sizes),
         tuple(subblock.strides),
@@ -97,7 +111,18 @@ def _is_contiguous_strided(
     return True
 
 
-def read_strided(
+def _strided_selector(
+    sizes: tuple[int, ...],
+    strides: tuple[int, ...],
+    offset: int,
+) -> slice | Array:
+    if _is_contiguous_strided(sizes, strides) and not _is_traced_array(offset):
+        size = math.prod(sizes)
+        return slice(offset, offset + size)
+    return strided_indices(sizes, strides, offset)
+
+
+def get_strided(
     storage: object,
     sizes: tuple[int, ...],
     strides: tuple[int, ...],
@@ -105,11 +130,7 @@ def read_strided(
     dtype: jnp.dtype | None = None,
 ) -> Array:
     data = jnp.asarray(storage)
-    if _is_contiguous_strided(sizes, strides) and not _is_traced_array(offset):
-        size = math.prod(sizes)
-        block = data[offset : offset + size]
-    else:
-        block = data[strided_indices(sizes, strides, offset)]
+    block = data[_strided_selector(sizes, strides, offset)]
     if dtype is not None:
         block = jnp.asarray(block, dtype=dtype)
     return block.reshape(sizes)
@@ -122,10 +143,19 @@ def add_to_strided(
     offset: int,
     value: Array,
 ) -> Array:
-    if _is_contiguous_strided(sizes, strides) and not _is_traced_array(offset):
-        size = math.prod(sizes)
-        return storage.at[offset : offset + size].add(value.reshape(-1))
-    return storage.at[strided_indices(sizes, strides, offset)].add(value.reshape(-1))
+    selector = _strided_selector(sizes, strides, offset)
+    return storage.at[selector].add(value.reshape(-1))
+
+
+def set_strided(
+    storage: Array,
+    sizes: tuple[int, ...],
+    strides: tuple[int, ...],
+    offset: int,
+    value: Array,
+) -> Array:
+    selector = _strided_selector(sizes, strides, offset)
+    return storage.at[selector].set(value.reshape(-1))
 
 
 def scale_strided(
@@ -135,10 +165,8 @@ def scale_strided(
     offset: int,
     factor: Array,
 ) -> Array:
-    if _is_contiguous_strided(sizes, strides) and not _is_traced_array(offset):
-        size = math.prod(sizes)
-        return storage.at[offset : offset + size].multiply(factor)
-    return storage.at[strided_indices(sizes, strides, offset)].multiply(factor)
+    selector = _strided_selector(sizes, strides, offset)
+    return storage.at[selector].multiply(factor)
 
 
 def pack_complete_blocks(

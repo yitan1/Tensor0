@@ -5,6 +5,7 @@ use tensor0_core::sector::{
 };
 use tensor0_core::space::{GradedSpace, HomSpace, ProductSpace};
 use tensor0_core::transform::{
+    flip_entries as build_flip_entries,
     reweighting::{twist_is_trivial, twist_subblock_factors},
     trace_transformer, tree_permuter as build_tree_permuter,
     tree_transposer as build_tree_transposer, AbelianTransformData, GenericTransformData,
@@ -188,6 +189,17 @@ fn tree_transposer<I: Sector>(
     )
 }
 
+fn flip_entries<I: Sector>(
+    src: &HomSpace<I>,
+    indices: &[usize],
+    inv: bool,
+) -> tensor0_core::error::Result<Vec<(usize, f64)>> {
+    let dst = src.flip(indices)?;
+    let src_structure = build_sector_structure(src)?;
+    let dst_structure = build_sector_structure(&dst)?;
+    build_flip_entries(src, &dst, &src_structure, &dst_structure, indices, inv)
+}
+
 fn expect_abelian(transformer: &TreeTransformer) -> &[AbelianTransformData] {
     let TreeTransformer::Abelian(data) = transformer else {
         panic!("expected Abelian transformer");
@@ -207,6 +219,10 @@ fn assert_single_abelian_mapping(data: &[AbelianTransformData], coeff: f64) {
     assert_eq!(data[0].coeff, coeff);
     assert_eq!(data[0].src, 0);
     assert_eq!(data[0].dst, 0);
+}
+
+fn assert_single_flip_entry(entries: &[(usize, f64)], coeff: f64) {
+    assert_eq!(entries, &[(0, coeff)]);
 }
 
 fn assert_single_generic_scalar_block(data: &[GenericTransformData], expected_coeff: f64) {
@@ -853,4 +869,129 @@ fn twist_metadata_rejects_invalid_visible_indices() {
     let other_structure = build_sector_structure(&other_space).unwrap();
     let mismatch = twist_subblock_factors(&space, &other_structure, &[0], false).unwrap_err();
     assert!(mismatch.to_string().contains("does not match"));
+}
+
+#[test]
+fn u1_flip_entries_map_canonical_pairs_one_to_one() {
+    let factor = GradedSpace::new(vec![(u1(-1), 2), (u1(0), 3), (u1(1), 5)], false).unwrap();
+    let src = HomSpace::from_factor_spaces(vec![factor.clone()], vec![factor]);
+
+    let entries = flip_entries(&src, &[0, 1], false).unwrap();
+
+    assert!(!entries.is_empty());
+    assert!(entries.iter().all(|(_, coeff)| *coeff == 1.0));
+    assert!(entries
+        .iter()
+        .enumerate()
+        .all(|(src, (dst, _))| src == *dst));
+}
+
+#[test]
+fn u1_flip_entries_record_canonical_order_changes() {
+    let factor = GradedSpace::new(vec![(u1(-1), 1), (u1(1), 1)], false).unwrap();
+    let src = HomSpace::new(
+        ProductSpace::new(vec![factor.clone(), factor]),
+        empty_product::<U1Irrep>(),
+    );
+
+    let entries = flip_entries(&src, &[1], false).unwrap();
+
+    assert_eq!(entries, vec![(1, 1.0), (0, 1.0)]);
+}
+
+#[test]
+fn su2_flip_entries_encode_inverse_coefficients() {
+    let half = GradedSpace::new(vec![(su2(1), 1)], false).unwrap();
+    let src = HomSpace::from_factor_spaces(vec![half.clone()], vec![half]);
+
+    let forward = flip_entries(&src, &[0], false).unwrap();
+    assert_single_flip_entry(&forward, 1.0);
+
+    let flipped = src.flip(&[0]).unwrap();
+    let inverse = flip_entries(&flipped, &[0], true).unwrap();
+    assert_single_flip_entry(&inverse, 1.0);
+
+    let second_forward = flip_entries(&flipped, &[0], false).unwrap();
+    assert_single_flip_entry(&second_forward, -1.0);
+}
+
+#[test]
+fn su2_flip_entries_align_multitree_canonical_indices() {
+    let half = GradedSpace::new(vec![(su2(1), 1)], false).unwrap();
+    let src = HomSpace::new(
+        ProductSpace::new(vec![half.clone(), half.clone(), half.clone(), half]),
+        empty_product::<SU2Irrep>(),
+    );
+
+    let entries = flip_entries(&src, &[0, 2], false).unwrap();
+
+    assert_eq!(entries, vec![(0, 1.0), (1, 1.0)]);
+}
+
+#[test]
+fn product_sector_flip_composes_frobenius_schur_and_twist_components() {
+    let odd = GradedSpace::new(vec![(fermion_number(1, 1), 1)], false).unwrap();
+    let src = HomSpace::from_factor_spaces(vec![odd.clone()], vec![odd]);
+
+    let row = flip_entries(&src, &[0], false).unwrap();
+    let column = flip_entries(&src, &[1], false).unwrap();
+    assert_single_flip_entry(&row, 1.0);
+    assert_single_flip_entry(&column, -1.0);
+}
+
+#[test]
+fn flip_entries_reject_destination_and_structure_mismatches() {
+    let factor = GradedSpace::new(vec![(u1(0), 1)], false).unwrap();
+    let src = HomSpace::from_factor_spaces(vec![factor.clone()], vec![factor.clone()]);
+    let dst = src.flip(&[0]).unwrap();
+    let src_structure = build_sector_structure(&src).unwrap();
+    let dst_structure = build_sector_structure(&dst).unwrap();
+
+    let err =
+        build_flip_entries(&src, &src, &src_structure, &src_structure, &[0], false).unwrap_err();
+    assert!(err.to_string().contains("incompatible spaces"));
+
+    let other = GradedSpace::new(vec![(u1(1), 1)], false).unwrap();
+    let wrong_src = HomSpace::from_factor_spaces(vec![other.clone()], vec![other]);
+    let wrong_structure = build_sector_structure(&wrong_src).unwrap();
+    let err =
+        build_flip_entries(&src, &dst, &wrong_structure, &dst_structure, &[0], false).unwrap_err();
+    assert!(err.to_string().contains("source sectorstructure"));
+}
+
+#[test]
+fn flip_entries_reuse_sector_layout_across_degeneracy_dimensions() {
+    let cached = GradedSpace::new(vec![(su2(1), 1)], false).unwrap();
+    let target = GradedSpace::new(vec![(su2(1), 3)], false).unwrap();
+    let make_hom = |factor: &GradedSpace<SU2Irrep>| {
+        HomSpace::from_factor_spaces(vec![factor.clone()], vec![factor.clone()])
+    };
+    let cached_src = make_hom(&cached);
+    let cached_dst = cached_src.flip(&[0]).unwrap();
+    let target_src = make_hom(&target);
+    let target_dst = target_src.flip(&[0]).unwrap();
+    let cached_src_structure = build_sector_structure(&cached_src).unwrap();
+    let cached_dst_structure = build_sector_structure(&cached_dst).unwrap();
+    let target_src_structure = build_sector_structure(&target_src).unwrap();
+    let target_dst_structure = build_sector_structure(&target_dst).unwrap();
+
+    let reused = build_flip_entries(
+        &target_src,
+        &target_dst,
+        &cached_src_structure,
+        &cached_dst_structure,
+        &[0],
+        false,
+    )
+    .unwrap();
+    let direct = build_flip_entries(
+        &target_src,
+        &target_dst,
+        &target_src_structure,
+        &target_dst_structure,
+        &[0],
+        false,
+    )
+    .unwrap();
+    assert_eq!(reused, direct);
 }

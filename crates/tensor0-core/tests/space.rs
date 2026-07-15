@@ -724,3 +724,59 @@ fn infimum_space_rejects_mismatched_dual_flags() {
 
     assert_err_contains(infimum_space(&left, &right), "same dual flag");
 }
+
+#[test]
+fn graded_space_flip_preserves_visible_sectors_and_differs_from_dual() {
+    let original = gs(vec![(u1(-2), 3), (u1(1), 5)]);
+    let flipped = original.flip();
+
+    assert_eq!(flipped.sectors(), original.sectors());
+    assert!(flipped.is_dual());
+    assert_ne!(flipped, original.dual());
+    assert_eq!(flipped.flip(), original);
+}
+
+#[test]
+fn graded_space_flip_is_exact_for_representative_sector_families() {
+    fn assert_roundtrip<I: Sector + Debug>(space: GradedSpace<I>) {
+        let visible = space.sectors().into_iter().collect::<BTreeMap<_, _>>();
+        let flipped = space.flip();
+        assert_eq!(
+            flipped.sectors().into_iter().collect::<BTreeMap<_, _>>(),
+            visible,
+        );
+        assert_eq!(flipped.is_dual(), !space.is_dual());
+        assert_eq!(flipped.flip(), space);
+    }
+
+    assert_roundtrip(gs(vec![(su2(1), 2), (su2(2), 3)]));
+    assert_roundtrip(gs(vec![(fp(0), 2), (fp(1), 3)]));
+    assert_roundtrip(gs(vec![(z4(1), 2), (z4(3), 3)]));
+    assert_roundtrip(gs(vec![
+        (fermion_number(1, 1), 2),
+        (fermion_number(-2, 0), 3),
+    ]));
+}
+
+#[test]
+fn hom_space_flip_keeps_partition_and_validates_all_indices() {
+    let out = gs(vec![(u1(1), 2)]);
+    let input = gs(vec![(u1(-1), 3)]).dual();
+    let hom = HomSpace::from_factor_spaces(vec![out.clone()], vec![input.clone()]);
+
+    let flipped = hom.flip(&[0, 1]).unwrap();
+    assert_eq!(flipped.codomain().factors(), &[out.flip()]);
+    assert_eq!(flipped.domain().factors(), &[input.flip()]);
+    assert_eq!(
+        flipped.visible_leg(0).unwrap(),
+        hom.visible_leg(0).unwrap().flip()
+    );
+    assert_eq!(
+        flipped.visible_leg(1).unwrap(),
+        hom.visible_leg(1).unwrap().flip()
+    );
+    assert_eq!(flipped.flip(&[0, 1]).unwrap(), hom);
+
+    assert_err_contains(hom.flip(&[0, 0]), "unique");
+    assert_err_contains(hom.flip(&[2]), "out of range");
+}

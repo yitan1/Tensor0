@@ -15,8 +15,9 @@ from ..structure.layout import (
 )
 from ..tensor._blocks import (
     add_to_subblock as _add_to_subblock,
-    read_subblock as _read_subblock,
+    get_subblock as _get_subblock,
     scale_subblock as _scale_subblock,
+    set_subblock as _set_subblock,
 )
 from ..tensor.tensor_map import TensorMap
 
@@ -160,7 +161,7 @@ def twist(
 ) -> TensorMap:
     if not isinstance(tensor, TensorMap):
         raise TypeError("twist() requires a TensorMap")
-    normalized = _normalize_twist_indices(indices, tensor.space.numind)
+    normalized = _normalize_visible_indices(indices, tensor.space.numind, "twist")
     if not isinstance(inv, bool):
         raise TypeError("twist() requires inv to be a bool")
     if not normalized:
@@ -188,6 +189,51 @@ def twist(
         coefficient = jnp.asarray(factor, dtype=data.dtype)
         data = _scale_subblock(data, subblock, coefficient)
     return TensorMap(tensor.space, data)
+
+
+def flip(
+    tensor: TensorMap,
+    indices: int | tuple[int, ...],
+    inv: bool = False,
+) -> TensorMap:
+    if not isinstance(tensor, TensorMap):
+        raise TypeError("flip() requires a TensorMap")
+    normalized = _normalize_visible_indices(indices, tensor.space.numind, "flip")
+    if not isinstance(inv, bool):
+        raise TypeError("flip() requires inv to be a bool")
+    if not normalized:
+        return tensor
+
+    dst_space = tensor.space.flip(normalized)
+    entries = _native.flip_entries(
+        tensor.space,
+        dst_space,
+        get_sectorstructure(tensor.space),
+        get_sectorstructure(dst_space),
+        normalized,
+        inv,
+    )
+    source = jnp.asarray(tensor.storage.data)
+    result_dtype = (
+        source.dtype
+        if all(coeff == 1.0 or coeff == -1.0 for _, coeff in entries)
+        else jnp.result_type(source, jnp.float32)
+    )
+    src_subblocks = get_degeneracystructure(tensor.space).subblockstructure
+    dst_degeneracy = get_degeneracystructure(dst_space)
+    dst_data = jnp.zeros((dst_degeneracy.total_dim,), dtype=result_dtype)
+    dst_subblocks = dst_degeneracy.subblockstructure
+    # Toggling a fixed set of duality flags is bijective, so each destination
+    # subblock is written exactly once.
+    for src_index, (dst_index, coeff) in enumerate(entries):
+        block = _get_subblock(source, src_subblocks[src_index], result_dtype)
+        coefficient = jnp.asarray(coeff, dtype=result_dtype)
+        dst_data = _set_subblock(
+            dst_data,
+            dst_subblocks[dst_index],
+            coefficient * block,
+        )
+    return TensorMap(dst_space, dst_data)
 
 
 def _treebraider(
@@ -303,7 +349,7 @@ def _add_abelian_transform(
     dst_subblocks: tuple[_native.SubblockStructure, ...],
 ) -> Array:
     for entry in data:
-        block = _read_subblock(source, src_subblocks[entry.src], result.dtype)
+        block = _get_subblock(source, src_subblocks[entry.src], result.dtype)
         block = _transpose_block(block, p)
         coeff = jnp.asarray(entry.coeff, dtype=result.dtype)
         result = _add_to_subblock(
@@ -331,7 +377,7 @@ def _add_generic_transform(
             and len(src_indices) == 1
             and len(dst_indices) == 1
         ):
-            block = _read_subblock(
+            block = _get_subblock(
                 source,
                 src_subblocks[src_indices[0]],
                 result.dtype,
@@ -346,7 +392,7 @@ def _add_generic_transform(
 
         src_sizes = tuple(src_subblocks[src_indices[0]].sizes)
         src_rows = tuple(
-            _read_subblock(source, src_subblocks[index], result.dtype).reshape(-1)
+            _get_subblock(source, src_subblocks[index], result.dtype).reshape(-1)
             for index in src_indices
         )
         buffer_src = jnp.stack(src_rows, axis=0)
@@ -434,22 +480,30 @@ def _normalize_axis_tuple(value: object, op_name: str) -> tuple[int, ...]:
     return tuple(indices)
 
 
-def _normalize_twist_indices(indices: object, rank: int) -> tuple[int, ...]:
+def _normalize_visible_indices(
+    indices: object,
+    rank: int,
+    operation: str,
+) -> tuple[int, ...]:
     if isinstance(indices, bool):
-        raise TypeError("twist() requires integer visible indices")
+        raise TypeError(f"{operation}() requires integer visible indices")
     if isinstance(indices, int):
         indices = (indices,)
     elif not isinstance(indices, tuple):
-        raise TypeError("twist() requires one integer or a tuple of integers")
+        raise TypeError(
+            f"{operation}() requires one integer or a tuple of integers"
+        )
 
     if any(isinstance(index, bool) or not isinstance(index, int) for index in indices):
-        raise TypeError("twist() requires integer visible indices")
+        raise TypeError(f"{operation}() requires integer visible indices")
     if any(index < 0 for index in indices):
-        raise ValueError("twist visible indices must be non-negative")
+        raise ValueError(f"{operation} visible indices must be non-negative")
     if any(index >= rank for index in indices):
-        raise ValueError(f"twist visible indices are out of range for rank {rank}")
+        raise ValueError(
+            f"{operation} visible indices are out of range for rank {rank}"
+        )
     if len(set(indices)) != len(indices):
-        raise ValueError("twist visible indices must be unique")
+        raise ValueError(f"{operation} visible indices must be unique")
     return indices
 
 

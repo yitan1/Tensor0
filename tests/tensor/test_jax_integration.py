@@ -8,6 +8,7 @@ from tensor0 import (
     TensorMap,
     U1Irrep,
     contract,
+    flip,
     hom,
     idx,
     ncon,
@@ -515,6 +516,32 @@ def test_grad_through_twist_preserves_fermionic_subblock_sign():
 
     def loss(value):
         return jnp.sum(twist(value, 0).storage.data * weights)
+
+    gradient = jax.jit(jax.grad(loss))(tensor)
+
+    assert gradient.space == target
+    assert_allclose(gradient.storage.data, jnp.array([5.0, -7.0]))
+
+
+def test_jit_flip_matches_eager_with_static_destination_metadata():
+    factor = space(FermionParity, {0: 1, 1: 1})
+    target = hom((factor, factor), (factor,))
+    tensor = TensorMap(target, float_data_for(target))
+
+    _assert_jitted_transform_matches_eager(
+        tensor,
+        lambda value: flip(value, (0, 2)),
+    )
+
+
+def test_jitted_grad_through_flip_preserves_column_z_isomorphism_sign():
+    factor = space(FermionParity, {0: 1, 1: 1})
+    target = hom((factor,), (factor,))
+    tensor = TensorMap(target, jnp.array([2.0, 3.0]))
+    weights = jnp.array([5.0, 7.0])
+
+    def loss(value):
+        return jnp.sum(flip(value, 1).storage.data * weights)
 
     gradient = jax.jit(jax.grad(loss))(tensor)
 

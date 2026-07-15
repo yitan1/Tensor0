@@ -67,6 +67,7 @@ hand-written overview, not generated API reference.
 - `braid`
 - `transpose`
 - `repartition`
+- `flip`
 - `twist`
 
 ## Contractions

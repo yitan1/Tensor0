@@ -136,7 +136,7 @@ with quantum-dimension weighting, and `cond` currently supports the 2-norm.
 ## Transforms
 
 The public transform helpers are `permute(...)`, `braid(...)`, `transpose(...)`,
-and `repartition(...)`.
+`repartition(...)`, `flip(...)`, and `twist(...)`.
 
 ```python
 import jax.numpy as jnp
@@ -158,6 +158,25 @@ tensor = TensorMap(h, data_for(h))
 result = permute(tensor, ((1,), (0, 2)))
 assert result.space == hom((w,), (v.dual(), x))
 ```
+
+`flip(tensor, indices, inv=False)` changes the duality presentation of the
+selected 0-based visible indices without moving them across the
+codomain/domain partition. It preserves visible sector multiplicities and
+applies the fusion-tree Z-isomorphism coefficient:
+
+```python
+from tensor0 import flip
+
+flipped = flip(tensor, (0, 2))
+restored = flip(flipped, (0, 2), inv=True)
+
+assert restored.space == tensor.space
+```
+
+`flip` is distinct from elementary-space `dual()` and is not generally
+involutory: two forward flips can introduce a phase. Use one forward and one
+inverse flip to restore the original tensor. Flipping both sides of a matching
+contraction leg preserves the contraction result.
 
 For small correctness checks, compare transform results through public dense
 conversion.

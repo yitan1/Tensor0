@@ -57,11 +57,11 @@ def test_strided_indices_cache_is_bounded():
     assert repeated_first.tolist() == [0]
 
 
-def test_read_and_add_to_strided_use_same_values_after_cache_clear():
+def test_get_and_add_to_strided_use_same_values_after_cache_clear():
     _blocks._clear_strided_indices_cache_for_tests()
     data = jnp.arange(12.0)
 
-    value = _blocks.read_strided(data, (2, 3), (1, 4), 2)
+    value = _blocks.get_strided(data, (2, 3), (1, 4), 2)
     result = _blocks.add_to_strided(
         jnp.zeros_like(data),
         (2, 3),
@@ -85,17 +85,18 @@ def test_read_and_add_to_strided_use_same_values_after_cache_clear():
         10.0,
         11.0,
     ]
+    assert len(_blocks._STRIDED_INDICES_CACHE) == 1
 
 
-def test_jitted_read_matches_expected_result():
+def test_jitted_get_matches_expected_result():
     _blocks._clear_strided_indices_cache_for_tests()
     data = jnp.arange(12.0)
 
     @jax.jit
-    def read_once(value):
-        return _blocks.read_strided(value, (2, 3), (1, 4), 2)
+    def get_once(value):
+        return _blocks.get_strided(value, (2, 3), (1, 4), 2)
 
-    result = read_once(data)
+    result = get_once(data)
 
     assert result.tolist() == [[2.0, 6.0, 10.0], [3.0, 7.0, 11.0]]
 
@@ -113,11 +114,11 @@ def test_jitted_strided_indices_with_dynamic_offset_does_not_cache_tracer():
     assert len(_blocks._STRIDED_INDICES_CACHE) == 0
 
 
-def test_contiguous_read_matches_flat_slice_without_populating_cache():
+def test_contiguous_get_matches_flat_slice_without_populating_cache():
     _blocks._clear_strided_indices_cache_for_tests()
     data = jnp.arange(12.0)
 
-    value = _blocks.read_strided(data, (2, 3), (3, 1), 4)
+    value = _blocks.get_strided(data, (2, 3), (3, 1), 4)
 
     assert value.tolist() == [[4.0, 5.0, 6.0], [7.0, 8.0, 9.0]]
     assert len(_blocks._STRIDED_INDICES_CACHE) == 0
@@ -134,13 +135,52 @@ def test_contiguous_add_to_matches_flat_slice_without_populating_cache():
     assert len(_blocks._STRIDED_INDICES_CACHE) == 0
 
 
-def test_non_contiguous_read_still_uses_cached_indices():
+def test_contiguous_set_matches_flat_slice_without_populating_cache():
     _blocks._clear_strided_indices_cache_for_tests()
-    data = jnp.arange(12.0)
+    storage = jnp.full((12,), -1.0, dtype=jnp.float32)
+    value = jnp.array([[4.0, 5.0, 6.0], [7.0, 8.0, 9.0]], dtype=jnp.float32)
 
-    value = _blocks.read_strided(data, (2, 3), (1, 4), 2)
+    result = _blocks.set_strided(storage, (2, 3), (3, 1), 4, value)
 
-    assert value.tolist() == [[2.0, 6.0, 10.0], [3.0, 7.0, 11.0]]
+    assert result.tolist() == [
+        -1.0,
+        -1.0,
+        -1.0,
+        -1.0,
+        4.0,
+        5.0,
+        6.0,
+        7.0,
+        8.0,
+        9.0,
+        -1.0,
+        -1.0,
+    ]
+    assert storage.tolist() == [-1.0] * 12
+    assert len(_blocks._STRIDED_INDICES_CACHE) == 0
+
+
+def test_non_contiguous_set_uses_cached_indices():
+    _blocks._clear_strided_indices_cache_for_tests()
+    storage = jnp.full((12,), -1.0, dtype=jnp.float32)
+    value = jnp.array([[2.0, 6.0, 10.0], [3.0, 7.0, 11.0]], dtype=jnp.float32)
+
+    result = _blocks.set_strided(storage, (2, 3), (1, 4), 2, value)
+
+    assert result.tolist() == [
+        -1.0,
+        -1.0,
+        2.0,
+        3.0,
+        -1.0,
+        -1.0,
+        6.0,
+        7.0,
+        -1.0,
+        -1.0,
+        10.0,
+        11.0,
+    ]
     assert len(_blocks._STRIDED_INDICES_CACHE) == 1
 
 
@@ -148,7 +188,7 @@ def test_size_one_dimension_with_arbitrary_stride_uses_contiguous_fast_path():
     _blocks._clear_strided_indices_cache_for_tests()
     data = jnp.arange(20.0)
 
-    value = _blocks.read_strided(data, (2, 1, 3), (3, 999, 1), 10)
+    value = _blocks.get_strided(data, (2, 1, 3), (3, 999, 1), 10)
     result = _blocks.add_to_strided(
         jnp.zeros((20,), dtype=jnp.float32),
         (2, 1, 3),
@@ -166,15 +206,15 @@ def test_size_one_dimension_with_arbitrary_stride_uses_contiguous_fast_path():
     assert len(_blocks._STRIDED_INDICES_CACHE) == 0
 
 
-def test_jitted_contiguous_read_with_dynamic_offset_uses_uncached_indices():
+def test_jitted_contiguous_get_with_dynamic_offset_uses_uncached_indices():
     _blocks._clear_strided_indices_cache_for_tests()
     data = jnp.arange(12.0)
 
     @jax.jit
-    def read_with_offset(offset):
-        return _blocks.read_strided(data, (2, 3), (3, 1), offset)
+    def get_with_offset(offset):
+        return _blocks.get_strided(data, (2, 3), (3, 1), offset)
 
-    result = read_with_offset(jnp.asarray(4))
+    result = get_with_offset(jnp.asarray(4))
 
     assert result.tolist() == [[4.0, 5.0, 6.0], [7.0, 8.0, 9.0]]
     assert len(_blocks._STRIDED_INDICES_CACHE) == 0
@@ -192,6 +232,34 @@ def test_jitted_contiguous_add_to_with_dynamic_offset_uses_uncached_indices():
     result = add_with_offset(jnp.asarray(4))
 
     assert result.tolist() == [0.0, 0.0, 0.0, 0.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 0.0, 0.0]
+    assert len(_blocks._STRIDED_INDICES_CACHE) == 0
+
+
+def test_jitted_contiguous_set_with_dynamic_offset_uses_uncached_indices():
+    _blocks._clear_strided_indices_cache_for_tests()
+    storage = jnp.full((12,), -1.0, dtype=jnp.float32)
+    value = jnp.array([[4.0, 5.0, 6.0], [7.0, 8.0, 9.0]], dtype=jnp.float32)
+
+    @jax.jit
+    def set_with_offset(offset):
+        return _blocks.set_strided(storage, (2, 3), (3, 1), offset, value)
+
+    result = set_with_offset(jnp.asarray(4))
+
+    assert result.tolist() == [
+        -1.0,
+        -1.0,
+        -1.0,
+        -1.0,
+        4.0,
+        5.0,
+        6.0,
+        7.0,
+        8.0,
+        9.0,
+        -1.0,
+        -1.0,
+    ]
     assert len(_blocks._STRIDED_INDICES_CACHE) == 0
 
 

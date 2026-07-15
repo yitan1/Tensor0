@@ -47,9 +47,9 @@ macro_rules! build_hom_from_products {
     }};
 }
 
-macro_rules! permute_hom {
-    ($variant:ident, $hom:expr, $p_codomain:expr, $p_domain:expr) => {
-        $hom.permute($p_codomain, $p_domain)
+macro_rules! dispatch_hom_method {
+    ($variant:ident, $hom:expr, $method:ident $(, $argument:expr)*) => {
+        $hom.$method($($argument),*)
             .map(HomSpaceInner::$variant)
             .map_err(core_err)
     };
@@ -135,6 +135,12 @@ impl PyHomSpace {
     fn permute(&self, p_codomain: Vec<usize>, p_domain: Vec<usize>) -> PyResult<PyHomSpace> {
         Ok(PyHomSpace {
             inner: self.inner.permute(&p_codomain, &p_domain)?,
+        })
+    }
+
+    fn flip(&self, indices: Vec<usize>) -> PyResult<PyHomSpace> {
+        Ok(PyHomSpace {
+            inner: self.inner.flip(&indices)?,
         })
     }
 
@@ -250,28 +256,66 @@ impl HomSpaceInner {
 
     fn permute(&self, p_codomain: &[usize], p_domain: &[usize]) -> PyResult<HomSpaceInner> {
         match self {
-            HomSpaceInner::U1Irrep(hom) => permute_hom!(U1Irrep, hom, p_codomain, p_domain),
-            HomSpaceInner::SU2Irrep(hom) => permute_hom!(SU2Irrep, hom, p_codomain, p_domain),
-            HomSpaceInner::FermionParity(hom) => {
-                permute_hom!(FermionParity, hom, p_codomain, p_domain)
+            HomSpaceInner::U1Irrep(hom) => {
+                dispatch_hom_method!(U1Irrep, hom, permute, p_codomain, p_domain)
             }
-            HomSpaceInner::Z2Irrep(hom) => permute_hom!(Z2Irrep, hom, p_codomain, p_domain),
-            HomSpaceInner::Z3Irrep(hom) => permute_hom!(Z3Irrep, hom, p_codomain, p_domain),
-            HomSpaceInner::Z4Irrep(hom) => permute_hom!(Z4Irrep, hom, p_codomain, p_domain),
+            HomSpaceInner::SU2Irrep(hom) => {
+                dispatch_hom_method!(SU2Irrep, hom, permute, p_codomain, p_domain)
+            }
+            HomSpaceInner::FermionParity(hom) => {
+                dispatch_hom_method!(FermionParity, hom, permute, p_codomain, p_domain)
+            }
+            HomSpaceInner::Z2Irrep(hom) => {
+                dispatch_hom_method!(Z2Irrep, hom, permute, p_codomain, p_domain)
+            }
+            HomSpaceInner::Z3Irrep(hom) => {
+                dispatch_hom_method!(Z3Irrep, hom, permute, p_codomain, p_domain)
+            }
+            HomSpaceInner::Z4Irrep(hom) => {
+                dispatch_hom_method!(Z4Irrep, hom, permute, p_codomain, p_domain)
+            }
             HomSpaceInner::U1IrrepFermionParity(hom) => {
-                permute_hom!(U1IrrepFermionParity, hom, p_codomain, p_domain)
+                dispatch_hom_method!(U1IrrepFermionParity, hom, permute, p_codomain, p_domain)
             }
             HomSpaceInner::FermionParityU1Irrep(hom) => {
-                permute_hom!(FermionParityU1Irrep, hom, p_codomain, p_domain)
+                dispatch_hom_method!(FermionParityU1Irrep, hom, permute, p_codomain, p_domain)
             }
             HomSpaceInner::U1SU2Irrep(hom) => {
-                permute_hom!(U1SU2Irrep, hom, p_codomain, p_domain)
+                dispatch_hom_method!(U1SU2Irrep, hom, permute, p_codomain, p_domain)
             }
             HomSpaceInner::FermionParitySU2Irrep(hom) => {
-                permute_hom!(FermionParitySU2Irrep, hom, p_codomain, p_domain)
+                dispatch_hom_method!(FermionParitySU2Irrep, hom, permute, p_codomain, p_domain)
             }
             HomSpaceInner::FermionParityU1SU2Irrep(hom) => {
-                permute_hom!(FermionParityU1SU2Irrep, hom, p_codomain, p_domain)
+                dispatch_hom_method!(FermionParityU1SU2Irrep, hom, permute, p_codomain, p_domain)
+            }
+        }
+    }
+
+    fn flip(&self, indices: &[usize]) -> PyResult<HomSpaceInner> {
+        match self {
+            HomSpaceInner::U1Irrep(hom) => dispatch_hom_method!(U1Irrep, hom, flip, indices),
+            HomSpaceInner::SU2Irrep(hom) => dispatch_hom_method!(SU2Irrep, hom, flip, indices),
+            HomSpaceInner::FermionParity(hom) => {
+                dispatch_hom_method!(FermionParity, hom, flip, indices)
+            }
+            HomSpaceInner::Z2Irrep(hom) => dispatch_hom_method!(Z2Irrep, hom, flip, indices),
+            HomSpaceInner::Z3Irrep(hom) => dispatch_hom_method!(Z3Irrep, hom, flip, indices),
+            HomSpaceInner::Z4Irrep(hom) => dispatch_hom_method!(Z4Irrep, hom, flip, indices),
+            HomSpaceInner::U1IrrepFermionParity(hom) => {
+                dispatch_hom_method!(U1IrrepFermionParity, hom, flip, indices)
+            }
+            HomSpaceInner::FermionParityU1Irrep(hom) => {
+                dispatch_hom_method!(FermionParityU1Irrep, hom, flip, indices)
+            }
+            HomSpaceInner::U1SU2Irrep(hom) => {
+                dispatch_hom_method!(U1SU2Irrep, hom, flip, indices)
+            }
+            HomSpaceInner::FermionParitySU2Irrep(hom) => {
+                dispatch_hom_method!(FermionParitySU2Irrep, hom, flip, indices)
+            }
+            HomSpaceInner::FermionParityU1SU2Irrep(hom) => {
+                dispatch_hom_method!(FermionParityU1SU2Irrep, hom, flip, indices)
             }
         }
     }

@@ -5,17 +5,27 @@ import pytest
 
 import tensor0.operations.transforms as transforms
 from tensor0 import (
+    FermionNumber,
     FermionParity,
+    FermionParitySU2Irrep,
+    FermionParityU1Irrep,
+    FermionParityU1SU2Irrep,
     SU2Irrep,
     TensorMap,
     U1Irrep,
+    U1SU2Irrep,
+    Z2Irrep,
+    Z3Irrep,
+    Z4Irrep,
     braid,
+    flip,
     get_degeneracystructure,
     get_sectorstructure,
     hom,
     permute,
     repartition,
     space,
+    tensorcontract,
     transpose,
     to_dense,
     twist,
@@ -58,10 +68,10 @@ class _ExplodingVectorData:
     def __getitem__(self, key):
         if isinstance(key, slice) and key.start == 0 and key.stop == 0:
             return jnp.zeros((0,))
-        raise AssertionError("twist validation must not access storage")
+        raise AssertionError("index transform validation must not access storage")
 
 
-def test_native_tree_transformer_payload_uses_canonical_indices():
+def test_native_transform_payloads_use_canonical_indices():
     u1 = space(U1Irrep, {0: 1})
     u1_source = hom((u1, u1), ())
     u1_destination = u1_source.permute((1,), (0,))
@@ -104,6 +114,17 @@ def test_native_tree_transformer_payload_uses_canonical_indices():
     assert not transform.flags.writeable
     assert group.src_indices == (0, 1)
     assert group.dst_indices == (0, 1)
+
+    su2_flip_destination = su2_source.flip((0, 2))
+    su2_flip = transforms._native.flip_entries(
+        su2_source,
+        su2_flip_destination,
+        get_sectorstructure(su2_source),
+        get_sectorstructure(su2_flip_destination),
+        (0, 2),
+    )
+
+    assert su2_flip == ((0, 1.0), (1, 1.0))
 
 
 def test_permute_rejects_non_tensormap_input():
@@ -423,22 +444,15 @@ def test_twist_semantic_identity_bypasses_layout_lookup(
     assert twist(tensor, 0) is tensor
 
 
-def test_twist_empty_indices_bypass_native_after_inv_validation(monkeypatch):
+@pytest.mark.parametrize("operation", [twist, flip], ids=["twist", "flip"])
+def test_index_transform_empty_indices_validate_inv_and_return_input(operation):
     factor = space(U1Irrep, {0: 1})
     target = hom((factor,), (factor,))
     tensor = TensorMap(target, _data_for(target))
 
-    def explode(*args, **kwargs):
-        raise AssertionError("empty twist must bypass native factor computation")
-
-    monkeypatch.setattr(transforms._native, "twist_is_trivial", explode)
-    monkeypatch.setattr(transforms._native, "twist_subblock_factors", explode)
-    monkeypatch.setattr(transforms, "get_sectorstructure", explode)
-    monkeypatch.setattr(transforms, "get_degeneracystructure", explode)
-
-    assert twist(tensor, ()) is tensor
+    assert operation(tensor, ()) is tensor
     with pytest.raises(TypeError, match=r"inv.*bool"):
-        twist(tensor, (), inv=1)  # pyright: ignore[reportArgumentType]
+        operation(tensor, (), inv=1)  # pyright: ignore[reportArgumentType]
 
 
 @pytest.mark.parametrize(
@@ -451,7 +465,13 @@ def test_twist_empty_indices_bypass_native_after_inv_validation(monkeypatch):
         ((2,), ValueError, "range"),
     ],
 )
-def test_twist_rejects_invalid_indices_before_accessing_storage(indices, error, match):
+@pytest.mark.parametrize("operation", [twist, flip], ids=["twist", "flip"])
+def test_index_transform_rejects_invalid_indices_before_accessing_storage(
+    operation,
+    indices,
+    error,
+    match,
+):
     factor = space(U1Irrep, {0: 1})
     target = hom((factor,), (factor,))
     tensor = TensorMap(
@@ -460,12 +480,13 @@ def test_twist_rejects_invalid_indices_before_accessing_storage(indices, error, 
     )
 
     with pytest.raises(error, match=match):
-        twist(tensor, indices)
+        operation(tensor, indices)
 
 
-def test_twist_rejects_invalid_tensor_and_inv_inputs():
-    with pytest.raises(TypeError, match=r"twist.*TensorMap"):
-        twist(object(), 0)  # pyright: ignore[reportArgumentType]
+@pytest.mark.parametrize("operation", [twist, flip], ids=["twist", "flip"])
+def test_index_transform_rejects_invalid_tensor_and_inv_inputs(operation):
+    with pytest.raises(TypeError, match=rf"{operation.__name__}.*TensorMap"):
+        operation(object(), 0)  # pyright: ignore[reportArgumentType]
 
     factor = space(U1Irrep, {0: 1})
     target = hom((factor,), (factor,))
@@ -474,4 +495,170 @@ def test_twist_rejects_invalid_tensor_and_inv_inputs():
         _ExplodingVectorData(get_degeneracystructure(target).total_dim),
     )
     with pytest.raises(TypeError, match=r"inv.*bool"):
-        twist(tensor, 0, inv=1)  # pyright: ignore[reportArgumentType]
+        operation(tensor, 0, inv=1)  # pyright: ignore[reportArgumentType]
+
+
+def test_space_flip_preserves_visible_sectors_and_differs_from_dual():
+    factor = space(U1Irrep, {-2: 3, 1: 5})
+
+    flipped = factor.flip()
+
+    assert dict(flipped.sectors) == dict(factor.sectors)
+    assert flipped.is_dual
+    assert flipped != factor.dual()
+    assert flipped.flip() == factor
+
+
+def test_hom_flip_updates_factors_and_roundtrips():
+    left = space(U1Irrep, {-1: 2, 2: 3})
+    right = space(U1Irrep, {-2: 5, 1: 7}).dual()
+    target = hom((left,), (right,))
+
+    flipped = target.flip((0, 1))
+
+    assert flipped == hom((left.flip(),), (right.flip(),))
+    assert flipped.flip((0, 1)) == target
+
+
+def test_flip_tensorkit_row_and_column_coefficients_for_fermion_parity():
+    odd = space(FermionParity, {1: 1})
+    target = hom((odd,), (odd,))
+    tensor = TensorMap(target, jnp.array([2.0], dtype=jnp.float32))
+
+    row = flip(tensor, 0)
+    column = flip(tensor, 1)
+
+    # TensorKit's Z-isomorphism formulas give row=1 and column=theta=-1
+    # when both source fusion-tree flags are non-dual.
+    assert_allclose(row.storage.data, jnp.array([2.0], dtype=jnp.float32))
+    assert_allclose(column.storage.data, jnp.array([-2.0], dtype=jnp.float32))
+    assert row.space == target.flip((0,))
+    assert column.space == target.flip((1,))
+
+
+def test_flip_forward_inverse_roundtrips_and_forward_is_not_involutory():
+    half = space(SU2Irrep, {1: 1})
+    target = hom((half,), (half,))
+    tensor = TensorMap(target, jnp.array([2.0], dtype=jnp.float32))
+
+    forward_inverse = flip(flip(tensor, 0), 0, inv=True)
+    inverse_forward = flip(flip(tensor, 0, inv=True), 0)
+    twice_forward = flip(flip(tensor, 0), 0)
+
+    assert forward_inverse.space == target
+    assert inverse_forward.space == target
+    assert_allclose(forward_inverse.storage.data, tensor.storage.data)
+    assert_allclose(inverse_forward.storage.data, tensor.storage.data)
+    assert_allclose(twice_forward.storage.data, -tensor.storage.data)
+
+
+@pytest.mark.parametrize(
+    "sector_type",
+    [FermionParity, SU2Irrep],
+    ids=["fermion-parity", "su2"],
+)
+def test_flip_matching_contracted_legs_preserves_contraction(sector_type):
+    factor = space(sector_type, {1: 1})
+    target = hom((factor,), (factor,))
+    left = TensorMap(target, jnp.array([2.0], dtype=jnp.float32))
+    right = TensorMap(target, jnp.array([3.0], dtype=jnp.float32))
+    kwargs = {
+        "axes": ((1,), (0,)),
+        "output": (((0, 0),), ((1, 1),)),
+    }
+
+    expected = tensorcontract(left, right, **kwargs)
+    result = tensorcontract(flip(left, 1), flip(right, 0), **kwargs)
+
+    assert result.space == expected.space
+    assert_allclose(result.storage.data, expected.storage.data)
+
+
+def test_u1_flip_applies_nonidentity_entry_mapping():
+    factor = space(U1Irrep, {-1: 1, 1: 1})
+    target = hom((factor, factor), ())
+    tensor = TensorMap(target, jnp.array([10.0, 20.0], dtype=jnp.float32))
+
+    result = flip(tensor, 1)
+
+    assert_allclose(result.storage.data, jnp.array([20.0, 10.0], dtype=jnp.float32))
+
+
+def test_su2_multitree_scalar_flip_preserves_float16_and_roundtrips():
+    half = space(SU2Irrep, {1: 1})
+    target = hom((half, half, half, half), ())
+    tensor = TensorMap(target, jnp.array([1.0, 2.0], dtype=jnp.float16))
+
+    result = flip(tensor, (0, 2))
+    restored = flip(result, (0, 2), inv=True)
+
+    assert result.storage.data.dtype == jnp.float16
+    assert restored.space == target
+    assert_allclose(restored.storage.data, tensor.storage.data)
+
+
+@pytest.mark.parametrize(
+    ("sector_type", "sector"),
+    [
+        (Z2Irrep, 1),
+        (Z3Irrep, 1),
+        (Z4Irrep, 1),
+        (FermionNumber, (1, 1)),
+        (FermionParityU1Irrep, (1, 1)),
+        (U1SU2Irrep, (1, 1)),
+        (FermionParitySU2Irrep, (1, 1)),
+        (FermionParityU1SU2Irrep, (1, 1, 1)),
+    ],
+    ids=[
+        "z2",
+        "z3",
+        "z4",
+        "fermion-number",
+        "fermion-parity-u1",
+        "u1-su2",
+        "fermion-parity-su2",
+        "fermion-parity-u1-su2",
+    ],
+)
+def test_flip_roundtrips_additional_exported_sector_families(sector_type, sector):
+    factor = space(sector_type, {sector: 1})
+    target = hom((factor,), (factor,))
+    tensor = TensorMap(target, _data_for(target))
+
+    flipped = flip(tensor, (0, 1))
+    restored = flip(flipped, (0, 1), inv=True)
+
+    assert restored.space == target
+    assert_allclose(restored.storage.data, tensor.storage.data)
+
+
+@pytest.mark.parametrize("partition", ["codomain", "domain"])
+def test_flip_handles_one_sided_spaces(partition):
+    unit = space(U1Irrep, {0: 2})
+    target = hom((unit,), ()) if partition == "codomain" else hom((), (unit,))
+    tensor = TensorMap(target, _data_for(target))
+
+    restored = flip(flip(tensor, 0), 0, inv=True)
+
+    assert restored.space == target
+    assert_allclose(restored.storage.data, tensor.storage.data)
+
+
+def test_flip_handles_complex_strided_degeneracy_subblocks():
+    factor = space(FermionParity, {0: 2, 1: 1})
+    target = hom((factor, factor), (factor, factor))
+    data = _data_for(target).astype(jnp.complex64)
+    data = data + 1j * (data + 1)
+    tensor = TensorMap(target, data)
+    subblocks = get_degeneracystructure(target).subblockstructure
+
+    assert any(
+        math.prod(subblock.sizes) > 1 and not is_contiguous_subblock(subblock)
+        for subblock in subblocks
+    )
+    result = flip(tensor, (0, 2))
+    restored = flip(result, (0, 2), inv=True)
+
+    assert result.storage.data.dtype == tensor.storage.data.dtype
+    assert restored.space == target
+    assert_allclose(restored.storage.data, tensor.storage.data)

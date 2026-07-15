@@ -167,6 +167,14 @@ odd sectors acquire the corresponding sign. Current public contraction paths
 support symmetric braiding; anyonic and planar contraction are outside the v1
 scope.
 
+## Index Flip
+
+`flip(tensor, indices, inv=False)` changes the arrow presentation of selected
+visible indices and applies the corresponding Z-isomorphism weights. If two
+matching legs will be contracted, flipping both legs leaves the contraction
+unchanged. See the [transform guide](usage.md#transforms) for its full inverse
+and HomSpace semantics.
+
 ## JAX Boundary
 
 TensorMap storage is the dynamic pytree leaf. HomSpace, labels, output groups,

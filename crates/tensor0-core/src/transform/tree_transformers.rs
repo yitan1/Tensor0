@@ -1,14 +1,13 @@
 //! TensorKit-like tree transformer construction.
 //!
-//! This module is the bridge from fusion-tree operation maps to
-//! `TreeTransformer` payloads. Future SU2, product-sector SimpleFusion aliases,
-//! and eventual GenericFusion support should build nontrivial basis matrices
-//! here.
+//! This module is the bridge from fusion-tree operation maps to indexed
+//! transform payloads. Future SU2, product-sector SimpleFusion aliases, and
+//! eventual GenericFusion support should build nontrivial basis matrices here.
 
 use ndarray::Array2;
 
 use crate::error::{Result, Tensor0Error};
-use crate::fusion_tree::braiding_ops::{braid_block, braid_pair};
+use crate::fusion_tree::braiding_ops::{braid_block, braid_pair, flip_pair};
 use crate::fusion_tree::duality_ops::{transpose_block, transpose_pair};
 use crate::fusion_tree::{fusion_blocks, FusionTreeBlock, FusionTreePair};
 use crate::layout::SectorStructure;
@@ -37,6 +36,36 @@ pub struct GenericTransformData {
 pub enum TreeTransformer {
     Abelian(Vec<AbelianTransformData>),
     Generic(Vec<GenericTransformData>),
+}
+
+/// Lowers a visible-leg flip to `(destination index, coefficient)` entries in
+/// canonical source-tree order.
+pub fn flip_entries<I: Sector>(
+    src: &HomSpace<I>,
+    dst: &HomSpace<I>,
+    src_structure: &SectorStructure<I>,
+    dst_structure: &SectorStructure<I>,
+    indices: &[usize],
+    inv: bool,
+) -> Result<Vec<(usize, f64)>> {
+    validate_structures(src, dst, src_structure, dst_structure)?;
+    let expected_dst = src.flip(indices)?;
+    if &expected_dst != dst {
+        return Err(Tensor0Error::Message(
+            "incompatible spaces for flipping".to_string(),
+        ));
+    }
+    let mut entries = Vec::with_capacity(src_structure.fusiontree_pair_count());
+    for src_pair in src_structure.fusiontree_pairs() {
+        let (dst_pair, coeff) = flip_pair(src_pair, indices, inv)?;
+        let dst_index = dst_structure
+            .fusiontree_pair_index(&dst_pair)
+            .ok_or_else(|| {
+                Tensor0Error::Message("flip destination fusion tree pair was not found".to_string())
+            })?;
+        entries.push((dst_index, coeff));
+    }
+    Ok(entries)
 }
 
 pub fn tree_permuter<I: Sector>(

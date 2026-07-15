@@ -8,7 +8,7 @@ from .. import _native
 from ..structure.layout import get_degeneracystructure, get_sectorstructure
 from ._blocks import (
     add_to_subblock as _add_to_subblock,
-    read_subblock as _read_subblock,
+    get_subblock as _get_subblock,
 )
 from .tensor_map import TensorMap
 
@@ -29,7 +29,7 @@ def to_dense(tensor: TensorMap) -> jnp.ndarray:
     ):
         axes = _tree_pair_axes(tensor.space, row_tree, col_tree)
         coeff = _pair_coeff(row_tree, col_tree, storage)
-        reduced = _read_subblock(storage, subblock)
+        reduced = _get_subblock(storage, subblock)
         dense_block = _interleaved_product(reduced, coeff, axes)
         dense = dense.at[_dense_slices(axes)].add(dense_block)
 

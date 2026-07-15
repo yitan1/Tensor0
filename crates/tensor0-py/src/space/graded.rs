@@ -84,6 +84,12 @@ impl PyElementarySpace {
         }
     }
 
+    fn flip(&self) -> PyElementarySpace {
+        PyElementarySpace {
+            inner: self.inner.flip(),
+        }
+    }
+
     fn __eq__(&self, other: PyRef<'_, PyElementarySpace>) -> bool {
         self.inner == other.inner
     }
@@ -162,6 +168,30 @@ impl GradedSpaceInner {
             }
             GradedSpaceInner::FermionParityU1SU2Irrep(space) => {
                 GradedSpaceInner::FermionParityU1SU2Irrep(space.dual())
+            }
+        }
+    }
+
+    pub(super) fn flip(&self) -> GradedSpaceInner {
+        match self {
+            GradedSpaceInner::U1Irrep(space) => GradedSpaceInner::U1Irrep(space.flip()),
+            GradedSpaceInner::SU2Irrep(space) => GradedSpaceInner::SU2Irrep(space.flip()),
+            GradedSpaceInner::FermionParity(space) => GradedSpaceInner::FermionParity(space.flip()),
+            GradedSpaceInner::Z2Irrep(space) => GradedSpaceInner::Z2Irrep(space.flip()),
+            GradedSpaceInner::Z3Irrep(space) => GradedSpaceInner::Z3Irrep(space.flip()),
+            GradedSpaceInner::Z4Irrep(space) => GradedSpaceInner::Z4Irrep(space.flip()),
+            GradedSpaceInner::U1IrrepFermionParity(space) => {
+                GradedSpaceInner::U1IrrepFermionParity(space.flip())
+            }
+            GradedSpaceInner::FermionParityU1Irrep(space) => {
+                GradedSpaceInner::FermionParityU1Irrep(space.flip())
+            }
+            GradedSpaceInner::U1SU2Irrep(space) => GradedSpaceInner::U1SU2Irrep(space.flip()),
+            GradedSpaceInner::FermionParitySU2Irrep(space) => {
+                GradedSpaceInner::FermionParitySU2Irrep(space.flip())
+            }
+            GradedSpaceInner::FermionParityU1SU2Irrep(space) => {
+                GradedSpaceInner::FermionParityU1SU2Irrep(space.flip())
             }
         }
     }
