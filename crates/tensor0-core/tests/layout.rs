@@ -1,5 +1,7 @@
+use std::fmt::Debug;
+
 use tensor0_core::error::{Result, Tensor0Error};
-use tensor0_core::fusion_tree::FusionTreePair;
+use tensor0_core::fusion_tree::{FusionTree, FusionTreePair};
 use tensor0_core::layout::{
     build_degeneracy_structure, build_degeneracy_structure_from_sector_structure,
     build_sector_structure, DegeneracyStructure, SectorStructure, SubblockStructure,
@@ -498,6 +500,219 @@ fn su2_layout_handles_non_abelian_blocks_and_multi_tree_basis() {
         assert_eq!(subblock.offset, offset);
         assert!(col.uncoupled().is_empty());
     }
+}
+
+#[derive(Clone, Copy)]
+enum InsertedTreeSide {
+    Row { position: usize, dual: bool },
+    Col { position: usize, dual: bool },
+}
+
+fn unit_audit_space<I: Sector>(nonunit: I) -> HomSpace<I> {
+    let factor = |unit_dim: usize, nonunit_dim: usize, dual: bool| {
+        let space = GradedSpace::new(
+            vec![(I::unit(), unit_dim), (nonunit.clone(), nonunit_dim)],
+            false,
+        )
+        .unwrap();
+        if dual {
+            space.dual()
+        } else {
+            space
+        }
+    };
+
+    HomSpace::from_factor_spaces(
+        vec![factor(1, 2, false), factor(2, 1, true), factor(1, 2, false)],
+        vec![factor(2, 1, false), factor(1, 2, true)],
+    )
+}
+
+fn tree_prefix_outputs<I: Sector>(tree: &FusionTree<I>) -> Vec<I> {
+    match tree.uncoupled().len() {
+        0 => Vec::new(),
+        1 => vec![tree.coupled().clone()],
+        _ => std::iter::once(tree.uncoupled()[0].clone())
+            .chain(tree.innerlines().iter().cloned())
+            .chain(std::iter::once(tree.coupled().clone()))
+            .collect(),
+    }
+}
+
+fn assert_tree_is_unit_insertion<I>(
+    source: &FusionTree<I>,
+    destination: &FusionTree<I>,
+    position: usize,
+    dual: bool,
+) where
+    I: Sector + Debug,
+{
+    assert_eq!(destination.uncoupled().len(), source.uncoupled().len() + 1);
+    assert_eq!(destination.uncoupled()[position], I::unit());
+    assert_eq!(destination.is_dual()[position], dual);
+    assert_eq!(destination.coupled(), source.coupled());
+
+    let mut uncoupled = destination.uncoupled().to_vec();
+    uncoupled.remove(position);
+    assert_eq!(uncoupled, source.uncoupled());
+
+    let mut is_dual = destination.is_dual().to_vec();
+    is_dual.remove(position);
+    assert_eq!(is_dual, source.is_dual());
+
+    let source_prefixes = tree_prefix_outputs(source);
+    let destination_prefixes = tree_prefix_outputs(destination);
+    let projected_prefixes = (1..=source.uncoupled().len())
+        .map(|prefix_len| {
+            let destination_len = if prefix_len <= position {
+                prefix_len
+            } else {
+                prefix_len + 1
+            };
+            destination_prefixes[destination_len - 1].clone()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(projected_prefixes, source_prefixes);
+
+    assert!(source.vertices().iter().all(|vertex| *vertex == 0));
+    assert!(destination.vertices().iter().all(|vertex| *vertex == 0));
+}
+
+fn subblock_indices(subblock: &SubblockStructure) -> Vec<usize> {
+    let len = subblock.sizes.iter().product::<usize>();
+    (0..len)
+        .map(|mut linear_index| {
+            let mut offset = subblock.offset;
+            for (size, stride) in subblock.sizes.iter().zip(&subblock.strides).rev() {
+                offset += (linear_index % size) * stride;
+                linear_index /= size;
+            }
+            offset
+        })
+        .collect()
+}
+
+fn assert_unit_layout_identity<I>(
+    source: &HomSpace<I>,
+    destination: &HomSpace<I>,
+    inserted_side: InsertedTreeSide,
+) where
+    I: Sector + Debug,
+{
+    let source_sectorstructure = build_sector_structure(source).unwrap();
+    let destination_sectorstructure = build_sector_structure(destination).unwrap();
+    let source_degeneracy =
+        build_degeneracy_structure_from_sector_structure(source, &source_sectorstructure).unwrap();
+    let destination_degeneracy =
+        build_degeneracy_structure_from_sector_structure(destination, &destination_sectorstructure)
+            .unwrap();
+
+    assert_eq!(
+        source_sectorstructure.blocksectors().collect::<Vec<_>>(),
+        destination_sectorstructure
+            .blocksectors()
+            .collect::<Vec<_>>(),
+    );
+    assert_eq!(
+        source_sectorstructure.fusiontree_pair_count(),
+        destination_sectorstructure.fusiontree_pair_count(),
+    );
+    assert_eq!(
+        source_degeneracy.total_dim,
+        destination_degeneracy.total_dim
+    );
+    assert_eq!(
+        source_degeneracy.blockstructure,
+        destination_degeneracy.blockstructure,
+    );
+
+    for (source_pair, destination_pair) in source_sectorstructure
+        .fusiontree_pairs()
+        .zip(destination_sectorstructure.fusiontree_pairs())
+    {
+        match inserted_side {
+            InsertedTreeSide::Row { position, dual } => {
+                assert_tree_is_unit_insertion(
+                    &source_pair.row,
+                    &destination_pair.row,
+                    position,
+                    dual,
+                );
+                assert_eq!(source_pair.col, destination_pair.col);
+            }
+            InsertedTreeSide::Col { position, dual } => {
+                assert_eq!(source_pair.row, destination_pair.row);
+                assert_tree_is_unit_insertion(
+                    &source_pair.col,
+                    &destination_pair.col,
+                    position,
+                    dual,
+                );
+            }
+        }
+    }
+
+    assert_eq!(
+        source_degeneracy.subblockstructure.len(),
+        destination_degeneracy.subblockstructure.len(),
+    );
+    for (source_subblock, destination_subblock) in source_degeneracy
+        .subblockstructure
+        .iter()
+        .zip(&destination_degeneracy.subblockstructure)
+    {
+        assert_eq!(source_subblock.offset, destination_subblock.offset);
+        assert_eq!(
+            subblock_indices(source_subblock),
+            subblock_indices(destination_subblock),
+        );
+    }
+}
+
+fn assert_unit_layout_audit<I>(nonunit: I)
+where
+    I: Sector + Debug,
+{
+    let source = unit_audit_space(nonunit);
+
+    for dual in [false, true] {
+        for position in 0..=source.numout() {
+            let destination = HomSpace::new(
+                source.codomain().insert_unit(position, dual).unwrap(),
+                source.domain().clone(),
+            );
+            assert_unit_layout_identity(
+                &source,
+                &destination,
+                InsertedTreeSide::Row { position, dual },
+            );
+        }
+        for position in 0..=source.numin() {
+            let destination = HomSpace::new(
+                source.codomain().clone(),
+                source.domain().insert_unit(position, dual).unwrap(),
+            );
+            assert_unit_layout_identity(
+                &source,
+                &destination,
+                InsertedTreeSide::Col { position, dual },
+            );
+        }
+    }
+}
+
+#[test]
+fn unit_insertion_preserves_canonical_flattened_layout_for_representative_fusion_styles() {
+    let scalar = HomSpace::<U1Irrep>::new(ProductSpace::one(), ProductSpace::one());
+    for dual in [false, true] {
+        let left = scalar.insert_left_unit(0, dual).unwrap();
+        assert_unit_layout_identity(&scalar, &left, InsertedTreeSide::Col { position: 0, dual });
+        let right = scalar.insert_right_unit(0, dual).unwrap();
+        assert_unit_layout_identity(&scalar, &right, InsertedTreeSide::Row { position: 0, dual });
+    }
+
+    assert_unit_layout_audit(u1(1));
+    assert_unit_layout_audit(su2(1));
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]

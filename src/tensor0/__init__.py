@@ -74,8 +74,11 @@ from .tensor import (
 from .operations.transforms import (
     braid,
     flip,
+    insertleftunit,
+    insertrightunit,
     permute,
     repartition,
+    removeunit,
     transpose,
     twist,
 )
@@ -124,6 +127,8 @@ __all__ = [
     "hom",
     "idx",
     "imag",
+    "insertleftunit",
+    "insertrightunit",
     "inner",
     "isdiag",
     "norm",
@@ -134,6 +139,7 @@ __all__ = [
     "braid",
     "permute",
     "repartition",
+    "removeunit",
     "real",
     "rank",
     "scalar",

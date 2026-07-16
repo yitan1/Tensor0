@@ -26,6 +26,14 @@ impl<I: Sector> GradedSpace<I> {
         }
     }
 
+    /// Return whether this is the canonical unit space or its dual.
+    pub fn is_unit(&self) -> bool {
+        matches!(
+            self.sector_dims.as_slice(),
+            [(sector, 1)] if sector == &I::unit()
+        )
+    }
+
     pub fn new(sector_dims: Vec<(I, usize)>, is_dual: bool) -> Result<Self> {
         let mut sector_dims = sector_dims
             .into_iter()

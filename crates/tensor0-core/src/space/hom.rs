@@ -78,6 +78,70 @@ impl<I: Sector> HomSpace<I> {
         visible
     }
 
+    /// Insert a left unit at a 0-based visible-index boundary.
+    ///
+    /// At the codomain/domain boundary the unit becomes the first domain
+    /// factor. `dual` selects the unit factor attached to that side of the
+    /// HomSpace, matching ProductSpace and TensorKit semantics.
+    pub fn insert_left_unit(&self, position: usize, dual: bool) -> Result<Self> {
+        self.validate_unit_insertion_boundary(position)?;
+
+        if position < self.numout() {
+            Ok(HomSpace::new(
+                self.codomain.insert_unit(position, dual)?,
+                self.domain.clone(),
+            ))
+        } else {
+            Ok(HomSpace::new(
+                self.codomain.clone(),
+                self.domain.insert_unit(position - self.numout(), dual)?,
+            ))
+        }
+    }
+
+    /// Insert a right unit at a 0-based visible-index boundary.
+    ///
+    /// At the codomain/domain boundary the unit becomes the final codomain
+    /// factor. `dual` selects the unit factor attached to that side of the
+    /// HomSpace, matching ProductSpace and TensorKit semantics.
+    pub fn insert_right_unit(&self, position: usize, dual: bool) -> Result<Self> {
+        self.validate_unit_insertion_boundary(position)?;
+
+        if position <= self.numout() {
+            Ok(HomSpace::new(
+                self.codomain.insert_unit(position, dual)?,
+                self.domain.clone(),
+            ))
+        } else {
+            Ok(HomSpace::new(
+                self.codomain.clone(),
+                self.domain.insert_unit(position - self.numout(), dual)?,
+            ))
+        }
+    }
+
+    /// Remove a canonical unit-space factor at a 0-based visible index.
+    pub fn remove_unit(&self, index: usize) -> Result<Self> {
+        if index >= self.numind() {
+            return Err(Tensor0Error::Message(format!(
+                "unit removal index {index} is out of range for rank {}",
+                self.numind(),
+            )));
+        }
+
+        if index < self.numout() {
+            Ok(HomSpace::new(
+                self.codomain.remove_unit(index)?,
+                self.domain.clone(),
+            ))
+        } else {
+            Ok(HomSpace::new(
+                self.codomain.clone(),
+                self.domain.remove_unit(index - self.numout())?,
+            ))
+        }
+    }
+
     pub fn flip(&self, indices: &[usize]) -> Result<Self> {
         let rank = self.numind();
         let mut seen = vec![false; rank];
@@ -113,6 +177,17 @@ impl<I: Sector> HomSpace<I> {
         let visible = self.visible_legs();
         let (codomain, domain) = select_visible_spaces(&visible, p_codomain, p_domain);
         Ok(HomSpace::new(codomain, domain))
+    }
+
+    fn validate_unit_insertion_boundary(&self, position: usize) -> Result<()> {
+        if position <= self.numind() {
+            Ok(())
+        } else {
+            Err(Tensor0Error::Message(format!(
+                "unit insertion boundary {position} is out of range for rank {}",
+                self.numind(),
+            )))
+        }
     }
 }
 

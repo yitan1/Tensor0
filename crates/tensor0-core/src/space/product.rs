@@ -69,6 +69,44 @@ impl<I: Sector> ProductSpace<I> {
         self.factors.iter()
     }
 
+    /// Insert the canonical unit space at a 0-based factor boundary.
+    pub fn insert_unit(&self, position: usize, dual: bool) -> Result<Self> {
+        if position > self.len() {
+            return Err(Tensor0Error::Message(format!(
+                "unit insertion boundary {position} is out of range for rank {}",
+                self.len(),
+            )));
+        }
+
+        let mut factors = self.factors.clone();
+        let unit = if dual {
+            GradedSpace::<I>::unit().dual()
+        } else {
+            GradedSpace::<I>::unit()
+        };
+        factors.insert(position, unit);
+        Ok(ProductSpace::new(factors))
+    }
+
+    /// Remove a canonical unit-space factor at a 0-based index.
+    pub fn remove_unit(&self, index: usize) -> Result<Self> {
+        let Some(factor) = self.get(index) else {
+            return Err(Tensor0Error::Message(format!(
+                "unit removal index {index} is out of range for rank {}",
+                self.len(),
+            )));
+        };
+        if !factor.is_unit() {
+            return Err(Tensor0Error::Message(format!(
+                "factor at index {index} is not a canonical unit space",
+            )));
+        }
+
+        let mut factors = self.factors.clone();
+        factors.remove(index);
+        Ok(ProductSpace::new(factors))
+    }
+
     pub fn dims(&self) -> Vec<usize> {
         self.factors.iter().map(GradedSpace::dim).collect()
     }

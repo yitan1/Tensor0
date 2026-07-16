@@ -22,8 +22,11 @@ from tensor0 import (
     get_degeneracystructure,
     get_sectorstructure,
     hom,
+    insertleftunit,
+    insertrightunit,
     permute,
     repartition,
+    removeunit,
     space,
     tensorcontract,
     transpose,
@@ -690,3 +693,167 @@ def test_flip_handles_complex_strided_degeneracy_subblocks():
     assert result.storage.data.dtype == tensor.storage.data.dtype
     assert restored.space == target
     assert_allclose(restored.storage.data, tensor.storage.data)
+
+
+def test_unit_insertion_distinguishes_partition_boundary_and_dual_flags():
+    out0 = space(U1Irrep, {0: 2, 1: 1})
+    out1 = space(U1Irrep, {0: 1, -1: 2})
+    in0 = space(U1Irrep, {0: 2, 1: 1})
+    in1 = space(U1Irrep, {0: 1, -1: 2})
+    target = hom((out0, out1), (in0, in1))
+    tensor = TensorMap(target, _data_for(target))
+    position = tensor.numout
+    unit = space(U1Irrep, {0: 1}, dual=True)
+
+    left = insertleftunit(tensor, position, dual=True)
+    right = insertrightunit(tensor, position, dual=True)
+
+    expected_dims = tensor.dims[:position] + (1,) + tensor.dims[position:]
+    assert left.dims == right.dims == expected_dims
+    assert left.codomain == target.codomain
+    assert left.domain.spaces == (unit,) + target.domain.spaces
+    assert left.space[position] == unit.dual()
+    assert right.codomain.spaces == target.codomain.spaces + (unit,)
+    assert right.domain == target.domain
+    assert right.space[position] == unit
+
+    for result in (left, right):
+        assert result.storage is tensor.storage
+        restored = removeunit(result, position)
+        assert restored.space == tensor.space
+        assert restored.storage is tensor.storage
+
+
+def test_unit_insertion_preserves_indexed_fusiontree_and_visible_sector_access():
+    factor = space(U1Irrep, {0: 1, 1: 2})
+    target = hom((factor,), (factor,))
+    tensor = TensorMap(target, _data_for(target))
+    result = insertleftunit(tensor, 0)
+
+    source_pair = tensor.fusiontrees[-1]
+    result_pair = result.fusiontrees[-1]
+    row_tree, col_tree = result_pair
+    visible_key = tuple(sector[0] for sector in row_tree.uncoupled) + tuple(
+        -sector[0] for sector in col_tree.uncoupled
+    )
+
+    source_by_tree = tensor[source_pair]
+    result_by_tree = result[result_pair]
+    assert_allclose(result[visible_key], result_by_tree)
+    assert_allclose(result_by_tree.reshape(-1), source_by_tree.reshape(-1))
+
+
+def test_unit_insertion_defaults_cover_rank_zero_and_regular_spaces():
+    unit = space(U1Irrep, {0: 1})
+    empty = hom((unit,), ()).domain
+    scalar_space = hom(empty, empty)
+    scalar_tensor = TensorMap(scalar_space, jnp.asarray([2.0], dtype=jnp.float32))
+
+    scalar_left = insertleftunit(scalar_tensor)
+    scalar_right = insertrightunit(scalar_tensor)
+    assert (scalar_left.numout, scalar_left.numin) == (0, 1)
+    assert (scalar_right.numout, scalar_right.numin) == (1, 0)
+    assert removeunit(scalar_left, 0).space == scalar_space
+    assert removeunit(scalar_right, 0).space == scalar_space
+
+    assert scalar_left.storage is scalar_tensor.storage
+    assert scalar_right.storage is scalar_tensor.storage
+
+    factor = space(U1Irrep, {0: 2})
+    target = hom((factor,), (factor,))
+    tensor = TensorMap(target, _data_for(target))
+    left = insertleftunit(tensor)
+    right = insertrightunit(tensor)
+
+    assert left.space == right.space
+    for result in (left, right):
+        assert result.storage is tensor.storage
+        assert removeunit(result, tensor.numind).space == target
+
+
+def test_unit_operations_validate_complete_call_before_storage_access():
+    with pytest.raises(TypeError, match=r"insertleftunit\(\) requires a TensorMap"):
+        insertleftunit(object())  # pyright: ignore[reportArgumentType]
+    with pytest.raises(TypeError, match=r"insertrightunit\(\) requires a TensorMap"):
+        insertrightunit(object())  # pyright: ignore[reportArgumentType]
+    with pytest.raises(TypeError, match=r"removeunit\(\) requires a TensorMap"):
+        removeunit(object(), 0)  # pyright: ignore[reportArgumentType]
+
+    factor = space(U1Irrep, {0: 2})
+    target = hom((factor,), (factor,))
+    tensor = TensorMap(target, _ExplodingVectorData(_data_for(target).size))
+
+    for operation in (insertleftunit, insertrightunit):
+        for position in (True, 1.5):
+            with pytest.raises(TypeError, match="position"):
+                operation(tensor, position)  # pyright: ignore[reportArgumentType]
+        for position in (-1, tensor.numind + 1):
+            with pytest.raises(ValueError, match="out of range"):
+                operation(tensor, position)
+        with pytest.raises(TypeError, match="dual"):
+            operation(tensor, dual=0)  # pyright: ignore[reportArgumentType]
+
+        result = operation(tensor)
+        assert result.storage is tensor.storage
+
+    for index in (True, 1.5):
+        with pytest.raises(TypeError, match="index"):
+            removeunit(tensor, index)  # pyright: ignore[reportArgumentType]
+    for index in (-1, tensor.numind):
+        with pytest.raises(ValueError, match="out of range"):
+            removeunit(tensor, index)
+
+    nonunit = space(U1Irrep, {1: 1})
+    nonunit_space = hom((nonunit,), target.domain)
+    nonunit_tensor = TensorMap(
+        nonunit_space,
+        _ExplodingVectorData(get_degeneracystructure(nonunit_space).total_dim),
+    )
+    with pytest.raises(ValueError, match="canonical unit space"):
+        removeunit(nonunit_tensor, 0)
+
+
+@pytest.mark.parametrize(
+    ("sector_type", "unit_sector"),
+    [
+        (U1Irrep, 0),
+        (SU2Irrep, 0),
+        (FermionParity, 0),
+        (Z2Irrep, 0),
+        (Z3Irrep, 0),
+        (Z4Irrep, 0),
+        (FermionNumber, (0, 0)),
+        (FermionParityU1Irrep, (0, 0)),
+        (U1SU2Irrep, (0, 0)),
+        (FermionParitySU2Irrep, (0, 0)),
+        (FermionParityU1SU2Irrep, (0, 0, 0)),
+    ],
+    ids=[
+        "u1",
+        "su2",
+        "fermion-parity",
+        "z2",
+        "z3",
+        "z4",
+        "fermion-number",
+        "fermion-parity-u1",
+        "u1-su2",
+        "fermion-parity-su2",
+        "fermion-parity-u1-su2",
+    ],
+)
+def test_unit_operations_smoke_all_exported_sector_families(
+    sector_type,
+    unit_sector,
+):
+    factor = space(sector_type, {unit_sector: 2})
+    target = hom((factor,), (factor,))
+    tensor = TensorMap(target, _data_for(target))
+
+    left = insertleftunit(tensor, 0, dual=True)
+    right = insertrightunit(tensor)
+
+    assert removeunit(left, 0).space == target
+    assert removeunit(right, tensor.numind).space == target
+    assert left.storage is tensor.storage
+    assert right.storage is tensor.storage

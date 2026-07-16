@@ -69,6 +69,9 @@ hand-written overview, not generated API reference.
 - `repartition`
 - `flip`
 - `twist`
+- `insertleftunit`
+- `insertrightunit`
+- `removeunit`
 
 ## Contractions
 

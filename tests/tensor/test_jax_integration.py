@@ -11,9 +11,12 @@ from tensor0 import (
     flip,
     hom,
     idx,
+    insertleftunit,
+    insertrightunit,
     ncon,
     permute,
     repartition,
+    removeunit,
     scalar,
     space,
     tensorcontract,
@@ -580,3 +583,70 @@ def test_jitted_grad_through_flip_preserves_column_z_isomorphism_sign():
 
     assert gradient.space == target
     assert_allclose(gradient.storage.data, jnp.array([5.0, -7.0]))
+
+
+def test_jitted_unit_operations_match_eager_and_reuse_static_metadata():
+    out = space(U1Irrep, {0: 2, 1: 1})
+    incoming = space(U1Irrep, {0: 1, -1: 2})
+    target = hom((out, out), (incoming, incoming))
+    tensor = TensorMap(target, float_data_for(target))
+    trace_counts = {"left": 0, "right": 0, "remove": 0}
+
+    @jax.jit
+    def insert_left(value):
+        trace_counts["left"] += 1
+        return insertleftunit(value, value.numout, dual=True)
+
+    @jax.jit
+    def insert_right(value):
+        trace_counts["right"] += 1
+        return insertrightunit(value, value.numout, dual=True)
+
+    left = insert_left(tensor)
+    right = insert_right(tensor)
+    updated = TensorMap(target, tensor.storage.data * 2.0 + 1.0)
+    updated_left = insert_left(updated)
+    updated_right = insert_right(updated)
+
+    for result, expected in (
+        (left, insertleftunit(tensor, tensor.numout, dual=True)),
+        (right, insertrightunit(tensor, tensor.numout, dual=True)),
+        (updated_left, insertleftunit(updated, updated.numout, dual=True)),
+        (updated_right, insertrightunit(updated, updated.numout, dual=True)),
+    ):
+        assert result.space == expected.space
+        assert_allclose(result.storage.data, expected.storage.data)
+
+    @jax.jit
+    def remove_left(value):
+        trace_counts["remove"] += 1
+        return removeunit(value, tensor.numout)
+
+    restored = remove_left(left)
+    updated_restored = remove_left(updated_left)
+
+    assert restored.space == tensor.space
+    assert_allclose(restored.storage.data, tensor.storage.data)
+    assert updated_restored.space == updated.space
+    assert_allclose(updated_restored.storage.data, updated.storage.data)
+    assert trace_counts == {"left": 1, "right": 1, "remove": 1}
+
+
+def test_jitted_grad_through_unit_insertion_is_storage_identity():
+    factor = space(U1Irrep, {0: 2, 1: 1})
+    target = hom((factor, factor), (factor,))
+    tensor = TensorMap(target, float_data_for(target))
+    weights = jnp.arange(1, tensor.storage.data.size + 1, dtype=jnp.float32)
+
+    def loss(value):
+        inserted = insertleftunit(value, value.numout, dual=True)
+        restored = removeunit(inserted, value.numout)
+        return jnp.sum(restored.storage.data * weights)
+
+    eager = jax.grad(loss)(tensor)
+    compiled = jax.jit(jax.grad(loss))(tensor)
+
+    assert eager.space == tensor.space
+    assert compiled.space == tensor.space
+    assert_allclose(eager.storage.data, weights)
+    assert_allclose(compiled.storage.data, weights)

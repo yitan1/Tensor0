@@ -378,3 +378,24 @@ def test_hom_rejects_mixed_sector_families():
 
     with pytest.raises(ValueError, match="same sector"):
         hom((u1,), (z2,))
+
+
+def test_native_hom_unit_methods_validate_indices_and_unit_factors():
+    unit = space(U1Irrep, {0: 1})
+    empty = hom((unit,), ()).domain
+    scalar_space = hom(empty, empty)
+
+    inserted = scalar_space.insert_left_unit(0, False)
+    assert inserted.remove_unit(0) == scalar_space
+
+    for operation in (
+        lambda: scalar_space.insert_left_unit(-1, False),
+        lambda: scalar_space.insert_right_unit(-1, False),
+        lambda: scalar_space.remove_unit(-1),
+    ):
+        with pytest.raises(ValueError, match="non-negative"):
+            operation()
+
+    nonunit = space(U1Irrep, {0: 2})
+    with pytest.raises(ValueError, match="canonical unit space"):
+        hom((nonunit,), empty).remove_unit(0)

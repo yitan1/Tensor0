@@ -27,6 +27,15 @@ Blocks are accessed by coupled sector. Transform helpers such as `permute(...)`,
 `braid(...)`, `transpose(...)`, and `repartition(...)` update the visible index
 structure and move reduced block data consistently with the symmetry metadata.
 
+`insertleftunit(...)` and `insertrightunit(...)` add a canonical monoidal-unit
+factor at a visible-index boundary, while `removeunit(...)` removes a validated
+unit factor. Unit factors have degeneracy one and a unique unit fusion channel,
+so these rank-changing operations preserve the current canonical flat layout
+and share the same `VectorStorage` without writing to its payload. With normal
+JAX Array payloads this is safe because arrays are immutable. At the
+codomain/domain boundary, left insertion attaches the unit to the domain and
+right insertion attaches it to the codomain.
+
 ## Visible Indices and Contractions
 
 Visible axes are ordered as codomain axes followed by domain axes. Contraction

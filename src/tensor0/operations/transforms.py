@@ -238,6 +238,52 @@ def flip(
     return TensorMap(dst_space, dst_data)
 
 
+def insertleftunit(
+    tensor: TensorMap,
+    position: int | None = None,
+    *,
+    dual: bool = False,
+) -> TensorMap:
+    position = _normalize_unit_insertion_call(
+        tensor,
+        position,
+        dual,
+        "insertleftunit",
+    )
+    dst_space = tensor.space.insert_left_unit(position, dual)
+    return TensorMap(dst_space, tensor.storage)
+
+
+def insertrightunit(
+    tensor: TensorMap,
+    position: int | None = None,
+    *,
+    dual: bool = False,
+) -> TensorMap:
+    position = _normalize_unit_insertion_call(
+        tensor,
+        position,
+        dual,
+        "insertrightunit",
+    )
+    dst_space = tensor.space.insert_right_unit(position, dual)
+    return TensorMap(dst_space, tensor.storage)
+
+
+def removeunit(tensor: TensorMap, index: int) -> TensorMap:
+    if not isinstance(tensor, TensorMap):
+        raise TypeError("removeunit() requires a TensorMap")
+    if isinstance(index, bool) or not isinstance(index, int):
+        raise TypeError("removeunit() requires index to be an int")
+    if index < 0 or index >= tensor.numind:
+        raise ValueError(
+            f"removeunit index is out of range for rank {tensor.numind}"
+        )
+
+    dst_space = tensor.space.remove_unit(index)
+    return TensorMap(dst_space, tensor.storage)
+
+
 def _treebraider(
     src_space: _native.HomSpace,
     dst_space: _native.HomSpace,
@@ -507,6 +553,27 @@ def _normalize_visible_indices(
     if len(set(indices)) != len(indices):
         raise ValueError(f"{operation} visible indices must be unique")
     return indices
+
+
+def _normalize_unit_insertion_call(
+    tensor: object,
+    position: object,
+    dual: object,
+    operation: str,
+) -> int:
+    if not isinstance(tensor, TensorMap):
+        raise TypeError(f"{operation}() requires a TensorMap")
+    if position is None:
+        position = tensor.numind
+    elif isinstance(position, bool) or not isinstance(position, int):
+        raise TypeError(f"{operation}() requires position to be an int or None")
+    if not isinstance(dual, bool):
+        raise TypeError(f"{operation}() requires dual to be a bool")
+    if position < 0 or position > tensor.numind:
+        raise ValueError(
+            f"{operation} position is out of range for rank {tensor.numind}"
+        )
+    return position
 
 
 def _normalize_levels(space: _native.HomSpace, levels: object) -> tuple[int, ...]:

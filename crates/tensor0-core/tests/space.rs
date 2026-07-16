@@ -476,6 +476,19 @@ fn graded_space_convenience_apis_match_core_semantics() {
 }
 
 #[test]
+fn graded_space_unit_predicate_requires_exact_canonical_unit_metadata() {
+    let unit = GradedSpace::<U1Irrep>::unit();
+    assert!(unit.is_unit());
+    assert!(unit.dual().is_unit());
+    assert!(gs(vec![(u1(0), 1), (u1(1), 0)]).is_unit());
+
+    assert!(!GradedSpace::<U1Irrep>::zero(false).is_unit());
+    assert!(!gs(vec![(u1(1), 1)]).is_unit());
+    assert!(!gs(vec![(u1(0), 2)]).is_unit());
+    assert!(!gs(vec![(u1(0), 1), (u1(1), 1)]).is_unit());
+}
+
+#[test]
 fn product_space_convenience_apis_match_factor_storage() {
     let empty = ProductSpace::<U1Irrep>::one();
     assert!(empty.is_empty());
@@ -496,6 +509,93 @@ fn product_space_convenience_apis_match_factor_storage() {
         product.iter().cloned().collect::<Vec<_>>(),
         vec![left, right],
     );
+}
+
+#[test]
+fn product_space_unit_insertion_and_removal_use_zero_based_positions() {
+    let left = gs(vec![(u1(1), 2)]);
+    let right = gs(vec![(u1(-1), 3)]);
+    let product = ProductSpace::new(vec![left.clone(), right.clone()]);
+
+    for position in 0..=product.len() {
+        for dual in [false, true] {
+            let inserted = product.insert_unit(position, dual).unwrap();
+            assert_eq!(inserted.len(), product.len() + 1);
+            assert_eq!(inserted.get(position).unwrap().is_dual(), dual);
+            assert!(inserted.get(position).unwrap().is_unit());
+            assert_eq!(inserted.remove_unit(position).unwrap(), product);
+        }
+    }
+
+    assert_err_contains(product.insert_unit(3, false), "insertion boundary");
+    assert_err_contains(product.remove_unit(2), "removal index");
+    assert_err_contains(product.remove_unit(0), "canonical unit space");
+}
+
+#[test]
+fn hom_space_unit_insertion_obeys_left_right_partition_boundaries() {
+    let out0 = gs(vec![(u1(1), 2)]);
+    let out1 = gs(vec![(u1(-1), 3)]);
+    let input = gs(vec![(u1(0), 5)]);
+    let hom = HomSpace::from_factor_spaces(vec![out0, out1], vec![input]);
+
+    for position in 0..=hom.numind() {
+        let left = hom.insert_left_unit(position, false).unwrap();
+        let right = hom.insert_right_unit(position, false).unwrap();
+
+        assert_eq!(left.numind(), hom.numind() + 1);
+        assert_eq!(right.numind(), hom.numind() + 1);
+        assert_eq!(
+            left.numout(),
+            hom.numout() + usize::from(position < hom.numout())
+        );
+        assert_eq!(
+            right.numout(),
+            hom.numout() + usize::from(position <= hom.numout()),
+        );
+        assert!(left.visible_leg(position).unwrap().is_unit());
+        assert!(right.visible_leg(position).unwrap().is_unit());
+        assert_eq!(left.remove_unit(position).unwrap(), hom);
+        assert_eq!(right.remove_unit(position).unwrap(), hom);
+    }
+
+    assert_err_contains(hom.insert_left_unit(4, false), "insertion boundary");
+    assert_err_contains(hom.insert_right_unit(4, false), "insertion boundary");
+    assert_err_contains(hom.remove_unit(3), "removal index");
+    assert_err_contains(hom.remove_unit(0), "canonical unit space");
+}
+
+#[test]
+fn rank_zero_unit_insertion_distinguishes_left_and_right_partition() {
+    let scalar = HomSpace::<U1Irrep>::new(ProductSpace::one(), ProductSpace::one());
+
+    let left = scalar.insert_left_unit(0, false).unwrap();
+    assert_eq!((left.numout(), left.numin()), (0, 1));
+    assert_eq!(left.remove_unit(0).unwrap(), scalar);
+
+    let right = scalar.insert_right_unit(0, false).unwrap();
+    assert_eq!((right.numout(), right.numin()), (1, 0));
+    assert_eq!(right.remove_unit(0).unwrap(), scalar);
+}
+
+#[test]
+fn hom_space_unit_dual_flag_describes_the_attached_side_factor() {
+    let out = gs(vec![(u1(1), 2)]);
+    let input = gs(vec![(u1(-1), 3)]);
+    let hom = HomSpace::from_factor_spaces(vec![out], vec![input]);
+
+    for dual in [false, true] {
+        let codomain = hom.insert_right_unit(hom.numout(), dual).unwrap();
+        assert_eq!(
+            codomain.codomain().get(hom.numout()).unwrap().is_dual(),
+            dual
+        );
+        assert_eq!(codomain.visible_leg(hom.numout()).unwrap().is_dual(), dual);
+
+        let domain = hom.insert_left_unit(hom.numout(), dual).unwrap();
+        assert_eq!(domain.domain().get(0).unwrap().is_dual(), dual);
+        assert_eq!(domain.visible_leg(hom.numout()).unwrap().is_dual(), !dual);
+    }
 }
 
 #[test]

@@ -18,5 +18,5 @@ evolving, and Tensor0 is not yet a production-ready tensor-network framework.
 
 Tensor0 currently covers typed sector metadata, graded spaces, `TensorMap`
 storage, block access, composition, SVD helpers, transforms, symmetry-aware
-contractions, correctness-first dense conversion, and JAX `jit` / `grad`
-smoke gates.
+contractions, monoidal-unit insertion and removal, correctness-first dense
+conversion, and JAX `jit` / `grad` smoke gates.

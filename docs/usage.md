@@ -152,7 +152,8 @@ with quantum-dimension weighting, and `cond` currently supports the 2-norm.
 ## Transforms
 
 The public transform helpers are `permute(...)`, `braid(...)`, `transpose(...)`,
-`repartition(...)`, `flip(...)`, and `twist(...)`.
+`repartition(...)`, `flip(...)`, `twist(...)`, `insertleftunit(...)`,
+`insertrightunit(...)`, and `removeunit(...)`.
 
 ```python
 import jax.numpy as jnp
@@ -193,6 +194,91 @@ assert restored.space == tensor.space
 involutory: two forward flips can introduce a phase. Use one forward and one
 inverse flip to restore the original tensor. Flipping both sides of a matching
 contraction leg preserves the contraction result.
+
+### Unit-Space Insertion and Removal
+
+The unit-space operations have these signatures:
+
+```python
+insertleftunit(tensor, position=None, *, dual=False)
+insertrightunit(tensor, position=None, *, dual=False)
+removeunit(tensor, index)
+```
+
+`position` is a 0-based boundary in `0..tensor.numind`: it is the number of
+original visible indices before the new unit, and the new unit appears at
+visible index `position`. The default is `tensor.numind`, the final boundary.
+For `M = tensor.numout`, the two insertion operations differ only at the
+codomain/domain boundary:
+
+| Boundary | `insertleftunit` attaches to | `insertrightunit` attaches to |
+|---|---|---|
+| `0 <= position < M` | codomain at `position` | codomain at `position` |
+| `position == M` | first domain factor | final codomain factor |
+| `M < position <= tensor.numind` | domain at `position - M` | domain at `position - M` |
+
+Consequently, on a rank-zero TensorMap, left insertion creates a domain factor
+and right insertion creates a codomain factor. Removing the newly inserted
+visible index is an exact structural inverse:
+
+```python
+from tensor0 import insertleftunit, insertrightunit, removeunit
+
+boundary = tensor.numout
+left = insertleftunit(tensor, boundary)
+right = insertrightunit(tensor, boundary)
+
+assert left.numout == tensor.numout
+assert left.numin == tensor.numin + 1
+assert right.numout == tensor.numout + 1
+assert right.numin == tensor.numin
+assert removeunit(left, boundary).space == tensor.space
+assert removeunit(right, boundary).space == tensor.space
+```
+
+`dual` selects the canonical unit or its dual as the factor attached to the
+destination codomain or domain `ProductSpace`. A visible domain leg is, by the
+`HomSpace` convention, the dual of its stored domain factor. Its visible
+duality presentation is therefore opposite to the value of `dual`; codomain
+legs present the value directly.
+
+For all currently supported sector families, unit insertion preserves the
+canonical flattened layout. The returned TensorMap therefore shares the
+source's `VectorStorage` without writing to its payload, preserves dtype, and
+does not perform a dense conversion or data remap. This sharing is safe for the
+normal immutable JAX Array payload:
+
+```python
+assert left.storage is tensor.storage
+assert right.storage is tensor.storage
+assert removeunit(left, boundary).storage is tensor.storage
+```
+
+`position`, `index`, and `dual` are structural metadata and must be static
+under `jax.jit`. Capture them in a closure, as below, or mark the corresponding
+arguments static with `static_argnums` or `static_argnames`:
+
+```python
+import jax
+
+insert_at_boundary = jax.jit(
+    lambda value: insertleftunit(value, boundary, dual=True)
+)
+compiled_left = insert_at_boundary(tensor)
+```
+
+`removeunit` accepts a canonical unit factor and its dual, but rejects a
+one-dimensional factor carrying a non-unit sector, a higher-multiplicity unit,
+or a factor with any additional nonzero sector. Insertion requires a
+`TensorMap`, an integer boundary or `None`, and a boolean `dual`; removal
+requires a `TensorMap` and an integer index. Booleans are not accepted as
+indices. Invalid types raise `TypeError`, while an out-of-range boundary or
+index and removal of a non-unit factor raise `ValueError`.
+
+Tensor0 supports simple monoidal units for its current built-in sector
+families. These operations do not expose TensorKit's mutable `copy` option or
+its elementary-space `conj` option, and they are not a general singleton-axis,
+reshape, or squeeze API.
 
 For small correctness checks, compare transform results through public dense
 conversion.
