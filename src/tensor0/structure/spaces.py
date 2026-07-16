@@ -12,6 +12,7 @@ SectorValue = tuple[int, ...]
 SectorDimItem = tuple[SectorValue, int]
 SectorDimItems = tuple[SectorDimItem, ...]
 ProductSpaceInput = Iterable[_native.ElementarySpace] | _native.ProductSpace
+_DimSpace = _native.ElementarySpace | _native.ProductSpace
 
 
 @dataclass(frozen=True)
@@ -52,10 +53,19 @@ def space(
 def hom(
     codomain: ProductSpaceInput,
     domain: ProductSpaceInput,
+    *,
+    sector_type: SectorType | None = None,
 ) -> _native.HomSpace:
+    if sector_type is not None and not isinstance(sector_type, SectorType):
+        raise TypeError("hom() sector_type must be a SectorType")
+
     codomain_product = _product_space_or_none(codomain)
     domain_product = _product_space_or_none(domain)
-    sector_type = _hom_sector_type(codomain_product, domain_product)
+    sector_type = _hom_sector_type(
+        codomain_product,
+        domain_product,
+        explicit=sector_type,
+    )
 
     if codomain_product is None:
         codomain_product = _native.make_product_space(sector_type, ())
@@ -63,6 +73,108 @@ def hom(
         domain_product = _native.make_product_space(sector_type, ())
 
     return _native.make_hom_products(codomain_product, domain_product)
+
+
+def dim(value: _DimSpace) -> int:
+    """Return the physical dimension of an elementary or product space."""
+    if not isinstance(value, (_native.ElementarySpace, _native.ProductSpace)):
+        raise TypeError("dim() requires an ElementarySpace or ProductSpace")
+    return _native.dim(value)
+
+
+def reduced_dim(value: _native.ElementarySpace) -> int:
+    """Return the sum of degeneracy dimensions of an elementary space."""
+    if not isinstance(value, _native.ElementarySpace):
+        raise TypeError("reduced_dim() requires an ElementarySpace")
+    return _native.reduced_dim(value)
+
+
+def storage_dim(value: _native.HomSpace) -> int:
+    """Return the packed storage dimension of a morphism space."""
+    if not isinstance(value, _native.HomSpace):
+        raise TypeError("storage_dim() requires a HomSpace")
+    return _native.storage_dim(value)
+
+
+def fuse(value: _native.ProductSpace) -> _native.ElementarySpace:
+    """Fuse a typed product space into one elementary space."""
+    if not isinstance(value, _native.ProductSpace):
+        raise TypeError("fuse() requires a ProductSpace")
+    return _native.fuse(value)
+
+
+def unit_space(
+    sector_type: SectorType,
+    *,
+    dual: bool = False,
+) -> _native.ElementarySpace:
+    """Return the canonical one-dimensional space for a sector family."""
+    _require_sector_type(sector_type, "unit_space")
+    return _native.unit_space(sector_type, dual)
+
+
+def zero_space(
+    sector_type: SectorType,
+    *,
+    dual: bool = False,
+) -> _native.ElementarySpace:
+    """Return the zero-dimensional space for a sector family."""
+    _require_sector_type(sector_type, "zero_space")
+    return _native.zero_space(sector_type, dual)
+
+
+def infimum(
+    left: _native.ElementarySpace,
+    right: _native.ElementarySpace,
+) -> _native.ElementarySpace:
+    """Return the sector-wise infimum of two elementary spaces."""
+    _require_elementary_pair(left, right, "infimum")
+    return _native.infimum_space(left, right)
+
+
+def supremum(
+    left: _native.ElementarySpace,
+    right: _native.ElementarySpace,
+) -> _native.ElementarySpace:
+    """Return the sector-wise supremum of two elementary spaces."""
+    _require_elementary_pair(left, right, "supremum")
+    return _native.supremum_space(left, right)
+
+
+def direct_sum(
+    left: _native.ElementarySpace,
+    right: _native.ElementarySpace,
+) -> _native.ElementarySpace:
+    """Return the direct sum of two elementary spaces."""
+    _require_elementary_pair(left, right, "direct_sum")
+    return _native.direct_sum(left, right)
+
+
+def is_isomorphic(
+    left: _native.ElementarySpace,
+    right: _native.ElementarySpace,
+) -> bool:
+    """Return whether two elementary spaces have equal visible dimensions."""
+    _require_elementary_pair(left, right, "is_isomorphic")
+    return _native.is_isomorphic(left, right)
+
+
+def is_monomorphic(
+    left: _native.ElementarySpace,
+    right: _native.ElementarySpace,
+) -> bool:
+    """Return whether the left elementary space embeds into the right one."""
+    _require_elementary_pair(left, right, "is_monomorphic")
+    return _native.is_monomorphic(left, right)
+
+
+def is_epimorphic(
+    left: _native.ElementarySpace,
+    right: _native.ElementarySpace,
+) -> bool:
+    """Return whether the left elementary space surjects onto the right one."""
+    _require_elementary_pair(left, right, "is_epimorphic")
+    return _native.is_epimorphic(left, right)
 
 
 def _as_product_space_input(
@@ -102,12 +214,37 @@ def _product_space_or_none(
 def _hom_sector_type(
     codomain: _native.ProductSpace | None,
     domain: _native.ProductSpace | None,
+    *,
+    explicit: SectorType | None,
 ) -> SectorType:
+    if explicit is not None:
+        for product in (codomain, domain):
+            if product is not None and product.sector_spec != explicit:
+                raise ValueError(
+                    "hom() sector_type must match every non-empty or typed input",
+                )
+        return explicit
+
     if codomain is not None:
         return codomain.sector_spec
     if domain is not None:
         return domain.sector_spec
-    raise ValueError("hom() requires at least one space")
+    raise ValueError(
+        "hom() requires sector_type when both sides are untyped empty iterables",
+    )
+
+
+def _require_sector_type(value: object, function_name: str) -> None:
+    if not isinstance(value, SectorType):
+        raise TypeError(f"{function_name}() requires a SectorType")
+
+
+def _require_elementary_pair(left: object, right: object, function_name: str) -> None:
+    if not isinstance(left, _native.ElementarySpace) or not isinstance(
+        right,
+        _native.ElementarySpace,
+    ):
+        raise TypeError(f"{function_name}() requires two ElementarySpace values")
 
 
 def _space_tuple(value: object) -> tuple[_native.ElementarySpace, ...]:

@@ -4,7 +4,7 @@ from jax import Array
 import jax.numpy as jnp
 
 from .. import _native
-from ..structure.spaces import hom
+from ..structure.spaces import fuse, hom, infimum
 from ..tensor._blocks import pack_blocks
 from ..tensor.diagonal import DiagonalTensorMap
 from ..tensor.sector_vector import SectorVector, _packed_sector_values
@@ -57,8 +57,8 @@ def svd_full(tensor: TensorMap) -> tuple[TensorMap, TensorMap, TensorMap]:
     u_blocks, s_blocks, vh_blocks, tensor_dtype, singular_dtype = _full_svd_blocks(
         tensor
     )
-    fused_codomain = _native.fuse(tensor.space.codomain)
-    fused_domain = _native.fuse(tensor.space.domain)
+    fused_codomain = fuse(tensor.space.codomain)
+    fused_domain = fuse(tensor.space.domain)
     u_space = hom(tensor.space.codomain, (fused_codomain,))
     s_space = hom((fused_codomain,), (fused_domain,))
     vh_space = hom((fused_domain,), tensor.space.domain)
@@ -174,9 +174,9 @@ def _require_tensor_map(tensor: object, function_name: str) -> TensorMap:
 
 
 def _svd_infimum_bond(tensor: TensorMap) -> _native.ElementarySpace:
-    return _native.infimum_space(
-        _native.fuse(tensor.space.codomain),
-        _native.fuse(tensor.space.domain),
+    return infimum(
+        fuse(tensor.space.codomain),
+        fuse(tensor.space.domain),
     )
 
 

@@ -26,6 +26,7 @@ dependencies = [
 [dependency-groups]
 dev = [
     "maturin>=1.5,<2",
+    "pyright>=1.1.411",
     "pytest>=8.0",
 ]
 bench = [
@@ -40,3 +41,12 @@ features = ["pyo3/extension-module"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.pyright]
+include = ["src", "tests", "examples", "benchmarks"]
+pythonVersion = "3.11"
+typeCheckingMode = "standard"
+reportUnnecessaryCast = "error"
+reportUnnecessaryTypeIgnoreComment = "error"
+venvPath = "."
+venv = ".venv"

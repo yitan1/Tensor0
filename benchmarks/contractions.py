@@ -18,7 +18,6 @@ from tensor0 import (
     TensorMap,
     U1Irrep,
     contract,
-    get_degeneracystructure,
     hom,
     idx,
     ncon,
@@ -27,6 +26,7 @@ from tensor0 import (
     tensortrace,
     twist,
 )
+from tensor0.structure import get_degeneracystructure
 
 from _runner import (
     Operation,

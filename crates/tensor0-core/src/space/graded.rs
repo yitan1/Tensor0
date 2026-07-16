@@ -185,6 +185,20 @@ impl<I: Sector> GradedSpace<I> {
             .collect();
         GradedSpace::new(sector_dims, is_dual)
     }
+
+    pub fn is_isomorphic(&self, rhs: &Self) -> bool {
+        self.is_monomorphic(rhs) && self.is_epimorphic(rhs)
+    }
+
+    pub fn is_monomorphic(&self, rhs: &Self) -> bool {
+        self.sectors()
+            .into_iter()
+            .all(|(sector, dim)| dim <= rhs.sector_dim(&sector))
+    }
+
+    pub fn is_epimorphic(&self, rhs: &Self) -> bool {
+        rhs.is_monomorphic(self)
+    }
 }
 
 pub fn infimum_space<I: Sector>(

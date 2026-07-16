@@ -7,7 +7,7 @@ use tensor0_core::sector::{
 };
 use tensor0_core::space::{HomSpace as CoreHomSpace, HomSpaceSpec};
 
-use crate::pyconv::{core_err, py_hash};
+use crate::pyconv::{core_err, py_hash, sector_spec_static_key};
 
 use super::graded::{GradedSpaceInner, PyElementarySpace};
 use super::product::{ProductSpaceInner, PyProductSpace};
@@ -166,9 +166,10 @@ impl PyHomSpace {
 
     #[getter]
     fn static_key(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let sector_key = sector_spec_static_key(py, &self.inner.codomain_product().sector_spec())?;
         let codomain_keys = space_static_keys_tuple(py, self.inner.codomain_spaces())?;
         let domain_keys = space_static_keys_tuple(py, self.inner.domain_spaces())?;
-        let key = ("hom", codomain_keys, domain_keys).into_pyobject(py)?;
+        let key = ("hom", sector_key, codomain_keys, domain_keys).into_pyobject(py)?;
         Ok(key.into_any().unbind())
     }
 

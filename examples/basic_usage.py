@@ -9,13 +9,12 @@ from tensor0 import (
     TensorMap,
     U1Irrep,
     from_dense,
-    get_degeneracystructure,
     hom,
-    permute,
     space,
     svd_compact,
     to_dense,
 )
+from tensor0.structure import get_degeneracystructure
 
 
 def _data_for(hom_space, *, scale=0.1):
@@ -66,7 +65,7 @@ def composition_and_svd_example():
     svd_space = hom((left,), (right,))
     tensor = TensorMap(svd_space, _data_for(svd_space))
     u, s, vh = svd_compact(tensor)
-    reconstructed = u @ s.to_tensor_map() @ vh
+    reconstructed = u @ s @ vh
 
     assert reconstructed.space == tensor.space
     for coupled, block in tensor.blocks():
@@ -79,7 +78,7 @@ def transform_example():
     x = space(U1Irrep, {1: 1})
     u1_space = hom((v, w), (x,))
     u1_tensor = TensorMap(u1_space, _data_for(u1_space, scale=1.0))
-    u1_permuted = permute(u1_tensor, ((1,), (0, 2)))
+    u1_permuted = u1_tensor.permute(((1,), (0, 2)))
 
     assert u1_permuted.space == hom((w,), (v.dual(), x))
     _assert_allclose(
@@ -91,7 +90,7 @@ def transform_example():
     odd_b = space(FermionParity, {1: 1})
     fermion_space = hom((odd_a, odd_b), ())
     fermion_tensor = TensorMap(fermion_space, jnp.array([2.0], dtype=jnp.float32))
-    fermion_permuted = permute(fermion_tensor, ((1, 0), ()))
+    fermion_permuted = fermion_tensor.permute(((1, 0), ()))
 
     _assert_allclose(
         to_dense(fermion_permuted),
@@ -101,7 +100,7 @@ def transform_example():
     half = space(SU2Irrep, {1: 1})
     su2_space = hom((half, half, half), (half,))
     su2_tensor = TensorMap(su2_space, _data_for(su2_space, scale=1.0))
-    su2_permuted = permute(su2_tensor, ((1, 2), (0, 3)))
+    su2_permuted = su2_tensor.permute(((1, 2), (0, 3)))
 
     _assert_allclose(
         to_dense(su2_permuted),

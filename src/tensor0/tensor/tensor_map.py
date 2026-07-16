@@ -30,6 +30,7 @@ from ._blocks import (
     pack_blocks as _pack_blocks,
     pack_complete_blocks as _pack_complete_blocks,
 )
+from .diagonal import DiagonalTensorMap
 from .storage import VectorStorage, _validate_vector_storage_data
 
 _FusionTreePair: TypeAlias = tuple[_native.FusionTree, _native.FusionTree]
@@ -146,6 +147,10 @@ class TensorMap:
     @property
     def shape(self) -> tuple[int, ...]:
         return self.dims
+
+    @property
+    def dtype(self) -> jnp.dtype:
+        return jnp.asarray(self.storage.data).dtype
 
     @property
     def blocksectors(self) -> tuple[tuple[int, ...], ...]:
@@ -302,6 +307,49 @@ class TensorMap:
 
         return repartition(self, nout, nin)
 
+    def flip(
+        self,
+        indices: int | tuple[int, ...],
+        inv: bool = False,
+    ) -> TensorMap:
+        from ..operations.transforms import flip
+
+        return flip(self, indices, inv=inv)
+
+    def twist(
+        self,
+        indices: int | tuple[int, ...],
+        inv: bool = False,
+    ) -> TensorMap:
+        from ..operations.transforms import twist
+
+        return twist(self, indices, inv=inv)
+
+    def insertleftunit(
+        self,
+        position: int | None = None,
+        *,
+        dual: bool = False,
+    ) -> TensorMap:
+        from ..operations.transforms import insertleftunit
+
+        return insertleftunit(self, position, dual=dual)
+
+    def insertrightunit(
+        self,
+        position: int | None = None,
+        *,
+        dual: bool = False,
+    ) -> TensorMap:
+        from ..operations.transforms import insertrightunit
+
+        return insertrightunit(self, position, dual=dual)
+
+    def removeunit(self, index: int) -> TensorMap:
+        from ..operations.transforms import removeunit
+
+        return removeunit(self, index)
+
     def zero_like(self) -> TensorMap:
         return TensorMap(self.space, jnp.zeros_like(self.storage.data))
 
@@ -428,18 +476,26 @@ class TensorMap:
     def diag(self) -> SectorDict[Array]:
         return SectorDict((coupled, jnp.diag(block)) for coupled, block in self.blocks())
 
-    def is_diagonal(self) -> bool:
+    def is_diagonal(self) -> Array:
+        result = jnp.asarray(True)
         for _coupled, block in self.blocks():
             diagonal = jnp.zeros_like(block)
             diagonal_indices = jnp.arange(min(block.shape))
             diagonal = diagonal.at[diagonal_indices, diagonal_indices].set(
                 block[diagonal_indices, diagonal_indices],
             )
-            if not bool(jnp.all(block == diagonal)):
-                return False
-        return True
+            result = jnp.logical_and(result, jnp.all(block == diagonal))
+        return result
 
     def __matmul__(self, other: object) -> TensorMap:
+        if isinstance(other, DiagonalTensorMap):
+            if self.space.domain != other.space.codomain:
+                raise ValueError(
+                    "TensorMap spaces are not composable: "
+                    "left domain must equal right codomain",
+                )
+            return self @ other.to_tensor_map()
+
         if not isinstance(other, TensorMap):
             return NotImplemented
 
@@ -644,24 +700,70 @@ def diagm(
     )
 
 
-def zero_like(tensor: TensorMap) -> TensorMap:
-    _require_tensor_map(tensor, "zero_like")
+@overload
+def zero_like(tensor: TensorMap) -> TensorMap: ...
+
+
+@overload
+def zero_like(tensor: DiagonalTensorMap) -> DiagonalTensorMap: ...
+
+
+def zero_like(
+    tensor: TensorMap | DiagonalTensorMap,
+) -> TensorMap | DiagonalTensorMap:
+    _require_tensor_like(tensor, "zero_like")
     return tensor.zero_like()
 
 
-def scale(tensor: TensorMap, alpha: object) -> TensorMap:
-    _require_tensor_map(tensor, "scale")
+@overload
+def scale(tensor: TensorMap, alpha: object) -> TensorMap: ...
+
+
+@overload
+def scale(tensor: DiagonalTensorMap, alpha: object) -> DiagonalTensorMap: ...
+
+
+def scale(
+    tensor: TensorMap | DiagonalTensorMap,
+    alpha: object,
+) -> TensorMap | DiagonalTensorMap:
+    _require_tensor_like(tensor, "scale")
     return tensor.scale(alpha)
 
 
+@overload
 def add(
     t1: TensorMap,
     t2: TensorMap,
     alpha: object = 1,
     beta: object = 1,
-) -> TensorMap:
-    _require_tensor_map(t1, "add")
-    return t1.add(t2, alpha=alpha, beta=beta)
+) -> TensorMap: ...
+
+
+@overload
+def add(
+    t1: DiagonalTensorMap,
+    t2: DiagonalTensorMap,
+    alpha: object = 1,
+    beta: object = 1,
+) -> DiagonalTensorMap: ...
+
+
+def add(
+    t1: TensorMap | DiagonalTensorMap,
+    t2: TensorMap | DiagonalTensorMap,
+    alpha: object = 1,
+    beta: object = 1,
+) -> TensorMap | DiagonalTensorMap:
+    if isinstance(t1, TensorMap):
+        if not isinstance(t2, TensorMap):
+            raise TypeError("add() requires a TensorMap")
+        return t1.add(t2, alpha=alpha, beta=beta)
+    if isinstance(t1, DiagonalTensorMap):
+        if not isinstance(t2, DiagonalTensorMap):
+            raise TypeError("add() requires a DiagonalTensorMap")
+        return t1.add(t2, alpha=alpha, beta=beta)
+    raise TypeError("add() requires a TensorMap or DiagonalTensorMap")
 
 
 def inner(t1: TensorMap, t2: TensorMap) -> Array:
@@ -674,8 +776,11 @@ def dot(t1: TensorMap, t2: TensorMap) -> Array:
     return t1.dot(t2)
 
 
-def norm(tensor: TensorMap, p: SupportsFloat = 2) -> Array:
-    _require_tensor_map(tensor, "norm")
+def norm(
+    tensor: TensorMap | DiagonalTensorMap,
+    p: SupportsFloat = 2,
+) -> Array:
+    _require_tensor_like(tensor, "norm")
     return tensor.norm(p=p)
 
 
@@ -689,23 +794,63 @@ def scalar(tensor: TensorMap) -> Array:
     return tensor.scalar()
 
 
-def adjoint(tensor: TensorMap) -> TensorMap:
-    _require_tensor_map(tensor, "adjoint")
+@overload
+def adjoint(tensor: TensorMap) -> TensorMap: ...
+
+
+@overload
+def adjoint(tensor: DiagonalTensorMap) -> DiagonalTensorMap: ...
+
+
+def adjoint(
+    tensor: TensorMap | DiagonalTensorMap,
+) -> TensorMap | DiagonalTensorMap:
+    _require_tensor_like(tensor, "adjoint")
     return tensor.adjoint()
 
 
-def real(tensor: TensorMap) -> TensorMap:
-    _require_tensor_map(tensor, "real")
+@overload
+def real(tensor: TensorMap) -> TensorMap: ...
+
+
+@overload
+def real(tensor: DiagonalTensorMap) -> DiagonalTensorMap: ...
+
+
+def real(
+    tensor: TensorMap | DiagonalTensorMap,
+) -> TensorMap | DiagonalTensorMap:
+    _require_tensor_like(tensor, "real")
     return tensor.real()
 
 
-def imag(tensor: TensorMap) -> TensorMap:
-    _require_tensor_map(tensor, "imag")
+@overload
+def imag(tensor: TensorMap) -> TensorMap: ...
+
+
+@overload
+def imag(tensor: DiagonalTensorMap) -> DiagonalTensorMap: ...
+
+
+def imag(
+    tensor: TensorMap | DiagonalTensorMap,
+) -> TensorMap | DiagonalTensorMap:
+    _require_tensor_like(tensor, "imag")
     return tensor.imag()
 
 
-def complex(tensor: TensorMap) -> TensorMap:
-    _require_tensor_map(tensor, "complex")
+@overload
+def complex(tensor: TensorMap) -> TensorMap: ...
+
+
+@overload
+def complex(tensor: DiagonalTensorMap) -> DiagonalTensorMap: ...
+
+
+def complex(
+    tensor: TensorMap | DiagonalTensorMap,
+) -> TensorMap | DiagonalTensorMap:
+    _require_tensor_like(tensor, "complex")
     return tensor.complex()
 
 
@@ -719,14 +864,62 @@ def diag(tensor: TensorMap) -> SectorDict[Array]:
     return tensor.diag()
 
 
-def isdiag(tensor: TensorMap) -> bool:
-    _require_tensor_map(tensor, "isdiag")
+def isdiag(tensor: TensorMap | DiagonalTensorMap) -> Array:
+    _require_tensor_like(tensor, "isdiag")
     return tensor.is_diagonal()
+
+
+def equal(
+    t1: TensorMap | DiagonalTensorMap,
+    t2: TensorMap | DiagonalTensorMap,
+) -> Array:
+    _require_tensor_like(t1, "equal")
+    _require_tensor_like(t2, "equal")
+    if t1.space != t2.space or t1.dtype != t2.dtype:
+        return jnp.asarray(False)
+
+    left, right = _comparison_storage(t1, t2)
+    return jnp.array_equal(left, right)
+
+
+def allclose(
+    t1: TensorMap | DiagonalTensorMap,
+    t2: TensorMap | DiagonalTensorMap,
+    *,
+    rtol: float,
+    atol: float,
+) -> Array:
+    _require_tensor_like(t1, "allclose")
+    _require_tensor_like(t2, "allclose")
+    if t1.space != t2.space:
+        return jnp.asarray(False)
+
+    left, right = _comparison_storage(t1, t2)
+    return jnp.allclose(left, right, rtol=rtol, atol=atol)
 
 
 def _require_tensor_map(tensor: object, function_name: str) -> None:
     if not isinstance(tensor, TensorMap):
         raise TypeError(f"{function_name}() requires a TensorMap")
+
+
+def _require_tensor_like(tensor: object, function_name: str) -> None:
+    if not isinstance(tensor, (TensorMap, DiagonalTensorMap)):
+        raise TypeError(
+            f"{function_name}() requires a TensorMap or DiagonalTensorMap",
+        )
+
+
+def _comparison_storage(
+    t1: TensorMap | DiagonalTensorMap,
+    t2: TensorMap | DiagonalTensorMap,
+) -> tuple[Array, Array]:
+    if isinstance(t1, DiagonalTensorMap) == isinstance(t2, DiagonalTensorMap):
+        return t1.storage.data, t2.storage.data
+
+    left = t1.to_tensor_map() if isinstance(t1, DiagonalTensorMap) else t1
+    right = t2.to_tensor_map() if isinstance(t2, DiagonalTensorMap) else t2
+    return left.storage.data, right.storage.data
 
 
 def _as_scalar_array(value: object, argument_name: str) -> Array:

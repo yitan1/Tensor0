@@ -168,8 +168,10 @@ def test_sectorvector_constructed_from_dual_space_keeps_visible_sector_labels():
 
     diagonal = vector.to_diagonal()
 
-    assert diagonal.domain == space(U1Irrep, {-1: 2})
-    assert not diagonal.domain.is_dual
+    assert diagonal.index_space == space(U1Irrep, {-1: 2})
+    assert diagonal.domain.spaces == (diagonal.index_space,)
+    assert diagonal.codomain.spaces == (diagonal.index_space,)
+    assert not diagonal.index_space.is_dual
 
 
 def test_sectorvector_to_diagonal_returns_diagonal_tensormap():
@@ -180,7 +182,9 @@ def test_sectorvector_to_diagonal_returns_diagonal_tensormap():
     diagonal = vector.to_diagonal()
 
     assert isinstance(diagonal, DiagonalTensorMap)
-    assert diagonal.domain == bond
+    assert diagonal.index_space == bond
+    assert diagonal.domain.spaces == (bond,)
+    assert diagonal.codomain.spaces == (bond,)
     assert diagonal.storage.data.dtype == data.dtype
     _assert_array_equal(diagonal.diag().block(0), data[0:2])
     _assert_array_equal(diagonal.diag().block(1), data[2:5])

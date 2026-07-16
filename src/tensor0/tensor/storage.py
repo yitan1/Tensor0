@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Any
+from typing import Protocol, cast
 
 from jax import Array
 
@@ -16,8 +17,12 @@ class VectorStorage:
         object.__setattr__(self, "data", data)
 
 
-def _validate_vector_storage_data(data: Any, expected_total_dim: int) -> None:
-    shape = getattr(data, "shape", None)
+class _Sliceable(Protocol):
+    def __getitem__(self, key: slice, /) -> object: ...
+
+
+def _validate_vector_storage_data(data: object, expected_total_dim: int) -> None:
+    shape = cast(Iterable[object] | None, getattr(data, "shape", None))
     if shape is None:
         raise TypeError("storage data must have a shape")
 
@@ -39,7 +44,7 @@ def _validate_vector_storage_data(data: Any, expected_total_dim: int) -> None:
         )
 
     try:
-        empty_slice = data[0:0]
+        empty_slice = cast(_Sliceable, data)[0:0]
     except Exception as exc:
         raise TypeError("storage data must support slicing") from exc
 

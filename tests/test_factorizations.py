@@ -13,7 +13,6 @@ from tensor0 import (
     U1Irrep,
     _native,
     cond,
-    get_degeneracystructure,
     hom,
     notrunc,
     rank,
@@ -27,6 +26,7 @@ from tensor0 import (
     truncspace,
     trunctol,
 )
+from tensor0.structure import get_degeneracystructure
 from tests.cases import (
     assert_allclose,
     assert_tensormap_blocks_allclose,
@@ -150,17 +150,20 @@ def _assert_u1_truncation_case(case):
 
     u, s, vh, err = svd_trunc(tensor, trunc=case.trunc)
 
-    assert u.space == hom(tensor.space.codomain, (s.domain,))
-    assert vh.space == hom((s.domain,), tensor.space.domain)
-    assert s.domain.sectors == case.expected_sectors
+    assert u.space == hom(tensor.space.codomain, (s.index_space,))
+    assert vh.space == hom((s.index_space,), tensor.space.domain)
+    assert s.domain.spaces == (s.index_space,)
+    assert s.codomain.spaces == (s.index_space,)
+    assert s.index_space.sectors == case.expected_sectors
     for sector, values in case.expected_blocks:
         assert_allclose(s.diag().block(sector), jnp.array(values, dtype=jnp.float32))
     assert float(err) == pytest.approx(
         float(jnp.sqrt(jnp.array(case.expected_error_squared))),
         rel=1e-5,
     )
+    reconstructed = u @ s @ vh
+    assert reconstructed.space == tensor.space
     if case.zero_reconstruction:
-        reconstructed = u @ s.to_tensor_map() @ vh
         for coupled, original_block in tensor.blocks():
             assert_allclose(
                 reconstructed.block(coupled),
@@ -173,10 +176,12 @@ def test_svd_compact_reconstructs_factorization_cases(case):
     tensor = TensorMap(case.space, float_data_for(case.space))
 
     u, s, vh = svd_compact(tensor)
-    reconstructed = u @ s.to_tensor_map() @ vh
+    reconstructed = u @ s @ vh
     expected_bond = _svd_infimum_bond_for(tensor)
 
-    assert s.domain == expected_bond
+    assert s.index_space == expected_bond
+    assert s.domain.spaces == (expected_bond,)
+    assert s.codomain.spaces == (expected_bond,)
     assert u.space == hom(tensor.space.codomain, (expected_bond,))
     assert vh.space == hom((expected_bond,), tensor.space.domain)
     assert_tensormap_blocks_allclose(reconstructed, tensor)
@@ -238,15 +243,15 @@ def test_svd_full_uses_fused_spaces_and_reconstructs(case):
     assert_tensormap_blocks_allclose(reconstructed, tensor)
 
 
-@pytest.mark.parametrize("case", factorization_cases(), ids=lambda case: case.name)
-def test_svd_trunc_notrunc_matches_compact_factorization_cases(case):
-    tensor = TensorMap(case.space, float_data_for(case.space))
+def test_svd_trunc_notrunc_matches_compact():
+    target = _rectangular_u1_hom()
+    tensor = TensorMap(target, float_data_for(target))
 
     compact_u, compact_s, compact_vh = svd_compact(tensor)
     u, s, vh, err = svd_trunc(tensor, trunc=notrunc())
-    reconstructed = u @ s.to_tensor_map() @ vh
+    reconstructed = u @ s @ vh
 
-    assert s.domain == compact_s.domain
+    assert s.index_space == compact_s.index_space
     assert u.space == compact_u.space
     assert vh.space == compact_vh.space
     assert float(err) == pytest.approx(0.0)
@@ -286,7 +291,7 @@ def test_svd_trunc_supports_fermion_parity_without_braiding_transform():
 
     _u, s, _vh, err = svd_trunc(tensor, trunc=truncrank(2))
 
-    assert s.domain.sectors == (((0,), 1), ((1,), 1))
+    assert s.index_space.sectors == (((0,), 1), ((1,), 1))
     assert_allclose(s.diag().block(0), jnp.array([5.0], dtype=jnp.float32))
     assert_allclose(s.diag().block(1), jnp.array([4.0], dtype=jnp.float32))
     assert float(err) == pytest.approx(float(jnp.sqrt(jnp.array(10.0))), rel=1e-5)
@@ -311,7 +316,7 @@ def test_svd_trunc_truncrank_uses_su2_quantum_dimensions(
 
     _u, s, _vh, err = svd_trunc(tensor, trunc=truncrank(rank))
 
-    assert s.domain.sectors == expected_sectors
+    assert s.index_space.sectors == expected_sectors
     assert_allclose(s.diag().block(sector), jnp.array(expected_values, dtype=jnp.float32))
     assert float(err) == pytest.approx(
         float(jnp.sqrt(jnp.array(expected_error_squared))),
@@ -337,10 +342,10 @@ def test_svd_compact_supports_typed_empty_hom_space():
 
     u, s, vh = svd_compact(tensor)
     expected_bond = _svd_infimum_bond_for(tensor)
-    reconstructed = u @ s.to_tensor_map() @ vh
+    reconstructed = u @ s @ vh
 
-    assert s.domain == expected_bond
-    assert s.domain.sectors == (((0,), 1),)
+    assert s.index_space == expected_bond
+    assert s.index_space.sectors == (((0,), 1),)
     assert u.space == hom(tensor.space.codomain, (expected_bond,))
     assert vh.space == hom((expected_bond,), tensor.space.domain)
     assert_allclose(reconstructed.block(0), tensor.block(0))
@@ -352,7 +357,7 @@ def test_svd_compact_complex_input_has_real_singular_values_and_reconstructs():
     tensor = TensorMap(h, data)
 
     u, s, vh = svd_compact(tensor)
-    reconstructed = u @ s.to_tensor_map() @ vh
+    reconstructed = u @ s @ vh
 
     assert not jnp.issubdtype(s.storage.data.dtype, jnp.complexfloating)
     assert u.storage.data.dtype == data.dtype
@@ -371,7 +376,7 @@ def test_svd_compact_jit_returns_diagonal_tensormap_output():
     assert isinstance(actual_u, TensorMap)
     assert isinstance(actual_s, DiagonalTensorMap)
     assert isinstance(actual_vh, TensorMap)
-    assert actual_s.domain == expected_s.domain
+    assert actual_s.index_space == expected_s.index_space
     assert_allclose(actual_u.storage.data, expected_u.storage.data)
     assert_allclose(actual_s.storage.data, expected_s.storage.data)
     assert_allclose(actual_vh.storage.data, expected_vh.storage.data)

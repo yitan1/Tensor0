@@ -1,13 +1,20 @@
 # API Overview
 
-This page groups the current public API exported by `tensor0.__all__`. It is a
-hand-written overview, not generated API reference.
+This page is the authoritative inventory for the public names exported by
+`tensor0.__all__` and `tensor0.structure.__all__`. Tests check both inventories
+against these lists.
 
-## Sector Families
+## Root API
+
+<!-- tensor0-root-api:start -->
+
+### Sector Families
 
 - `U1Irrep`
 - `SU2Irrep`
-- `Z2Irrep`, `Z3Irrep`, `Z4Irrep`
+- `Z2Irrep`
+- `Z3Irrep`
+- `Z4Irrep`
 - `FermionParity`
 - `FermionNumber`
 - `FermionParityU1Irrep`
@@ -15,24 +22,31 @@ hand-written overview, not generated API reference.
 - `FermionParitySU2Irrep`
 - `FermionParityU1SU2Irrep`
 
-## Spaces and Metadata
+### Spaces and Public Values
 
 - `space`
 - `hom`
 - `Vect`
 - `ElementarySpace`
+- `ProductSpace`
 - `HomSpace`
 - `SectorType`
 - `FusionTree`
 - `SectorDict`
-- `SectorStructure`
-- `DegeneracyStructure`
-- `BlockStructure`
-- `SubblockStructure`
-- `get_sectorstructure`
-- `get_degeneracystructure`
+- `dim`
+- `reduced_dim`
+- `storage_dim`
+- `fuse`
+- `unit_space`
+- `zero_space`
+- `infimum`
+- `supremum`
+- `direct_sum`
+- `is_isomorphic`
+- `is_monomorphic`
+- `is_epimorphic`
 
-## Tensor Storage and Construction
+### Tensor Storage and Construction
 
 - `TensorMap`
 - `DiagonalTensorMap`
@@ -46,8 +60,10 @@ hand-written overview, not generated API reference.
 - `diagm`
 - `isdiag`
 - `scalar`
+- `to_dense`
+- `from_dense`
 
-## Tensor Operations
+### Tensor Operations and Comparison
 
 - `add`
 - `scale`
@@ -60,8 +76,10 @@ hand-written overview, not generated API reference.
 - `real`
 - `imag`
 - `complex`
+- `equal`
+- `allclose`
 
-## Transforms
+### Transforms
 
 - `permute`
 - `braid`
@@ -73,7 +91,7 @@ hand-written overview, not generated API reference.
 - `insertrightunit`
 - `removeunit`
 
-## Contractions
+### Contractions
 
 - `idx`
 - `tensorcontract`
@@ -81,10 +99,7 @@ hand-written overview, not generated API reference.
 - `contract`
 - `ncon`
 
-See the [contraction guide](contractions.md) for axes, labels, output
-partitions, order, and scalar-result conventions.
-
-## Factorizations and Truncation
+### Factorizations and Truncation
 
 - `svd_vals`
 - `svd_compact`
@@ -98,7 +113,47 @@ partitions, order, and scalar-result conventions.
 - `truncspace`
 - `truncerror`
 
-## Dense Conversion
+<!-- tensor0-root-api:end -->
 
-- `to_dense`
-- `from_dense`
+See the [usage guide](usage.md) for construction, comparison, transforms, and
+factorization examples. See the [contraction guide](contractions.md) for axes,
+labels, output partitions, order, and scalar-result conventions.
+
+## Structure API
+
+These names are public from `tensor0.structure`. The layout records and accessors
+are intentionally not re-exported from the package root.
+
+<!-- tensor0-structure-api:start -->
+
+- `BlockStructure`
+- `DegeneracyStructure`
+- `SectorDict`
+- `SectorStructure`
+- `SectorType`
+- `SubblockStructure`
+- `Vect`
+- `dim`
+- `direct_sum`
+- `fuse`
+- `get_blockstructure`
+- `get_degeneracystructure`
+- `get_sectorstructure`
+- `hom`
+- `infimum`
+- `is_epimorphic`
+- `is_isomorphic`
+- `is_monomorphic`
+- `reduced_dim`
+- `space`
+- `storage_dim`
+- `supremum`
+- `unit_space`
+- `zero_space`
+
+<!-- tensor0-structure-api:end -->
+
+For code written against the earlier alpha surface, replace imports such as
+`from tensor0 import get_degeneracystructure` with
+`from tensor0.structure import get_degeneracystructure`. This is an immediate
+pre-v1 cleanup; no deprecated root aliases are retained.

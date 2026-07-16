@@ -8,11 +8,10 @@ from tensor0 import (
     U1SU2Irrep,
     Z2Irrep,
     _native,
-    get_degeneracystructure,
-    get_sectorstructure,
     hom,
     space,
 )
+from tensor0.structure import get_degeneracystructure, get_sectorstructure
 
 
 def block_spans(degeneracystructure):
@@ -45,7 +44,9 @@ def test_native_layout_builders_return_sector_and_degeneracy_structures():
         sectorstructure.blocksector_index("bad")
 
     row, col = sectorstructure.fusiontree_pairs[0]
-    same_row, same_col = sectorstructure.fusiontree_pair_at(0)
+    same_pair = sectorstructure.fusiontree_pair_at(0)
+    assert same_pair is not None
+    same_row, same_col = same_pair
     assert row.uncoupled == ((0,),)
     assert row.coupled == (0,)
     assert row.is_dual == (False,)
@@ -55,9 +56,9 @@ def test_native_layout_builders_return_sector_and_degeneracy_structures():
     assert row != object()
     assert sectorstructure.fusiontree_pair_index(same_row, same_col) == 0
     assert sectorstructure.fusiontree_pair_at(2) is None
-    assert degeneracystructure.subblock_at(0).static_key == (
-        degeneracystructure.subblockstructure[0].static_key
-    )
+    same_subblock = degeneracystructure.subblock_at(0)
+    assert same_subblock is not None
+    assert same_subblock.static_key == degeneracystructure.subblockstructure[0].static_key
     assert degeneracystructure.subblock_at(2) is None
 
 

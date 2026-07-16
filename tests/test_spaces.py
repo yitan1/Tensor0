@@ -9,6 +9,7 @@ from tensor0 import (
     FermionParityU1Irrep,
     FermionParityU1SU2Irrep,
     HomSpace,
+    ProductSpace,
     SectorType,
     SU2Irrep,
     U1Irrep,
@@ -19,6 +20,7 @@ from tensor0 import (
     _native,
     hom,
     space,
+    zeros,
 )
 
 
@@ -28,7 +30,7 @@ def assert_space_sectors(sector_type, sector_dims, expected_sectors):
     assert isinstance(v, ElementarySpace)
     assert v.sector_spec == sector_type
     assert v.sectors == expected_sectors
-    assert hom((v,), (v,)).codomain == (v,)
+    assert hom((v,), (v,)).codomain.spaces == (v,)
 
 
 def test_sector_type_constants_and_products_expose_expected_aliases():
@@ -79,7 +81,7 @@ def test_sector_type_quantum_dim_uses_typed_sector_rules(
 )
 def test_sector_type_quantum_dim_rejects_invalid_sector_keys(sector):
     with pytest.raises(TypeError, match="sector key"):
-        SU2Irrep.quantum_dim(sector)  # pyright: ignore[reportArgumentType]
+        SU2Irrep.quantum_dim(sector)
 
 
 def test_sector_type_quantum_dim_rejects_invalid_su2_values():
@@ -91,8 +93,49 @@ def test_sector_type_quantum_dim_rejects_invalid_su2_values():
 
 
 def test_empty_hom_without_sector_type_is_not_supported():
-    with pytest.raises(ValueError, match="hom\\(\\) requires at least one space"):
+    with pytest.raises(ValueError, match="requires sector_type"):
         hom((), ())
+
+
+def test_typed_scalar_hom_preserves_family_and_allocates_one_entry():
+    scalar = spaces.hom((), (), sector_type=U1Irrep)
+    scalar_su2 = spaces.hom((), (), sector_type=SU2Irrep)
+
+    assert scalar.codomain.sector_spec == U1Irrep
+    assert scalar.domain.sector_spec == U1Irrep
+    assert scalar.static_key != scalar_su2.static_key
+    assert scalar.codomain.static_key != scalar_su2.codomain.static_key
+    assert spaces.dim(scalar.codomain) == 1
+    assert spaces.fuse(scalar.codomain) == spaces.unit_space(U1Irrep)
+    assert spaces.storage_dim(scalar) == 1
+    assert zeros(scalar).storage.data.shape == (1,)
+
+
+def test_product_space_equality_preserves_typed_empty_family():
+    empty_u1 = spaces.hom((), (), sector_type=U1Irrep).domain
+    empty_su2 = spaces.hom((), (), sector_type=SU2Irrep).domain
+
+    assert empty_u1 != empty_su2
+    assert empty_u1 != ()
+    assert empty_su2 != ()
+    assert hash(empty_u1) != hash(empty_su2)
+    assert empty_u1.spaces == ()
+    assert empty_su2.spaces == ()
+
+
+def test_hom_explicit_sector_type_must_match_every_typed_input():
+    u1 = space(U1Irrep, {0: 2})
+    empty_u1 = hom((u1,), ()).domain
+
+    assert spaces.hom((u1,), (), sector_type=U1Irrep) == hom((u1,), ())
+    assert spaces.hom(empty_u1, (), sector_type=U1Irrep).codomain == empty_u1
+
+    with pytest.raises(ValueError, match="sector_type must match"):
+        spaces.hom((u1,), (), sector_type=SU2Irrep)
+    with pytest.raises(ValueError, match="sector_type must match"):
+        spaces.hom(empty_u1, (), sector_type=SU2Irrep)
+    with pytest.raises(TypeError, match="sector_type must be a SectorType"):
+        spaces.hom((), (), sector_type=object())  # pyright: ignore[reportArgumentType]
 
 
 def test_hom_rejects_non_productspace_non_iterable_inputs():
@@ -128,13 +171,103 @@ def test_space_facade_rejects_invalid_public_inputs_before_native():
         space(U1Irrep, [(0, 2)])  # pyright: ignore[reportArgumentType]
 
     with pytest.raises(TypeError, match="sector key must be an int or a tuple of ints"):
-        space(U1Irrep, {"bad": 2})  # pyright: ignore[reportArgumentType]
+        space(U1Irrep, {"bad": 2})
 
     with pytest.raises(TypeError, match="sector dimension must be an int"):
         space(U1Irrep, {0: 2.5})  # pyright: ignore[reportArgumentType]
 
     with pytest.raises(ValueError, match="sector dimension must be non-negative"):
         space(U1Irrep, {0: -1})
+
+
+def test_space_dimension_facade_distinguishes_dimension_concepts():
+    su2 = space(SU2Irrep, {0: 2, 1: 3})
+    other = space(SU2Irrep, {0: 5})
+    product = hom((su2, other), ()).codomain
+
+    assert spaces.dim(su2) == 8
+    assert spaces.reduced_dim(su2) == 5
+    assert spaces.dim(product) == 40
+
+    with pytest.raises(TypeError, match="dim\\(\\) requires"):
+        spaces.dim(object())  # pyright: ignore[reportArgumentType]
+    with pytest.raises(TypeError, match="reduced_dim\\(\\) requires"):
+        spaces.reduced_dim(product)  # pyright: ignore[reportArgumentType]
+    with pytest.raises(TypeError, match="storage_dim\\(\\) requires"):
+        spaces.storage_dim(su2)  # pyright: ignore[reportArgumentType]
+
+
+@pytest.mark.parametrize(
+    ("sector_type", "unit_sector"),
+    [
+        (U1Irrep, (0,)),
+        (SU2Irrep, (0,)),
+        (FermionParity, (0,)),
+        (FermionNumber, (0, 0)),
+        (U1SU2Irrep, (0, 0)),
+        (FermionParityU1SU2Irrep, (0, 0, 0)),
+    ],
+)
+def test_unit_and_zero_space_preserve_family_and_dual_metadata(
+    sector_type,
+    unit_sector,
+):
+    unit = spaces.unit_space(sector_type)
+    dual_unit = spaces.unit_space(sector_type, dual=True)
+    zero = spaces.zero_space(sector_type)
+    dual_zero = spaces.zero_space(sector_type, dual=True)
+
+    assert unit.sector_spec == sector_type
+    assert unit.sectors == ((unit_sector, 1),)
+    assert spaces.dim(unit) == 1
+    assert dual_unit.is_dual is True
+    assert dual_unit.sectors == unit.sectors
+    assert zero.sector_spec == sector_type
+    assert zero.sectors == ()
+    assert spaces.dim(zero) == 0
+    assert dual_zero.is_dual is True
+    assert zero != dual_zero
+
+
+def test_space_algebra_facade_uses_native_family_and_dual_rules():
+    left = space(U1Irrep, {0: 2, 1: 3})
+    right = space(U1Irrep, {1: 5, -1: 7})
+    product = hom((left, right), ()).codomain
+
+    assert spaces.fuse(product).sectors == (
+        ((0,), 21),
+        ((1,), 10),
+        ((-1,), 14),
+        ((2,), 15),
+    )
+    assert spaces.infimum(left, right).sectors == (((1,), 3),)
+    assert spaces.supremum(left, right).sectors == (
+        ((0,), 2),
+        ((1,), 5),
+        ((-1,), 7),
+    )
+    assert spaces.direct_sum(left, right).sectors == (
+        ((0,), 2),
+        ((1,), 8),
+        ((-1,), 7),
+    )
+
+    for operation in (spaces.infimum, spaces.supremum, spaces.direct_sum):
+        with pytest.raises(ValueError, match="same dual flag"):
+            operation(left, right.dual())
+        with pytest.raises(ValueError, match="same sector family"):
+            operation(left, space(SU2Irrep, {0: 1}))
+
+
+def test_space_partial_order_facade_uses_visible_sector_dimensions():
+    small = space(U1Irrep, {0: 1, 1: 2})
+    large = space(U1Irrep, {0: 3, 1: 2, -1: 4})
+
+    assert spaces.is_isomorphic(small, small)
+    assert not spaces.is_isomorphic(small, large)
+    assert spaces.is_monomorphic(small, large)
+    assert spaces.is_epimorphic(large, small)
+    assert not spaces.is_isomorphic(small, space(SU2Irrep, {0: 1}))
 
 
 def test_hom_space_permute_builds_destination_space_from_visible_indices():
@@ -145,8 +278,8 @@ def test_hom_space_permute_builds_destination_space_from_visible_indices():
 
     dst = src.permute((2, 1), (0,))
 
-    assert dst.codomain == (x.dual(), w)
-    assert dst.domain == (v.dual(),)
+    assert dst.codomain.spaces == (x.dual(), w)
+    assert dst.domain.spaces == (v.dual(),)
 
     with pytest.raises(ValueError, match="visible index"):
         src.permute((0,), (0,))
@@ -156,8 +289,8 @@ def test_hom_facade_builds_typed_empty_product_from_iterables():
     v = space(U1Irrep, {0: 2})
     h = spaces.hom((v,), ())
 
-    assert h.codomain == (v,)
-    assert h.domain == ()
+    assert h.codomain.spaces == (v,)
+    assert h.domain.spaces == ()
     assert h.domain.sector_spec == U1Irrep
 
 
@@ -286,8 +419,8 @@ def test_hom_space_is_native_and_exposes_visible_legs():
     assert h.numin == 1
     assert h.numind == 2
     assert len(h) == 2
-    assert h.codomain == (v,)
-    assert h.domain == (w,)
+    assert h.codomain.spaces == (v,)
+    assert h.domain.spaces == (w,)
     assert h.visible_legs == (v, w.dual())
     assert h[0] == v
     assert h[1] == w.dual()
@@ -302,13 +435,12 @@ def test_native_productspace_is_sequence_like_and_fuse_matches_tensorkit_compact
     x = space(U1Irrep, {0: 4, 1: 9})
     h = hom((v, w), (x,))
 
-    assert isinstance(h.codomain, _native.ProductSpace)
+    assert isinstance(h.codomain, ProductSpace)
     assert len(h.codomain) == 2
     assert h.codomain[0] == v
     assert h.codomain[-1] == w
     assert tuple(h.codomain) == (v, w)
     assert h.codomain.spaces == (v, w)
-    assert h.codomain == (v, w)
     assert hash(h.codomain) == hash(h.codomain)
 
     roundtrip = hom(h.codomain, h.domain)
@@ -329,15 +461,15 @@ def test_native_productspace_inputs_preserve_typed_empty_hom_context():
     v = space(U1Irrep, {0: 2})
     empty_u1 = hom((v,), ()).domain
 
-    assert isinstance(empty_u1, _native.ProductSpace)
+    assert isinstance(empty_u1, ProductSpace)
     assert len(empty_u1) == 0
     assert empty_u1.sector_spec == U1Irrep
 
     left_empty = hom(empty_u1, (v,))
 
-    assert left_empty.codomain == ()
+    assert left_empty.codomain.spaces == ()
     assert left_empty.codomain.sector_spec == U1Irrep
-    assert left_empty.domain == (v,)
+    assert left_empty.domain.spaces == (v,)
 
     both_empty = hom(empty_u1, empty_u1)
 

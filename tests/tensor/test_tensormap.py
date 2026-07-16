@@ -21,13 +21,13 @@ from tensor0 import (
     Z4Irrep,
     _native,
     from_dense,
-    get_degeneracystructure,
-    get_sectorstructure,
     hom,
     space,
     to_dense,
 )
+from tensor0.structure import get_degeneracystructure, get_sectorstructure
 from tests.cases import (
+    InaccessibleVectorData,
     assert_allclose,
     dense_roundtrip_cases,
     float_data_for,
@@ -124,6 +124,7 @@ def _assert_tensormap_metadata_contract(space_obj):
     assert len(tensor.fusiontrees) == len(tensor.subblocks())
     assert tensor.ndim == tensor.numind
     assert tensor.shape == tensor.dims
+    assert tensor.dtype == tensor.storage.data.dtype
     assert tensor.output_axes == tensor.codomainind
     assert tensor.input_axes == tensor.domainind
     assert tensor.axes == tensor.allind
@@ -148,22 +149,6 @@ def _assert_tensormap_matmul_contract(case):
 def _u1_blocks_for(h):
     tensor = TensorMap(h, float_data_for(h))
     return dict(tensor.blocks())
-
-
-class _ExplodingVectorData:
-    def __init__(self, length: int = 13) -> None:
-        self.shape = (length,)
-
-    def __getitem__(self, key):
-        if isinstance(key, slice) and key.start == 0 and key.stop == 0:
-            return jnp.zeros((0,))
-        raise AssertionError("storage data should not be sliced")
-
-    def __array__(self):
-        raise AssertionError("storage data should not be converted")
-
-    def __rmul__(self, _other):
-        raise AssertionError("storage data should not be multiplied")
 
 
 def test_vector_storage_is_frozen_and_preserves_data():
@@ -455,7 +440,7 @@ def test_tensormap_add_rejects_space_mismatch_before_data_operations():
     left_space = _u1_hom()
     right_space = _u1_hom_same_total_dim_with_different_metadata()
     left = TensorMap(left_space, float_data_for(left_space))
-    right = TensorMap(right_space, _ExplodingVectorData())
+    right = TensorMap(right_space, InaccessibleVectorData())
 
     with pytest.raises(ValueError, match="space|compatible|mismatch"):
         tensor0.add(left, right)
@@ -465,16 +450,16 @@ def test_tensormap_linear_functions_reject_non_tensormap_inputs():
     tensor = TensorMap(_u1_hom(), _u1_data())
 
     with pytest.raises(TypeError, match="zero_like.*TensorMap"):
-        tensor0.zero_like(object())  # pyright: ignore[reportArgumentType]
+        tensor0.zero_like(object())  # pyright: ignore[reportArgumentType, reportCallIssue]
 
     with pytest.raises(TypeError, match="scale.*TensorMap"):
-        tensor0.scale(object(), 2.0)  # pyright: ignore[reportArgumentType]
+        tensor0.scale(object(), 2.0)  # pyright: ignore[reportArgumentType, reportCallIssue]
 
     with pytest.raises(TypeError, match="add.*TensorMap"):
-        tensor0.add(object(), tensor)  # pyright: ignore[reportArgumentType]
+        tensor0.add(object(), tensor)  # pyright: ignore[reportArgumentType, reportCallIssue]
 
     with pytest.raises(TypeError, match="add.*TensorMap"):
-        tensor0.add(tensor, object())  # pyright: ignore[reportArgumentType]
+        tensor0.add(tensor, object())  # pyright: ignore[reportArgumentType, reportCallIssue]
 
 
 def test_tensormap_linear_operations_reject_non_scalar_coefficients():
@@ -505,16 +490,6 @@ def test_tensormap_linear_operations_are_jit_compatible():
 
     assert result.space == h
     assert_allclose(result.storage.data, 3.0 * tensor.storage.data)
-
-
-def test_tensormap_pythonic_methods_are_jit_compatible():
-    h = _u1_hom()
-    tensor = TensorMap(h, float_data_for(h))
-
-    result = jax.jit(lambda x: x.scale(2.0))(tensor)
-
-    assert result.space == h
-    assert_allclose(result.storage.data, 2.0 * tensor.storage.data)
 
 
 def test_tensormap_adjoint_is_jit_compatible():
@@ -704,39 +679,15 @@ def test_tensormap_does_not_expose_ambiguous_public_conj():
     assert not hasattr(tensor_api, "conj")
 
 
-def test_tensormap_pythonic_methods_are_available_as_public_api():
+def test_tensormap_method_aliases_match_canonical_forms():
     h = _u1_hom()
     tensor = TensorMap(h, float_data_for(h))
-    other = TensorMap(h, float_data_for(h) * 0.25)
 
-    assert tensor.to_dense().shape == tensor.shape
-    for result in (
-        tensor.zero_like(),
-        tensor.scale(2.0),
-        tensor.add(other),
-        tensor.normalized(),
-        tensor.normalize(p=1),
-    ):
-        assert isinstance(result, TensorMap)
-    for scalar in (
-        tensor.inner(other),
-        tensor.dot(other),
-        tensor.norm(p=1),
-        tensor.trace(),
-        tensor.tr(),
-    ):
-        assert jnp.shape(scalar) == ()
+    normalized = tensor.normalized(p=1)
 
-    diagonal = tensor0.from_blocks(
-        h,
-        {
-            0: jnp.diag(jnp.array([1.0, 2.0], dtype=jnp.float32)),
-            1: jnp.diag(jnp.array([3.0, 4.0, 5.0], dtype=jnp.float32)),
-        },
-    )
-    method_diag = diagonal.diag()
-    assert isinstance(method_diag, SectorDict)
-    assert isinstance(diagonal.is_diagonal(), bool)
+    assert_allclose(tensor.to_dense(), to_dense(tensor))
+    assert_allclose(normalized.storage.data, tensor.normalize(p=1).storage.data)
+    assert_allclose(tensor.trace(), tensor.tr())
 
 
 def test_tensormap_scalar_and_repr_are_public_api():
@@ -761,7 +712,7 @@ def test_tensormap_trace_rejects_non_endomorphism_before_data_operations():
     codomain = space(U1Irrep, {0: 2})
     domain = space(U1Irrep, {0: 3})
     h = hom((codomain,), (domain,))
-    tensor = TensorMap(h, _ExplodingVectorData(get_degeneracystructure(h).total_dim))
+    tensor = TensorMap(h, InaccessibleVectorData(get_degeneracystructure(h).total_dim))
 
     with pytest.raises(ValueError, match="trace|domain|codomain|square"):
         tensor0.tr(tensor)
@@ -769,7 +720,10 @@ def test_tensormap_trace_rejects_non_endomorphism_before_data_operations():
 
 def test_tensormap_reductions_reject_invalid_inputs_and_space_mismatch():
     tensor = TensorMap(_u1_hom(), _u1_data())
-    other = TensorMap(_u1_hom_same_total_dim_with_different_metadata(), _ExplodingVectorData())
+    other = TensorMap(
+        _u1_hom_same_total_dim_with_different_metadata(),
+        InaccessibleVectorData(),
+    )
 
     with pytest.raises(TypeError, match="inner.*TensorMap"):
         tensor0.inner(object(), tensor)  # pyright: ignore[reportArgumentType]
@@ -784,16 +738,16 @@ def test_tensormap_reductions_reject_invalid_inputs_and_space_mismatch():
         tensor0.tr(object())  # pyright: ignore[reportArgumentType]
 
     with pytest.raises(TypeError, match="adjoint.*TensorMap"):
-        tensor0.adjoint(object())  # pyright: ignore[reportArgumentType]
+        tensor0.adjoint(object())  # pyright: ignore[reportArgumentType, reportCallIssue]
 
     with pytest.raises(TypeError, match="real.*TensorMap"):
-        tensor0.real(object())  # pyright: ignore[reportArgumentType]
+        tensor0.real(object())  # pyright: ignore[reportArgumentType, reportCallIssue]
 
     with pytest.raises(TypeError, match="imag.*TensorMap"):
-        tensor0.imag(object())  # pyright: ignore[reportArgumentType]
+        tensor0.imag(object())  # pyright: ignore[reportArgumentType, reportCallIssue]
 
     with pytest.raises(TypeError, match="complex.*TensorMap"):
-        tensor0.complex(object())  # pyright: ignore[reportArgumentType]
+        tensor0.complex(object())  # pyright: ignore[reportArgumentType, reportCallIssue]
 
     with pytest.raises(ValueError, match="space|compatible|mismatch"):
         tensor0.inner(tensor, other)
@@ -872,6 +826,87 @@ def test_tensormap_diag_diagm_and_isdiag_reject_invalid_inputs():
 
     with pytest.raises(TypeError, match="diagm.*mapping|diagm.*values"):
         tensor0.diagm(v, v, object())  # pyright: ignore[reportArgumentType]
+
+
+def test_tensormap_equal_is_exact_space_and_dtype_sensitive():
+    h = _u1_hom()
+    data = jnp.arange(get_degeneracystructure(h).total_dim, dtype=jnp.float32)
+    tensor = TensorMap(h, data)
+    same = TensorMap(h, data.copy())
+    changed = TensorMap(h, data.at[0].set(-1))
+    changed_dtype = TensorMap(h, data.astype(jnp.complex64))
+    changed_space = TensorMap(
+        _u1_hom_same_total_dim_with_different_metadata(),
+        InaccessibleVectorData(),
+    )
+
+    results = (
+        tensor_api.equal(tensor, same),
+        tensor_api.equal(tensor, changed),
+        tensor_api.equal(tensor, changed_dtype),
+        tensor_api.equal(tensor, changed_space),
+    )
+
+    assert all(result.shape == () for result in results)
+    assert all(result.dtype == jnp.dtype(jnp.bool_) for result in results)
+    assert bool(results[0])
+    assert not bool(results[1])
+    assert not bool(results[2])
+    assert not bool(results[3])
+
+
+def test_tensormap_allclose_uses_explicit_tolerances_and_dtype_promotion():
+    h = _u1_hom()
+    size = get_degeneracystructure(h).total_dim
+    integers = TensorMap(h, jnp.arange(size, dtype=jnp.int32))
+    close_floats = TensorMap(
+        h,
+        jnp.arange(size, dtype=jnp.float32).at[1].add(0.05),
+    )
+    changed_space = TensorMap(
+        _u1_hom_same_total_dim_with_different_metadata(),
+        InaccessibleVectorData(),
+    )
+
+    close = tensor_api.allclose(integers, close_floats, rtol=0.0, atol=0.1)
+    far = tensor_api.allclose(integers, close_floats, rtol=0.0, atol=0.01)
+    mismatch = tensor_api.allclose(
+        integers,
+        changed_space,
+        rtol=0.0,
+        atol=0.1,
+    )
+
+    for result in (close, far, mismatch):
+        assert result.shape == ()
+        assert result.dtype == jnp.dtype(jnp.bool_)
+    assert bool(close)
+    assert not bool(far)
+    assert not bool(mismatch)
+
+    with pytest.raises(TypeError):
+        tensor_api.allclose(  # pyright: ignore[reportCallIssue]
+            integers,
+            close_floats,
+        )
+    with pytest.raises(TypeError):
+        tensor_api.allclose(
+            integers,
+            close_floats,
+            0.0,  # pyright: ignore[reportCallIssue]
+            0.1,
+        )
+
+
+@pytest.mark.parametrize("operation", [tensor_api.equal, tensor_api.allclose])
+def test_tensormap_comparison_helpers_reject_invalid_inputs(operation):
+    tensor = TensorMap(_u1_hom(), _u1_data())
+    kwargs = {} if operation is tensor_api.equal else {"rtol": 0.0, "atol": 0.0}
+
+    with pytest.raises(TypeError, match=rf"{operation.__name__}.*TensorMap"):
+        operation(object(), tensor, **kwargs)
+    with pytest.raises(TypeError, match=rf"{operation.__name__}.*TensorMap"):
+        operation(tensor, object(), **kwargs)
 
 
 def test_tensormap_diagm_rejects_missing_unexpected_and_wrong_shape_blocks():

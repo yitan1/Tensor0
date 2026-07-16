@@ -5,6 +5,7 @@ use pyo3::IntoPyObject;
 use crate::pyconv::sector_spec_static_key;
 
 use super::graded::{GradedSpaceInner, PyElementarySpace};
+use super::product::ProductSpaceInner;
 
 pub(super) fn space_static_key(py: Python<'_>, inner: &GradedSpaceInner) -> PyResult<Py<PyAny>> {
     let sector_key = sector_spec_static_key(py, &inner.sector_spec())?;
@@ -22,6 +23,16 @@ pub(super) fn space_static_keys_tuple(
         .map(|space| space_static_key(py, space))
         .collect::<PyResult<Vec<_>>>()?;
     Ok(PyTuple::new(py, keys)?.into_any().unbind())
+}
+
+pub(super) fn product_space_static_key(
+    py: Python<'_>,
+    inner: &ProductSpaceInner,
+) -> PyResult<Py<PyAny>> {
+    let sector_key = sector_spec_static_key(py, &inner.sector_spec())?;
+    let factor_keys = space_static_keys_tuple(py, inner.spaces())?;
+    let key = ("product-space", sector_key, factor_keys).into_pyobject(py)?;
+    Ok(key.into_any().unbind())
 }
 
 pub(super) fn spaces_tuple(py: Python<'_>, spaces: Vec<GradedSpaceInner>) -> PyResult<Py<PyAny>> {

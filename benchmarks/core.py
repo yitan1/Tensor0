@@ -16,14 +16,13 @@ from tensor0 import (
     SU2Irrep,
     TensorMap,
     U1Irrep,
-    get_degeneracystructure,
-    get_sectorstructure,
     hom,
     permute,
     repartition,
     space,
     svd_compact,
 )
+from tensor0.structure import get_degeneracystructure, get_sectorstructure
 from tensor0.tensor import _blocks as block_module
 
 from _runner import (

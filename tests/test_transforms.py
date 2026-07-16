@@ -1,4 +1,6 @@
 import math
+from collections.abc import Callable
+from typing import cast
 
 import jax.numpy as jnp
 import pytest
@@ -19,8 +21,6 @@ from tensor0 import (
     Z4Irrep,
     braid,
     flip,
-    get_degeneracystructure,
-    get_sectorstructure,
     hom,
     insertleftunit,
     insertrightunit,
@@ -33,7 +33,9 @@ from tensor0 import (
     to_dense,
     twist,
 )
+from tensor0.structure import get_degeneracystructure, get_sectorstructure
 from tests.cases import (
+    InaccessibleVectorData,
     assert_allclose,
     is_contiguous_subblock,
     transform_cases,
@@ -62,16 +64,6 @@ def _odd_odd_fermion_tensor():
 def _data_for(target):
     size = get_degeneracystructure(target).total_dim
     return jnp.arange(1, size + 1, dtype=jnp.float32)
-
-
-class _ExplodingVectorData:
-    def __init__(self, length):
-        self.shape = (length,)
-
-    def __getitem__(self, key):
-        if isinstance(key, slice) and key.start == 0 and key.stop == 0:
-            return jnp.zeros((0,))
-        raise AssertionError("index transform validation must not access storage")
 
 
 def test_native_transform_payloads_use_canonical_indices():
@@ -463,7 +455,7 @@ def test_twist_semantic_identity_bypasses_layout_lookup(
     target = hom((factor,), (factor,))
     tensor = TensorMap(
         target,
-        _ExplodingVectorData(get_degeneracystructure(target).total_dim),
+        InaccessibleVectorData(get_degeneracystructure(target).total_dim),
     )
 
     def explode(*args, **kwargs):
@@ -483,7 +475,7 @@ def test_index_transform_empty_indices_validate_inv_and_return_input(operation):
 
     assert operation(tensor, ()) is tensor
     with pytest.raises(TypeError, match=r"inv.*bool"):
-        operation(tensor, (), inv=1)  # pyright: ignore[reportArgumentType]
+        operation(tensor, (), inv=1)
 
 
 @pytest.mark.parametrize(
@@ -507,7 +499,7 @@ def test_index_transform_rejects_invalid_indices_before_accessing_storage(
     target = hom((factor,), (factor,))
     tensor = TensorMap(
         target,
-        _ExplodingVectorData(get_degeneracystructure(target).total_dim),
+        InaccessibleVectorData(get_degeneracystructure(target).total_dim),
     )
 
     with pytest.raises(error, match=match):
@@ -517,16 +509,16 @@ def test_index_transform_rejects_invalid_indices_before_accessing_storage(
 @pytest.mark.parametrize("operation", [twist, flip], ids=["twist", "flip"])
 def test_index_transform_rejects_invalid_tensor_and_inv_inputs(operation):
     with pytest.raises(TypeError, match=rf"{operation.__name__}.*TensorMap"):
-        operation(object(), 0)  # pyright: ignore[reportArgumentType]
+        operation(object(), 0)
 
     factor = space(U1Irrep, {0: 1})
     target = hom((factor,), (factor,))
     tensor = TensorMap(
         target,
-        _ExplodingVectorData(get_degeneracystructure(target).total_dim),
+        InaccessibleVectorData(get_degeneracystructure(target).total_dim),
     )
     with pytest.raises(TypeError, match=r"inv.*bool"):
-        operation(tensor, 0, inv=1)  # pyright: ignore[reportArgumentType]
+        operation(tensor, 0, inv=1)
 
 
 def test_space_flip_preserves_visible_sectors_and_differs_from_dual():
@@ -781,7 +773,7 @@ def test_unit_operations_validate_complete_call_before_storage_access():
 
     factor = space(U1Irrep, {0: 2})
     target = hom((factor,), (factor,))
-    tensor = TensorMap(target, _ExplodingVectorData(_data_for(target).size))
+    tensor = TensorMap(target, InaccessibleVectorData(_data_for(target).size))
 
     for operation in (insertleftunit, insertrightunit):
         for position in (True, 1.5):
@@ -807,7 +799,7 @@ def test_unit_operations_validate_complete_call_before_storage_access():
     nonunit_space = hom((nonunit,), target.domain)
     nonunit_tensor = TensorMap(
         nonunit_space,
-        _ExplodingVectorData(get_degeneracystructure(nonunit_space).total_dim),
+        InaccessibleVectorData(get_degeneracystructure(nonunit_space).total_dim),
     )
     with pytest.raises(ValueError, match="canonical unit space"):
         removeunit(nonunit_tensor, 0)
@@ -857,3 +849,59 @@ def test_unit_operations_smoke_all_exported_sector_families(
     assert removeunit(right, tensor.numind).space == target
     assert left.storage is tensor.storage
     assert right.storage is tensor.storage
+
+
+def test_tensormap_transform_methods_match_functional_forms():
+    tensor = _odd_odd_fermion_tensor()
+    inserted_left = insertleftunit(tensor, 1, dual=True)
+    cases: tuple[
+        tuple[
+            TensorMap,
+            str,
+            Callable[..., TensorMap],
+            tuple[object, ...],
+            dict[str, object],
+        ],
+        ...,
+    ] = (
+        (tensor, "flip", flip, ((0,),), {"inv": True}),
+        (tensor, "twist", twist, (0,), {"inv": True}),
+        (tensor, "insertleftunit", insertleftunit, (1,), {"dual": True}),
+        (tensor, "insertrightunit", insertrightunit, (1,), {"dual": True}),
+        (inserted_left, "removeunit", removeunit, (1,), {}),
+    )
+
+    for source, method_name, function, args, kwargs in cases:
+        actual = getattr(source, method_name)(*args, **kwargs)
+        expected = cast(Callable[..., TensorMap], function)(source, *args, **kwargs)
+
+        assert actual.space == expected.space
+        assert actual.dtype == expected.dtype
+        assert_allclose(actual.storage.data, expected.storage.data)
+
+
+@pytest.mark.parametrize(
+    ("method_name", "function", "args", "kwargs", "error"),
+    [
+        ("flip", flip, ([0],), {}, TypeError),
+        ("twist", twist, (0,), {"inv": 1}, TypeError),
+        ("insertleftunit", insertleftunit, (True,), {}, TypeError),
+        ("insertrightunit", insertrightunit, (None,), {"dual": 0}, TypeError),
+        ("removeunit", removeunit, (True,), {}, TypeError),
+    ],
+)
+def test_tensormap_transform_methods_match_functional_errors(
+    method_name,
+    function,
+    args,
+    kwargs,
+    error,
+):
+    tensor = _simple_u1_tensor()
+
+    with pytest.raises(error) as functional_error:
+        function(tensor, *args, **kwargs)
+    with pytest.raises(error) as method_error:
+        getattr(tensor, method_name)(*args, **kwargs)
+
+    assert str(method_error.value) == str(functional_error.value)

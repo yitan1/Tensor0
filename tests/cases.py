@@ -8,10 +8,10 @@ from tensor0 import (
     SU2Irrep,
     U1Irrep,
     U1SU2Irrep,
-    get_degeneracystructure,
     hom,
     space,
 )
+from tensor0.structure import get_degeneracystructure
 
 
 @dataclass(frozen=True)
@@ -58,6 +58,22 @@ def float_data_for(space_obj: HomSpace):
 def zero_based_float_data_for(space_obj: HomSpace):
     total_dim = get_degeneracystructure(space_obj).total_dim
     return jnp.arange(total_dim, dtype=jnp.float32)
+
+
+class InaccessibleVectorData:
+    def __init__(self, length: int = 13) -> None:
+        self.shape = (length,)
+
+    def __getitem__(self, key):
+        if isinstance(key, slice) and key.start == 0 and key.stop == 0:
+            return jnp.zeros((0,))
+        raise AssertionError("storage data must not be accessed")
+
+    def __array__(self):
+        raise AssertionError("storage data must not be converted")
+
+    def __rmul__(self, _other):
+        raise AssertionError("storage data must not be multiplied")
 
 
 def is_contiguous_subblock(subblock):

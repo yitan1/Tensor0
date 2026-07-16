@@ -8,10 +8,11 @@ Documentation: <https://yitan1.github.io/Tensor0/>
 
 - Built-in sector families including `U1Irrep`, `SU2Irrep`, cyclic `ZNIrrep`
   aliases, fermion parity, and selected product-sector aliases.
-- `space(...)` and `hom(codomain, domain)` constructors for symmetric linear
-  map spaces.
-- `TensorMap` storage backed by JAX arrays.
-- Block access, blockwise composition, compact SVD, and truncation helpers.
+- `space(...)`, typed scalar `hom(...)`, public `ProductSpace`, and a focused
+  space-algebra facade.
+- `TensorMap` and structured `DiagonalTensorMap` storage backed by JAX arrays.
+- Block access, direct ordinary/diagonal composition, compact SVD, and
+  truncation helpers.
 - `permute`, `braid`, `transpose`, and `repartition` transform helpers.
 - Symmetry-aware index `flip` and `twist`, binary `tensorcontract`, single-tensor
   `tensortrace`, named-label `contract`, and integer-label `ncon` operations.
@@ -65,12 +66,12 @@ uv run python examples/contractions.py
 ```python
 import jax.numpy as jnp
 
-from tensor0 import TensorMap, U1Irrep, get_degeneracystructure, hom, space
+from tensor0 import TensorMap, U1Irrep, hom, space, storage_dim
 
 v = space(U1Irrep, {0: 2, 1: 3})
 h = hom((v,), (v,))
 
-total_dim = get_degeneracystructure(h).total_dim
+total_dim = storage_dim(h)
 tensor = TensorMap(h, jnp.arange(total_dim, dtype=jnp.float32))
 
 for sector, block in tensor.blocks():

@@ -14,7 +14,7 @@ use crate::pyconv::{core_err, py_hash};
 use crate::sector_type::PySectorSpec;
 
 use super::graded::{GradedSpaceInner, PyElementarySpace};
-use super::static_key::spaces_tuple;
+use super::static_key::{product_space_static_key, spaces_tuple};
 
 #[pyclass(name = "ProductSpace", skip_from_py_object)]
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -101,6 +101,11 @@ impl PyProductSpace {
         spaces_tuple(py, self.inner.spaces())
     }
 
+    #[getter]
+    fn static_key(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        product_space_static_key(py, &self.inner)
+    }
+
     fn __len__(&self) -> usize {
         self.inner.len()
     }
@@ -121,14 +126,6 @@ impl PyProductSpace {
     fn __eq__(&self, other: &Bound<'_, PyAny>) -> PyResult<bool> {
         if let Ok(other_product) = other.extract::<PyRef<'_, PyProductSpace>>() {
             return Ok(self.inner == other_product.inner);
-        }
-        if let Ok(other_spaces) = other.extract::<Vec<PyRef<'_, PyElementarySpace>>>() {
-            let own_spaces = self.inner.spaces();
-            return Ok(own_spaces.len() == other_spaces.len()
-                && own_spaces
-                    .iter()
-                    .zip(other_spaces.iter())
-                    .all(|(left, right)| left == &right.inner));
         }
         Ok(false)
     }
@@ -196,7 +193,7 @@ impl ProductSpaceInner {
         }
     }
 
-    fn sector_spec(&self) -> CoreSectorSpec {
+    pub(super) fn sector_spec(&self) -> CoreSectorSpec {
         match self {
             ProductSpaceInner::U1Irrep(_) => U1Irrep::sector_spec(),
             ProductSpaceInner::SU2Irrep(_) => SU2Irrep::sector_spec(),

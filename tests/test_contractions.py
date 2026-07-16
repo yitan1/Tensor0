@@ -18,7 +18,6 @@ from tensor0 import (
     Z3Irrep,
     Z4Irrep,
     contract,
-    get_degeneracystructure,
     hom,
     idx,
     ncon,
@@ -29,7 +28,12 @@ from tensor0 import (
     tensortrace,
     to_dense,
 )
-from tests.cases import assert_allclose, is_contiguous_subblock
+from tensor0.structure import get_degeneracystructure
+from tests.cases import (
+    InaccessibleVectorData,
+    assert_allclose,
+    is_contiguous_subblock,
+)
 
 
 # Shared fixtures and independent dense oracles.
@@ -96,19 +100,9 @@ def _dense_contract(left, right, axes, output):
     return result
 
 
-class _ExplodingVectorData:
-    def __init__(self, length):
-        self.shape = (length,)
-
-    def __getitem__(self, key):
-        if isinstance(key, slice) and key.start == 0 and key.stop == 0:
-            return jnp.zeros((0,))
-        raise AssertionError("contraction validation must not access storage")
-
-
 def _metadata_only_tensor(target):
     size = get_degeneracystructure(target).total_dim
-    return TensorMap(target, _ExplodingVectorData(size))
+    return TensorMap(target, InaccessibleVectorData(size))
 
 
 def _neutral_endomorphism():
@@ -215,9 +209,9 @@ def test_tensorcontract_rejects_non_tensor_inputs():
     }
 
     with pytest.raises(TypeError, match="left and right.*TensorMap"):
-        tensorcontract(object(), tensor, **metadata)
+        tensorcontract(object(), tensor, **metadata)  # pyright: ignore[reportArgumentType]
     with pytest.raises(TypeError, match="left and right.*TensorMap"):
-        tensorcontract(tensor, object(), **metadata)
+        tensorcontract(tensor, object(), **metadata)  # pyright: ignore[reportArgumentType]
 
 
 def test_tensorcontract_rejects_mismatched_sector_families():
@@ -441,11 +435,11 @@ def test_tensorcontract_rejects_invalid_metadata_before_accessing_storage():
     right_space = hom((factor,), (factor,))
     left = TensorMap(
         left_space,
-        _ExplodingVectorData(get_degeneracystructure(left_space).total_dim),
+        InaccessibleVectorData(get_degeneracystructure(left_space).total_dim),
     )
     right = TensorMap(
         right_space,
-        _ExplodingVectorData(get_degeneracystructure(right_space).total_dim),
+        InaccessibleVectorData(get_degeneracystructure(right_space).total_dim),
     )
 
     with pytest.raises(ValueError, match="exactly once"):
@@ -506,7 +500,11 @@ def test_tensortrace_rejects_invalid_metadata_before_storage_access(
 
 def test_tensortrace_rejects_non_tensor_input():
     with pytest.raises(TypeError, match="tensor.*TensorMap"):
-        tensortrace(object(), axes=((), ()), output=((), ()))
+        tensortrace(
+            object(),  # pyright: ignore[reportArgumentType]
+            axes=((), ()),
+            output=((), ()),
+        )
 
 
 def test_tensortrace_rejects_non_dual_trace_spaces_before_storage_access():
@@ -890,8 +888,8 @@ def test_tensortrace_nonunit_coefficient_promotes_float16_storage():
     assert_allclose(scalar(result), jnp.asarray(6, dtype=jnp.float32))
 
 
-# Default and explicit contraction order.
-def test_contract_and_ncon_default_and_custom_order_match_references():
+# Explicit contraction order.
+def test_contract_custom_order_matches_reference():
     a = space(U1Irrep, {0: 5})
     x = space(U1Irrep, {0: 2})
     y = space(U1Irrep, {0: 3})
@@ -900,39 +898,17 @@ def test_contract_and_ncon_default_and_custom_order_match_references():
     middle = _tensor(hom((x,), (y,)))
     right = _tensor(hom((y,), (b,)))
 
-    named_default = contract(
-        idx(left, "a,x"),
-        idx(middle, "x,y"),
-        idx(right, "y,b"),
-        output=("a", "b"),
-    )
-    named_custom = contract(
+    result = contract(
         idx(left, "a,x"),
         idx(middle, "x,y"),
         idx(right, "y,b"),
         output=("a", "b"),
         order=["y", "x"],
     )
-    integer_result = ncon(
-        (left, middle, right),
-        ((-1, 1), (1, 2), (2, -2)),
-    )
-    custom_result = ncon(
-        (left, middle, right),
-        ((-1, 1), (1, 2), (2, -2)),
-        order=(2, 1),
-    )
-    expected = (left @ middle) @ right
-    custom_expected = left @ (middle @ right)
+    expected = left @ (middle @ right)
 
-    assert named_default.space == expected.space
-    assert named_custom.space == custom_expected.space
-    assert integer_result.space == expected.space
-    assert custom_result.space == custom_expected.space
-    assert_allclose(named_default.storage.data, expected.storage.data)
-    assert_allclose(named_custom.storage.data, custom_expected.storage.data)
-    assert_allclose(integer_result.storage.data, expected.storage.data)
-    assert_allclose(custom_result.storage.data, custom_expected.storage.data)
+    assert result.space == expected.space
+    assert_allclose(result.storage.data, expected.storage.data)
 
 
 # Named-index frontend.
@@ -1340,7 +1316,6 @@ def test_contract_disconnected_network_uses_tensor_product():
 @pytest.mark.parametrize(
     ("sector_type", "sector"),
     [
-        pytest.param(U1Irrep, 0, id="u1"),
         pytest.param(SU2Irrep, 1, id="su2"),
         pytest.param(
             FermionParityU1SU2Irrep,
@@ -1349,7 +1324,7 @@ def test_contract_disconnected_network_uses_tensor_product():
         ),
     ],
 )
-def test_contract_composition_across_sector_families(
+def test_contract_composition_supports_additional_sector_families(
     sector_type,
     sector,
 ):

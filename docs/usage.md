@@ -39,7 +39,7 @@ Arbitrary dynamic product sector families are not currently supported.
 
 `space(...)` builds an elementary graded space. The dictionary maps sector labels
 to degeneracy dimensions. `hom(codomain, domain)` builds the typed linear-map
-space used by `TensorMap`.
+space used by `TensorMap`; its two sides are public `ProductSpace` values.
 
 ```python
 import jax.numpy as jnp
@@ -47,15 +47,21 @@ import jax.numpy as jnp
 from tensor0 import (
     TensorMap,
     U1Irrep,
-    get_degeneracystructure,
+    dim,
     hom,
+    reduced_dim,
     space,
+    storage_dim,
 )
 
 v = space(U1Irrep, {0: 2, 1: 3})
 h = hom((v,), (v,))
 
-total_dim = get_degeneracystructure(h).total_dim
+assert dim(v) == 5
+assert reduced_dim(v) == 5
+assert dim(h.codomain) == 5
+
+total_dim = storage_dim(h)
 tensor = TensorMap(h, jnp.arange(total_dim, dtype=jnp.float32))
 
 sector_0_block = tensor.block(0)
@@ -70,8 +76,28 @@ assert tensor[row_tree, col_tree].shape == reduced.shape
 charge_one = tensor[1, -1]
 ```
 
-`TensorMap` stores a `HomSpace` and a 1D `VectorStorage`-compatible JAX array.
-The storage length must match `get_degeneracystructure(h).total_dim`.
+Physical `dim`, elementary `reduced_dim`, and packed `storage_dim` are distinct:
+the first includes quantum dimensions, the second sums degeneracy dimensions,
+and the third is the required 1D storage length for a `HomSpace`. `TensorMap`
+stores that `HomSpace` and a `VectorStorage`-compatible JAX array. Advanced
+layout records and accessors, including `get_degeneracystructure`, remain public
+from `tensor0.structure` rather than the package root.
+
+A rank-zero map has no factor from which to infer its sector family, so it must
+be typed explicitly:
+
+```python
+scalar_space = hom((), (), sector_type=U1Irrep)
+scalar_tensor = TensorMap(scalar_space, jnp.asarray([2.0]))
+```
+
+The public space algebra is `fuse`, `unit_space`, `zero_space`, `infimum`,
+`supremum`, `direct_sum`, `is_isomorphic`, `is_monomorphic`, and
+`is_epimorphic`. Binary algebra requires matching sector families and dual
+flags. Empty `ProductSpace` values retain their sector family in equality,
+hashing, caching, and JAX static metadata; use `.spaces` when a tuple of factors
+is needed.
+
 Use `scalar(tensor)` only for scalar TensorMaps with no visible indices.
 `tensor.subblocks()` is a reusable lazy view in canonical fusion-tree order;
 each iteration creates and reads one subblock at a time. The view supports
@@ -92,7 +118,8 @@ codomain and the result has the left codomain and right domain.
 ```python
 import jax.numpy as jnp
 
-from tensor0 import TensorMap, U1Irrep, get_degeneracystructure, hom, space
+from tensor0 import TensorMap, U1Irrep, hom, space
+from tensor0.structure import get_degeneracystructure
 
 
 def data_for(h):
@@ -120,14 +147,15 @@ networks, see the [contraction guide](contractions.md).
 
 `svd_vals(...)` returns singular values as a `SectorVector` over the infimum
 bond space. `svd_compact(...)` returns `(u, s, vh)`, where `s` is a
-`DiagonalTensorMap`. Use `s.to_tensor_map()` when reconstruction needs the
-regular dense block composition path. `svd_full(...)` returns `(u, s, vh)` over
-the fused codomain/domain spaces, with `s` as a regular `TensorMap`.
+`DiagonalTensorMap` and composes directly with ordinary tensor maps.
+`svd_full(...)` returns `(u, s, vh)` over the fused codomain/domain spaces, with
+`s` as a regular `TensorMap`.
 
 ```python
 import jax.numpy as jnp
 
-from tensor0 import TensorMap, U1Irrep, get_degeneracystructure, hom, space, svd_compact
+from tensor0 import TensorMap, U1Irrep, hom, space, svd_compact
+from tensor0.structure import get_degeneracystructure
 
 
 def data_for(h):
@@ -141,28 +169,60 @@ h = hom((left,), (right,))
 tensor = TensorMap(h, data_for(h))
 
 u, s, vh = svd_compact(tensor)
-reconstructed = u @ s.to_tensor_map() @ vh
+reconstructed = u @ s @ vh
+
+assert s.domain.spaces == (s.index_space,)
+assert s.codomain.spaces == (s.index_space,)
 ```
+
+`DiagonalTensorMap` exposes the shared tensor metadata and block interface,
+diagonal-preserving arithmetic, adjoint, norm, inverse, and cutoff
+pseudoinverse. `to_tensor_map()` remains available for interoperability, but is
+not required for ordinary composition or SVD reconstruction. Pseudoinverse uses
+`max(atol, rtol * max(abs(values)))` and maps values at or below the cutoff to
+zero; both tolerances are non-negative. When omitted, `rtol` is
+`10 * max(shape) * eps` for the promoted real dtype.
 
 Use `svd_trunc(...)` with `notrunc()`, `truncrank(...)`, `trunctol(...)`,
 `truncspace(...)`, or `truncerror(...)` when a truncation strategy is needed.
 `rank(...)` and `cond(...)` are SVD-derived helpers; `rank` counts sector ranks
 with quantum-dimension weighting, and `cond` currently supports the 2-norm.
 
+## Predicates and Comparison
+
+`TensorMap.dtype` and `DiagonalTensorMap.dtype` report the storage dtype.
+`isdiag(...)`, `equal(...)`, and `allclose(...)` return scalar JAX boolean
+arrays, so eager code may call `bool(...)` while jitted code keeps the result as
+an array. Exact comparison requires equal spaces, dtypes, and values.
+Approximate comparison requires equal spaces, uses JAX numerical promotion, and
+requires both tolerances as keyword arguments:
+
+```python
+from tensor0 import allclose, equal, isdiag
+
+diagonal_predicate = isdiag(s)
+same_values = allclose(reconstructed, tensor, rtol=1e-5, atol=1e-6)
+exact_copy = equal(tensor, tensor.copy())
+```
+
+Mixed ordinary/diagonal comparison uses mathematical tensor values. Neither
+comparison contract is attached to `TensorMap.__eq__`.
+
 ## Transforms
 
 The public transform helpers are `permute(...)`, `braid(...)`, `transpose(...)`,
 `repartition(...)`, `flip(...)`, `twist(...)`, `insertleftunit(...)`,
-`insertrightunit(...)`, and `removeunit(...)`.
+`insertrightunit(...)`, and `removeunit(...)`. The corresponding `TensorMap`
+methods have the same behavior and error contracts.
 
 ```python
 import jax.numpy as jnp
 
-from tensor0 import TensorMap, U1Irrep, get_degeneracystructure, hom, permute, space
+from tensor0 import TensorMap, U1Irrep, hom, space, storage_dim
 
 
 def data_for(h):
-    total_dim = get_degeneracystructure(h).total_dim
+    total_dim = storage_dim(h)
     return jnp.arange(total_dim, dtype=jnp.float32)
 
 
@@ -172,7 +232,7 @@ x = space(U1Irrep, {1: 1})
 h = hom((v, w), (x,))
 tensor = TensorMap(h, data_for(h))
 
-result = permute(tensor, ((1,), (0, 2)))
+result = tensor.permute(((1,), (0, 2)))
 assert result.space == hom((w,), (v.dual(), x))
 ```
 
@@ -291,11 +351,11 @@ correctness-first small examples and tests.
 ```python
 import jax.numpy as jnp
 
-from tensor0 import TensorMap, U1Irrep, from_dense, get_degeneracystructure, hom, space, to_dense
+from tensor0 import TensorMap, U1Irrep, from_dense, hom, space, storage_dim, to_dense
 
 v = space(U1Irrep, {0: 2, 1: 3})
 h = hom((v,), (v,))
-total_dim = get_degeneracystructure(h).total_dim
+total_dim = storage_dim(h)
 tensor = TensorMap(h, jnp.arange(total_dim, dtype=jnp.float32))
 
 dense = to_dense(tensor)
@@ -306,18 +366,18 @@ Dense conversion is not a production performance path in the current version.
 
 ## JAX jit and grad
 
-`TensorMap` is a JAX pytree. Its storage array is the dynamic leaf, and its
-`HomSpace` metadata is static auxiliary data.
+`TensorMap` and `DiagonalTensorMap` are JAX pytrees. Their storage arrays are the
+dynamic leaves, while space metadata is static auxiliary data.
 
 ```python
 import jax
 import jax.numpy as jnp
 
-from tensor0 import TensorMap, U1Irrep, get_degeneracystructure, hom, space
+from tensor0 import TensorMap, U1Irrep, hom, space, storage_dim
 
 
 def data_for(h):
-    total_dim = get_degeneracystructure(h).total_dim
+    total_dim = storage_dim(h)
     return jnp.arange(1, total_dim + 1, dtype=jnp.float32) / 10.0
 
 

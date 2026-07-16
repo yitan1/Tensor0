@@ -2,7 +2,9 @@ import jax
 import jax.numpy as jnp
 import pytest
 
+import tensor0.tensor as tensor_api
 from tensor0 import (
+    DiagonalTensorMap,
     FermionParity,
     SU2Irrep,
     TensorMap,
@@ -119,6 +121,62 @@ def test_tensormap_pytree_aux_uses_static_space_metadata():
 
     assert first_treedef == second_treedef
     assert first_treedef != different_treedef
+
+
+def test_jitted_isdiag_returns_scalar_for_diagonal_and_offdiagonal_data():
+    factor = space(U1Irrep, {0: 2})
+    target = hom((factor,), (factor,))
+    diagonal = TensorMap(
+        target,
+        jnp.asarray([1.0, 0.0, 0.0, 2.0], dtype=jnp.float32),
+    )
+    offdiagonal = TensorMap(
+        target,
+        jnp.asarray([1.0, 0.25, 0.0, 2.0], dtype=jnp.float32),
+    )
+    structured = DiagonalTensorMap(
+        factor,
+        jnp.asarray([1.0, 2.0], dtype=jnp.float32),
+    )
+
+    predicate = jax.jit(tensor_api.isdiag)
+    diagonal_result = predicate(diagonal)
+    offdiagonal_result = predicate(offdiagonal)
+    structured_result = predicate(structured)
+
+    assert diagonal_result.shape == ()
+    assert diagonal_result.dtype == jnp.dtype(jnp.bool_)
+    assert bool(diagonal_result)
+    assert not bool(offdiagonal_result)
+    assert bool(structured_result)
+
+
+def test_jitted_comparisons_support_dynamic_and_mixed_storage():
+    factor = space(U1Irrep, {0: 2})
+    diagonal = DiagonalTensorMap(
+        factor,
+        jnp.asarray([1.0, 2.0], dtype=jnp.float32),
+    )
+    expanded = diagonal.to_tensor_map()
+    changed = DiagonalTensorMap(
+        factor,
+        jnp.asarray([1.0, 2.05], dtype=jnp.float32),
+    )
+
+    compiled_equal = jax.jit(tensor_api.equal)
+    compiled_allclose = jax.jit(
+        lambda left, right: tensor_api.allclose(
+            left,
+            right,
+            rtol=0.0,
+            atol=0.1,
+        ),
+    )
+
+    assert bool(compiled_equal(diagonal, expanded))
+    assert not bool(compiled_equal(diagonal, changed))
+    assert bool(compiled_allclose(diagonal, expanded))
+    assert bool(compiled_allclose(diagonal, changed))
 
 
 def test_jitted_sector_indexing_and_lazy_subblock_iteration_match_eager():

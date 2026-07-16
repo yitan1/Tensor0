@@ -618,6 +618,23 @@ fn graded_space_direct_sum_and_supremum_use_visible_sectors() {
 }
 
 #[test]
+fn graded_space_partial_order_uses_visible_sector_dimensions() {
+    let small = gs(vec![(u1(0), 1), (u1(1), 2)]);
+    let large = gs(vec![(u1(0), 3), (u1(1), 2), (u1(-1), 4)]);
+
+    assert!(small.is_isomorphic(&small));
+    assert!(!small.is_isomorphic(&large));
+    assert!(small.is_monomorphic(&large));
+    assert!(!large.is_monomorphic(&small));
+    assert!(large.is_epimorphic(&small));
+    assert!(!small.is_epimorphic(&large));
+
+    let dual = gs(vec![(u1(1), 2), (u1(-1), 3)]).dual();
+    let same_visible = gs(vec![(u1(-1), 2), (u1(1), 3)]);
+    assert!(dual.is_isomorphic(&same_visible));
+}
+
+#[test]
 fn product_space_dual_and_fuse_methods_match_core_semantics() {
     let left = gs(vec![(u1(1), 2)]);
     let right = gs(vec![(u1(-1), 3)]).dual();
