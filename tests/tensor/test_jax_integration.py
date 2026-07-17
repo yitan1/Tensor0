@@ -139,7 +139,7 @@ def test_jitted_isdiag_returns_scalar_for_diagonal_and_offdiagonal_data():
         jnp.asarray([1.0, 2.0], dtype=jnp.float32),
     )
 
-    predicate = jax.jit(tensor_api.isdiag)
+    predicate = jax.jit(tensor_api.is_diagonal)
     diagonal_result = predicate(diagonal)
     offdiagonal_result = predicate(offdiagonal)
     structured_result = predicate(structured)

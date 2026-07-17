@@ -8,10 +8,18 @@ from tensor0 import (
     SU2Irrep,
     TensorMap,
     U1Irrep,
+    eigh_full,
+    from_blocks,
     from_dense,
     hom,
+    identity,
+    isometry,
+    is_hermitian,
+    qr_compact,
+    random_normal,
     space,
     svd_compact,
+    tensor_product,
     to_dense,
 )
 from tensor0.structure import get_degeneracystructure
@@ -108,6 +116,49 @@ def transform_example():
     )
 
 
+def canonical_and_random_example():
+    small = space(U1Irrep, {0: 2, 1: 1})
+    large = space(U1Irrep, {0: 3, 1: 2})
+    target = hom((small,), (small,))
+    sample = random_normal(jax.random.key(0), target, dtype=jnp.float32)
+    unit = identity(small, dtype=jnp.float32)
+
+    _assert_allclose((unit @ sample).storage.data, sample.storage.data)
+
+    embedding = isometry(large, small, dtype=jnp.float32)
+    _assert_allclose(
+        (embedding.adjoint() @ embedding).storage.data,
+        unit.storage.data,
+    )
+
+    product = tensor_product(unit, unit)
+    assert product.codomain.spaces == (small, small)
+    assert product.domain.spaces == (small, small)
+
+
+def blockwise_factorization_example():
+    factor = space(U1Irrep, {0: 2})
+    target = hom((factor,), (factor,))
+    tensor = from_blocks(
+        target,
+        {
+            0: jnp.asarray(
+                [[2.0, 1.0], [1.0, 3.0]],
+                dtype=jnp.float32,
+            ),
+        },
+    )
+
+    q, r = qr_compact(tensor)
+    assert q.domain == r.codomain
+    _assert_allclose((q @ r).storage.data, tensor.storage.data)
+
+    assert bool(is_hermitian(tensor))
+    eigenvalues, eigenvectors = eigh_full(tensor)
+    reconstructed = eigenvectors @ eigenvalues @ eigenvectors.adjoint()
+    _assert_allclose(reconstructed.storage.data, tensor.storage.data)
+
+
 def jax_example():
     v = space(U1Irrep, {0: 2, 1: 3})
     w = space(U1Irrep, {0: 5, 1: 7})
@@ -140,6 +191,8 @@ def main():
     dense_roundtrip_example(tensor)
     composition_and_svd_example()
     transform_example()
+    canonical_and_random_example()
+    blockwise_factorization_example()
     jax_example()
     print("Tensor0 basic usage OK")
 

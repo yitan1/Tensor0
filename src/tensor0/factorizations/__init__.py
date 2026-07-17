@@ -1,10 +1,31 @@
-from .svd import cond, rank, svd_compact, svd_full, svd_trunc, svd_vals
+from .decompositions import (
+    cond,
+    eigh_full,
+    eigh_vals,
+    is_hermitian,
+    left_orth,
+    lq_compact,
+    qr_compact,
+    rank,
+    right_orth,
+    svd_compact,
+    svd_full,
+    svd_trunc,
+    svd_vals,
+)
 from .truncation import notrunc, truncerror, truncrank, truncspace, trunctol
 
 __all__ = [
     "cond",
+    "eigh_full",
+    "eigh_vals",
+    "is_hermitian",
+    "left_orth",
+    "lq_compact",
     "notrunc",
+    "qr_compact",
     "rank",
+    "right_orth",
     "svd_compact",
     "svd_full",
     "svd_trunc",

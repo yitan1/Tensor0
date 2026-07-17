@@ -3,8 +3,7 @@ from ..structure import SectorDict
 from .sector_vector import SectorVector
 from .diagonal import DiagonalTensorMap
 from .storage import VectorStorage
-from .tensor_map import (
-    TensorMap,
+from .linalg import (
     add,
     adjoint,
     allclose,
@@ -13,20 +12,25 @@ from .tensor_map import (
     diagm,
     dot,
     equal,
-    from_blocks,
     imag,
     inner,
-    isdiag,
+    is_diagonal,
     norm,
     normalize,
-    ones,
     real,
     scalar,
     scale,
+    tensor_product,
     tr,
     zero_like,
-    zeros,
 )
+from .tensor_map import (
+    TensorMap,
+    from_blocks,
+    zeros,
+    ones,
+)
+from .constructors import identity, isometry, isomorphism, random_normal, unitary
 
 __all__ = [
     "DiagonalTensorMap",
@@ -44,17 +48,23 @@ __all__ = [
     "equal",
     "from_dense",
     "from_blocks",
+    "identity",
     "imag",
     "inner",
-    "isdiag",
+    "isometry",
+    "isomorphism",
+    "is_diagonal",
     "norm",
     "normalize",
     "ones",
+    "random_normal",
     "real",
     "scalar",
     "scale",
+    "tensor_product",
     "to_dense",
     "tr",
+    "unitary",
     "zero_like",
     "zeros",
 ]

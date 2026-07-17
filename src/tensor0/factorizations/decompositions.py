@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from jax import Array
 import jax.numpy as jnp
 
@@ -12,11 +14,236 @@ from ..tensor.tensor_map import TensorMap
 from .truncation import _ensure_strategy, _find_truncated_indices, _truncation_error, notrunc
 
 
+# Orthogonal decompositions
+
+
+def qr_compact(tensor: TensorMap) -> tuple[TensorMap, TensorMap]:
+    """Return the compact blockwise QR factorization of a TensorMap."""
+    tensor = _require_tensor_map(tensor, "qr_compact")
+    bond = _compact_bond(tensor)
+    blocks = tensor.blocks()
+
+    q_blocks: dict[tuple[int, ...], Array] = {}
+    r_blocks: dict[tuple[int, ...], Array] = {}
+    factor_dtype = jnp.result_type(tensor.storage.data, 0.0)
+    for coupled, block in blocks:
+        q_block, r_block = _positive_qr(block)
+        q_blocks[coupled] = q_block
+        r_blocks[coupled] = r_block
+        factor_dtype = q_block.dtype
+
+    q_space = hom(tensor.space.codomain, (bond,))
+    r_space = hom((bond,), tensor.space.domain)
+    return (
+        TensorMap(q_space, pack_blocks(q_space, q_blocks, dtype=factor_dtype)),
+        TensorMap(r_space, pack_blocks(r_space, r_blocks, dtype=factor_dtype)),
+    )
+
+
+def lq_compact(tensor: TensorMap) -> tuple[TensorMap, TensorMap]:
+    """Return the compact blockwise LQ factorization of a TensorMap."""
+    tensor = _require_tensor_map(tensor, "lq_compact")
+    bond = _compact_bond(tensor)
+    blocks = tensor.blocks()
+
+    l_blocks: dict[tuple[int, ...], Array] = {}
+    q_blocks: dict[tuple[int, ...], Array] = {}
+    factor_dtype = jnp.result_type(tensor.storage.data, 0.0)
+    for coupled, block in blocks:
+        q_adjoint, r_adjoint = _positive_qr(jnp.conj(block.T))
+        l_blocks[coupled] = jnp.conj(r_adjoint.T)
+        q_blocks[coupled] = jnp.conj(q_adjoint.T)
+        factor_dtype = q_adjoint.dtype
+
+    l_space = hom(tensor.space.codomain, (bond,))
+    q_space = hom((bond,), tensor.space.domain)
+    return (
+        TensorMap(l_space, pack_blocks(l_space, l_blocks, dtype=factor_dtype)),
+        TensorMap(q_space, pack_blocks(q_space, q_blocks, dtype=factor_dtype)),
+    )
+
+
+def left_orth(
+    tensor: TensorMap,
+    *,
+    alg: Literal["qr", "svd"] | None = None,
+    trunc: object | None = None,
+) -> tuple[TensorMap, TensorMap]:
+    """Return a left-orthogonal factorization of a TensorMap.
+
+    Compact QR is used by default. Supplying a truncation strategy selects SVD,
+    which can also be requested explicitly with ``alg="svd"``.
+    """
+    tensor = _require_tensor_map(tensor, "left_orth")
+    selected = "svd" if alg is None and trunc is not None else alg
+    if selected is None:
+        selected = "qr"
+    if selected == "qr":
+        if trunc is not None:
+            raise ValueError("left_orth() does not support truncation with alg='qr'")
+        return qr_compact(tensor)
+    if selected == "svd":
+        u, s, vh = _orthogonal_svd(tensor, trunc)
+        return u, s @ vh
+    raise ValueError(f"left_orth() received unknown algorithm {selected!r}")
+
+
+def right_orth(
+    tensor: TensorMap,
+    *,
+    alg: Literal["lq", "svd"] | None = None,
+    trunc: object | None = None,
+) -> tuple[TensorMap, TensorMap]:
+    """Return a right-orthogonal factorization of a TensorMap.
+
+    Compact LQ is used by default. Supplying a truncation strategy selects SVD,
+    which can also be requested explicitly with ``alg="svd"``.
+    """
+    tensor = _require_tensor_map(tensor, "right_orth")
+    selected = "svd" if alg is None and trunc is not None else alg
+    if selected is None:
+        selected = "lq"
+    if selected == "lq":
+        if trunc is not None:
+            raise ValueError("right_orth() does not support truncation with alg='lq'")
+        return lq_compact(tensor)
+    if selected == "svd":
+        u, s, vh = _orthogonal_svd(tensor, trunc)
+        return u @ s, vh
+    raise ValueError(f"right_orth() received unknown algorithm {selected!r}")
+
+
+def _orthogonal_svd(
+    tensor: TensorMap,
+    trunc: object | None,
+) -> tuple[TensorMap, DiagonalTensorMap, TensorMap]:
+    if trunc is None:
+        return svd_compact(tensor)
+    u, s, vh, _error = svd_trunc(tensor, trunc=trunc)
+    return u, s, vh
+
+
+def _positive_qr(block: Array) -> tuple[Array, Array]:
+    q_block, r_block = jnp.linalg.qr(block, mode="reduced")
+    diagonal = jnp.diag(r_block)
+    magnitude = jnp.abs(diagonal)
+    nonzero = magnitude != 0
+    safe_magnitude = jnp.where(nonzero, magnitude, jnp.ones_like(magnitude))
+    phase = jnp.where(
+        nonzero,
+        diagonal / safe_magnitude,
+        jnp.ones_like(diagonal),
+    )
+    return q_block * phase[None, :], jnp.conj(phase)[:, None] * r_block
+
+
+# Hermitian decompositions
+
+
+def eigh_vals(tensor: TensorMap) -> SectorVector:
+    """Return blockwise eigenvalues of a Hermitian TensorMap endomorphism.
+
+    Hermiticity is a numerical precondition and is not checked by this function.
+    """
+    tensor = _require_endomorphism(tensor, "eigh_vals")
+    bond = _eigh_bond(tensor)
+    blocks = tensor.blocks()
+
+    value_blocks: dict[tuple[int, ...], Array] = {}
+    factor_dtype = jnp.result_type(tensor.storage.data, 0.0)
+    value_dtype = jnp.real(jnp.zeros((), dtype=factor_dtype)).dtype
+    for coupled, block in blocks:
+        values = jnp.linalg.eigvalsh(
+            block,
+            UPLO="L",
+            symmetrize_input=False,
+        )
+        value_blocks[coupled] = values
+        value_dtype = values.dtype
+
+    return SectorVector(
+        bond,
+        _packed_sector_values(bond, value_blocks, dtype=value_dtype),
+    )
+
+
+def eigh_full(tensor: TensorMap) -> tuple[DiagonalTensorMap, TensorMap]:
+    """Return the full blockwise eigendecomposition of a Hermitian endomorphism.
+
+    Hermiticity is a numerical precondition and is not checked by this function.
+    """
+    tensor = _require_endomorphism(tensor, "eigh_full")
+    bond = _eigh_bond(tensor)
+    blocks = tensor.blocks()
+
+    value_blocks: dict[tuple[int, ...], Array] = {}
+    vector_blocks: dict[tuple[int, ...], Array] = {}
+    vector_dtype = jnp.result_type(tensor.storage.data, 0.0)
+    value_dtype = jnp.real(jnp.zeros((), dtype=vector_dtype)).dtype
+    for coupled, block in blocks:
+        values, vectors = jnp.linalg.eigh(
+            block,
+            UPLO="L",
+            symmetrize_input=False,
+        )
+        value_blocks[coupled] = values
+        vector_blocks[coupled] = vectors
+        value_dtype = values.dtype
+        vector_dtype = vectors.dtype
+
+    vector_space = hom(tensor.space.codomain, (bond,))
+    return (
+        DiagonalTensorMap(
+            bond,
+            _packed_sector_values(bond, value_blocks, dtype=value_dtype),
+        ),
+        TensorMap(
+            vector_space,
+            pack_blocks(vector_space, vector_blocks, dtype=vector_dtype),
+        ),
+    )
+
+
+def is_hermitian(
+    tensor: TensorMap,
+    *,
+    atol: float = 0.0,
+    rtol: float = 0.0,
+) -> Array:
+    """Return whether every block of a TensorMap endomorphism is Hermitian."""
+    tensor = _require_endomorphism(tensor, "is_hermitian")
+
+    result = jnp.asarray(True)
+    for _coupled, block in tensor.blocks():
+        result = jnp.logical_and(
+            result,
+            jnp.allclose(block, jnp.conj(block.T), atol=atol, rtol=rtol),
+        )
+    return result
+
+
+def _eigh_bond(tensor: TensorMap) -> _native.ElementarySpace:
+    return fuse(tensor.space.domain)
+
+
+def _require_endomorphism(tensor: object, function_name: str) -> TensorMap:
+    tensor_map = _require_tensor_map(tensor, function_name)
+    if tensor_map.space.codomain != tensor_map.space.domain:
+        raise ValueError(
+            f"{function_name}() requires an endomorphism with equal codomain "
+            "and domain spaces",
+        )
+    return tensor_map
+
+
+# Singular value decompositions
+
+
 def svd_vals(tensor: TensorMap) -> SectorVector:
     tensor = _require_tensor_map(tensor, "svd_vals")
 
     sector_ranks, s_blocks, singular_dtype = _singular_value_blocks(tensor)
-    bond = _svd_infimum_bond(tensor)
+    bond = _compact_bond(tensor)
     _check_svd_sector_ranks(bond, sector_ranks, "svd_vals")
     return SectorVector(
         bond,
@@ -30,7 +257,7 @@ def svd_compact(tensor: TensorMap) -> tuple[TensorMap, DiagonalTensorMap, Tensor
     sector_ranks, u_blocks, s_blocks, vh_blocks, tensor_dtype, singular_dtype = (
         _compact_svd_blocks(tensor)
     )
-    bond = _svd_infimum_bond(tensor)
+    bond = _compact_bond(tensor)
     _check_svd_sector_ranks(bond, sector_ranks, "svd_compact")
     u_space = hom(tensor.space.codomain, (bond,))
     vh_space = hom((bond,), tensor.space.domain)
@@ -173,7 +400,7 @@ def _require_tensor_map(tensor: object, function_name: str) -> TensorMap:
     return tensor
 
 
-def _svd_infimum_bond(tensor: TensorMap) -> _native.ElementarySpace:
+def _compact_bond(tensor: TensorMap) -> _native.ElementarySpace:
     return infimum(
         fuse(tensor.space.codomain),
         fuse(tensor.space.domain),

@@ -11,6 +11,7 @@ from ...tensor._blocks import (
     add_to_subblock as _add_to_subblock,
     get_subblock as _get_subblock,
 )
+from ...tensor.linalg import _compose
 from ...tensor.tensor_map import TensorMap
 from ..transforms import _treepermuter, permute, twist
 
@@ -262,7 +263,7 @@ def tensorcontract(
     left_canonical = permute(left_value, left_permutation)
     right_canonical = permute(right_value, right_permutation)
     right_canonical = twist(right_canonical, right_twist_indices)
-    canonical_result = left_canonical @ right_canonical
+    canonical_result = _compose(left_canonical, right_canonical)
     return permute(canonical_result, output_permutation)
 
 

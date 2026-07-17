@@ -15,6 +15,9 @@ The example covers:
 - layout and storage construction,
 - dense roundtrip checks,
 - blockwise composition,
+- identity and deterministic isometry construction,
+- explicit tensor products and explicit-key random construction,
+- compact QR canonicalization and Hermitian reconstruction,
 - compact SVD reconstruction,
 - U1, fermion parity, and SU2 transforms,
 - JAX `jit` and `grad` smoke usage.

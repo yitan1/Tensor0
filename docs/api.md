@@ -56,9 +56,14 @@ against these lists.
 - `ones`
 - `zero_like`
 - `from_blocks`
+- `identity`
+- `isomorphism`
+- `unitary`
+- `isometry`
+- `random_normal`
 - `diag`
 - `diagm`
-- `isdiag`
+- `is_diagonal`
 - `scalar`
 - `to_dense`
 - `from_dense`
@@ -78,6 +83,7 @@ against these lists.
 - `complex`
 - `equal`
 - `allclose`
+- `tensor_product`
 
 ### Transforms
 
@@ -101,6 +107,13 @@ against these lists.
 
 ### Factorizations and Truncation
 
+- `qr_compact`
+- `lq_compact`
+- `left_orth`
+- `right_orth`
+- `eigh_vals`
+- `eigh_full`
+- `is_hermitian`
 - `svd_vals`
 - `svd_compact`
 - `svd_full`

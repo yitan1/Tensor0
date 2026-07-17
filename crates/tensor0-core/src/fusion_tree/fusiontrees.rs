@@ -380,7 +380,10 @@ fn fusiontree2_tensor<I: Sector>(tree: &FusionTree<I>) -> Result<ArrayD<f64>> {
     if tree.is_dual[1] {
         let z = z_isomorphism_matrix(&tree.uncoupled[1])?;
         tensor = tensordot(&z, &tensor, &[1], &[1])?;
-        tensor = tensor.permuted_axes(IxDyn(&[1, 0, 2]));
+        tensor = tensor
+            .permuted_axes(IxDyn(&[1, 0, 2]))
+            .as_standard_layout()
+            .into_owned();
     }
     Ok(tensor)
 }

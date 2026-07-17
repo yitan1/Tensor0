@@ -3,7 +3,10 @@ import re
 
 import pytest
 import tensor0
+import tensor0.factorizations as factorizations
+import tensor0.operations as operations
 import tensor0.structure as structure
+import tensor0.tensor as tensor
 
 
 API_DOCUMENT = (Path(__file__).parents[1] / "docs" / "api.md").read_text(
@@ -52,6 +55,30 @@ def test_public_productspace_and_advanced_layout_return_types():
     assert isinstance(degeneracy, structure.DegeneracyStructure)
     assert isinstance(blocks[0], structure.BlockStructure)
     assert isinstance(degeneracy.subblock_at(0), structure.SubblockStructure)
+
+
+def test_phase_9_public_names_have_one_canonical_surface():
+    for name in ("identity", "isomorphism", "unitary", "isometry", "random_normal"):
+        assert getattr(tensor0, name) is getattr(tensor, name)
+    assert tensor0.is_diagonal is tensor.is_diagonal
+    assert tensor0.tensor_product is tensor.tensor_product
+    assert not hasattr(operations, "tensor_product")
+
+    assert not hasattr(tensor0, "id")
+    assert not hasattr(tensor0, "isdiag")
+    assert not hasattr(tensor0, "randn")
+    assert not hasattr(tensor0.TensorMap, "random_normal")
+
+    for name in (
+        "qr_compact",
+        "lq_compact",
+        "left_orth",
+        "right_orth",
+        "eigh_vals",
+        "eigh_full",
+        "is_hermitian",
+    ):
+        assert getattr(tensor0, name) is getattr(factorizations, name)
 
 
 def _documented_inventory(document: str, marker: str) -> set[str]:

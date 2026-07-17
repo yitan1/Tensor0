@@ -143,6 +143,202 @@ assert c.space == hom((v,), (x,))
 For partial contractions, traces, named tensor networks, and integer-label
 networks, see the [contraction guide](contractions.md).
 
+## Morphism Constructors
+
+`identity(space, *, dtype=None)` constructs the identity on an elementary or
+product space. `isomorphism(codomain, domain, *, dtype=None)` and
+`unitary(codomain, domain, *, dtype=None)` require isomorphic spaces, while
+`isometry(codomain, domain, *, dtype=None)` requires the domain to embed into
+the codomain sector by sector.
+
+```python
+import jax.numpy as jnp
+
+from tensor0 import (
+    U1Irrep,
+    allclose,
+    identity,
+    isometry,
+    isomorphism,
+    space,
+    unitary,
+)
+
+small = space(U1Irrep, {0: 2, 1: 1})
+large = space(U1Irrep, {0: 3, 1: 2})
+
+unit = identity(small, dtype=jnp.float32)
+isomorphic = isomorphism(small, small, dtype=jnp.float32)
+basis_change = unitary(small, small, dtype=jnp.float32)
+embedding = isometry(large, small, dtype=jnp.float32)
+
+assert bool(allclose(isomorphic, unit, rtol=1e-5, atol=1e-6))
+assert bool(allclose(basis_change, unit, rtol=1e-5, atol=1e-6))
+assert bool(
+    allclose(
+        embedding.adjoint() @ embedding,
+        unit,
+        rtol=1e-5,
+        atol=1e-6,
+    )
+)
+```
+
+Product-to-fused isomorphisms and unitaries use Tensor0's existing fusion-tree
+gauge. Invalid non-isomorphic or non-monomorphic inputs fail before numerical
+allocation. With `dtype=None`, allocation follows the configured JAX default;
+explicit real and complex dtypes are preserved. `identity` is the only public
+identity name—there is no `id` alias or constructor classmethod.
+
+For the spaces currently supported by Tensor0, `isomorphism` and `unitary` use
+the same deterministic gauge-fixed construction. The `unitary` name records
+the stronger contract that reversing the map agrees with both its inverse and
+its adjoint; it does not select a different numerical construction.
+
+## Tensor Product
+
+`tensor_product(left, right)` is the explicit disconnected tensor-network
+product. Its codomain factors are ordered as left then right, followed by the
+left-then-right domain factors in the domain partition:
+
+```python
+from tensor0 import U1Irrep, identity, space, tensor_product
+
+left_space = space(U1Irrep, {0: 2})
+right_space = space(U1Irrep, {0: 3})
+left = identity(left_space)
+right = identity(right_space)
+
+product = tensor_product(left, right)
+assert product.codomain.spaces == (left_space, right_space)
+assert product.domain.spaces == (left_space, right_space)
+```
+
+Both inputs must use the same sector family. The implementation uses the
+tested disconnected-contraction semantics, including fusion coefficients,
+fermionic input order, scalar operands, JIT, and differentiation. Tensor0 does
+not attach this operation to an overloaded tensor-product operator.
+
+## Explicit-Key Random Construction
+
+`random_normal(key, space, *, dtype=None)` samples the packed reduced storage
+of a `HomSpace` directly. Tensor0 passes the supplied key to exactly one
+`jax.random.normal` call without pre-splitting or mutating it, returning a
+replacement key, or reading global RNG state. JAX may internally split the key
+when implementing complex sampling:
+
+```python
+import jax
+import jax.numpy as jnp
+
+from tensor0 import U1Irrep, equal, hom, random_normal, space
+
+factor = space(U1Irrep, {0: 2, 1: 1})
+target = hom((factor,), (factor,))
+key = jax.random.key(0)
+
+sample = random_normal(key, target, dtype=jnp.complex64)
+repeated = random_normal(key, target, dtype=jnp.complex64)
+assert bool(equal(sample, repeated))
+```
+
+`dtype=None` follows `jax.random.normal`'s configured real default. An explicit
+complex dtype follows JAX's complex-normal semantics, and an empty `HomSpace`
+produces empty storage of the requested dtype. Capture the space and dtype in a
+jitted wrapper, for example `jax.jit(lambda key: random_normal(key, target))`,
+so the `HomSpace` remains static metadata. There is no `randn` alias, classmethod,
+implicit key, or global generator.
+
+## Compact QR/LQ and Orthogonalization
+
+`qr_compact(tensor)` returns `(q, r)` with `q @ r == tensor`, while
+`lq_compact(tensor)` returns `(l, q)` with `l @ q == tensor`. Both use the
+deterministic non-dual connecting space
+`infimum(fuse(tensor.codomain), fuse(tensor.domain))`. For QR this space is
+`q.domain == r.codomain`; for LQ it is `l.domain == q.codomain`.
+
+```python
+import jax.numpy as jnp
+
+from tensor0 import U1Irrep, allclose, from_blocks, hom, lq_compact, qr_compact, space
+
+factor = space(U1Irrep, {0: 2})
+target = hom((factor,), (factor,))
+tensor = from_blocks(
+    target,
+    {0: jnp.asarray([[2.0, 1.0], [1.0, 3.0]], dtype=jnp.float32)},
+)
+
+left_q, r = qr_compact(tensor)
+l, right_q = lq_compact(tensor)
+
+assert left_q.domain == r.codomain
+assert l.domain == right_q.codomain
+assert bool(allclose(left_q @ r, tensor, rtol=1e-5, atol=1e-6))
+assert bool(allclose(l @ right_q, tensor, rtol=1e-5, atol=1e-6))
+```
+
+Each nonzero diagonal entry of `R` or `L` is normalized to a positive real
+value by moving its sign or complex phase into the corresponding column or row
+of `Q`. A zero diagonal entry uses the neutral phase `1`, preserving
+reconstruction and static compact shapes.
+
+`left_orth(tensor, *, alg=None, trunc=None)` and
+`right_orth(tensor, *, alg=None, trunc=None)` are the tensor-network-oriented
+interfaces. Without optional arguments they use `qr_compact` and `lq_compact`,
+respectively. With `alg="svd"`, the compact SVD is grouped as `(u, s @ vh)` for
+left orthogonalization or `(u @ s, vh)` for right orthogonalization.
+
+Supplying a truncation strategy selects the SVD path automatically and reduces
+the connecting space. An explicit `alg="qr"` or `alg="lq"` cannot be combined
+with `trunc`. These high-level functions return only the two grouped factors;
+call `svd_trunc` directly when the discarded-weight error is required. Polar
+orthogonalization and backend algorithm objects are not supported.
+
+Factor dtypes follow JAX linear-algebra promotion. In particular, integer or
+boolean storage produces inexact QR/LQ factors rather than being cast back to
+the input dtype; typed empty outputs use the same promotion rule.
+
+Rank-deficient and zero blocks support eager and JIT value computation, but
+their output shapes do not shrink with numerical rank. Differentiation is
+promised only for appropriate full-rank blocks with nonzero normalized
+diagonals; Tensor0 does not promise QR/LQ derivatives at rank deficiency.
+
+## Hermitian Eigenvalues and Eigenvectors
+
+`is_hermitian(tensor, *, atol=0.0, rtol=0.0)` returns a scalar JAX boolean
+array. Its default check is exact; nonzero tolerances are always explicit.
+`eigh_vals(tensor)` returns a real `SectorVector`, and `eigh_full(tensor)`
+returns `(d, v)` with eigenvalues ordered within each sector and reconstruction
+`tensor == v @ d @ v.adjoint()`.
+
+```python
+from tensor0 import allclose, eigh_full, eigh_vals, is_hermitian
+
+assert bool(is_hermitian(tensor, rtol=1e-5, atol=1e-6))
+values = eigh_vals(tensor)
+d, v = eigh_full(tensor)
+reconstructed = v @ d @ v.adjoint()
+assert bool(allclose(reconstructed, tensor, rtol=1e-5, atol=1e-6))
+```
+
+All three functions first require the static `TensorMap` space to be an
+endomorphism with equal codomain and domain. Hermiticity itself is a numerical
+precondition: `eigh_vals` and `eigh_full` do not convert a predicate to a Python
+boolean, raise on data inside JIT, project, or symmetrize a non-Hermitian input.
+Eager callers that need validation should call
+`bool(is_hermitian(tensor, ...))` before decomposition; jitted callers can keep
+the predicate as a JAX scalar.
+
+Eigenvalue and eigenvector dtypes also follow JAX promotion: integer or boolean
+storage produces inexact eigenvectors and real inexact eigenvalues, including
+for typed empty outputs.
+
+At degenerate spectra, eigenvalues and reconstruction remain supported in
+eager and JIT execution, but the eigenvector basis is only as deterministic as
+the JAX backend. Eigenvector derivatives and a unique basis are not promised
+at degeneracy; gradient guarantees are restricted to nondegenerate spectra.
+
 ## SVD
 
 `svd_vals(...)` returns singular values as a `SectorVector` over the infimum
@@ -191,16 +387,16 @@ with quantum-dimension weighting, and `cond` currently supports the 2-norm.
 ## Predicates and Comparison
 
 `TensorMap.dtype` and `DiagonalTensorMap.dtype` report the storage dtype.
-`isdiag(...)`, `equal(...)`, and `allclose(...)` return scalar JAX boolean
+`is_diagonal(...)`, `equal(...)`, and `allclose(...)` return scalar JAX boolean
 arrays, so eager code may call `bool(...)` while jitted code keeps the result as
 an array. Exact comparison requires equal spaces, dtypes, and values.
 Approximate comparison requires equal spaces, uses JAX numerical promotion, and
 requires both tolerances as keyword arguments:
 
 ```python
-from tensor0 import allclose, equal, isdiag
+from tensor0 import allclose, equal, is_diagonal
 
-diagonal_predicate = isdiag(s)
+diagonal_predicate = is_diagonal(s)
 same_values = allclose(reconstructed, tensor, rtol=1e-5, atol=1e-6)
 exact_copy = equal(tensor, tensor.copy())
 ```

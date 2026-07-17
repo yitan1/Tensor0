@@ -1,4 +1,10 @@
-from .contractions import contract, idx, ncon, tensorcontract, tensortrace
+from .contractions import (
+    contract,
+    idx,
+    ncon,
+    tensorcontract,
+    tensortrace,
+)
 from .transforms import (
     braid,
     flip,

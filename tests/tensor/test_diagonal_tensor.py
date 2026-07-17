@@ -289,7 +289,7 @@ def test_diagonal_tensormap_comparisons_use_mathematical_values():
     assert bool(tensor_api.allclose(diagonal, promoted, rtol=0.0, atol=0.0))
     assert not bool(tensor_api.equal(diagonal, offdiagonal))
     assert not bool(tensor_api.allclose(diagonal, offdiagonal, rtol=0.0, atol=0.1))
-    assert bool(tensor_api.isdiag(diagonal))
+    assert bool(tensor_api.is_diagonal(diagonal))
 
 
 def test_diagonal_tensormap_composition_rejects_incompatible_spaces():

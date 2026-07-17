@@ -81,12 +81,13 @@ fn two_leg_fusiontree_tensor_selects_vertex_slice() -> Result<()> {
 }
 
 #[test]
-fn two_leg_fusiontree_tensor_applies_second_dual_leg_in_place() -> Result<()> {
+fn two_leg_fusiontree_tensor_materializes_second_dual_leg_layout() -> Result<()> {
     let half = su2(1);
     let tree = fusion_tree(vec![half, half], su2(0), vec![false, true], vec![], vec![0]);
 
     let tensor = fusiontree_tensor(&tree)?;
 
+    assert!(tensor.is_standard_layout());
     assert_sparse_tensor(
         &tensor,
         &[2, 2, 1],
