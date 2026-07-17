@@ -81,6 +81,32 @@ def test_phase_9_public_names_have_one_canonical_surface():
         assert getattr(tensor0, name) is getattr(factorizations, name)
 
 
+def test_phase_10_public_names_have_one_canonical_surface():
+    for name in (
+        "inverse",
+        "pseudoinverse",
+        "left_solve",
+        "right_solve",
+        "is_isometric",
+        "is_unitary",
+        "is_positive_definite",
+        "random_isometry",
+    ):
+        assert getattr(tensor0, name) is getattr(tensor, name)
+    assert tensor0.eigh_trunc is factorizations.eigh_trunc
+
+    for alias in (
+        "inv",
+        "pinv",
+        "solve",
+        "randisometry",
+        "isisometric",
+        "isunitary",
+        "isposdef",
+    ):
+        assert not hasattr(tensor0, alias)
+
+
 def _documented_inventory(document: str, marker: str) -> set[str]:
     start = f"<!-- {marker}:start -->"
     end = f"<!-- {marker}:end -->"

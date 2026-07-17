@@ -7,9 +7,10 @@ import jax.numpy as jnp
 
 from .. import _native
 from ..structure.spaces import fuse, hom, infimum
-from ..tensor._blocks import pack_blocks
+from ..tensor._blocks import _packed_sector_values, pack_blocks
+from ..tensor._orthogonal import positive_qr
 from ..tensor.diagonal import DiagonalTensorMap
-from ..tensor.sector_vector import SectorVector, _packed_sector_values
+from ..tensor.sector_vector import SectorVector
 from ..tensor.tensor_map import TensorMap
 from .truncation import _ensure_strategy, _find_truncated_indices, _truncation_error, notrunc
 
@@ -27,7 +28,7 @@ def qr_compact(tensor: TensorMap) -> tuple[TensorMap, TensorMap]:
     r_blocks: dict[tuple[int, ...], Array] = {}
     factor_dtype = jnp.result_type(tensor.storage.data, 0.0)
     for coupled, block in blocks:
-        q_block, r_block = _positive_qr(block)
+        q_block, r_block = positive_qr(block)
         q_blocks[coupled] = q_block
         r_blocks[coupled] = r_block
         factor_dtype = q_block.dtype
@@ -50,7 +51,7 @@ def lq_compact(tensor: TensorMap) -> tuple[TensorMap, TensorMap]:
     q_blocks: dict[tuple[int, ...], Array] = {}
     factor_dtype = jnp.result_type(tensor.storage.data, 0.0)
     for coupled, block in blocks:
-        q_adjoint, r_adjoint = _positive_qr(jnp.conj(block.T))
+        q_adjoint, r_adjoint = positive_qr(jnp.conj(block.T))
         l_blocks[coupled] = jnp.conj(r_adjoint.T)
         q_blocks[coupled] = jnp.conj(q_adjoint.T)
         factor_dtype = q_adjoint.dtype
@@ -123,20 +124,6 @@ def _orthogonal_svd(
     return u, s, vh
 
 
-def _positive_qr(block: Array) -> tuple[Array, Array]:
-    q_block, r_block = jnp.linalg.qr(block, mode="reduced")
-    diagonal = jnp.diag(r_block)
-    magnitude = jnp.abs(diagonal)
-    nonzero = magnitude != 0
-    safe_magnitude = jnp.where(nonzero, magnitude, jnp.ones_like(magnitude))
-    phase = jnp.where(
-        nonzero,
-        diagonal / safe_magnitude,
-        jnp.ones_like(diagonal),
-    )
-    return q_block * phase[None, :], jnp.conj(phase)[:, None] * r_block
-
-
 # Hermitian decompositions
 
 
@@ -200,6 +187,62 @@ def eigh_full(tensor: TensorMap) -> tuple[DiagonalTensorMap, TensorMap]:
         TensorMap(
             vector_space,
             pack_blocks(vector_space, vector_blocks, dtype=vector_dtype),
+        ),
+    )
+
+
+def eigh_trunc(
+    tensor: TensorMap,
+    *,
+    trunc: object | None = None,
+) -> tuple[DiagonalTensorMap, TensorMap]:
+    """Return a truncated blockwise eigendecomposition of a Hermitian endomorphism.
+
+    Truncation selects eigenvalues by absolute magnitude while preserving their
+    signs and JAX's ascending order within each sector. Hermiticity is a
+    numerical precondition and is not checked by this function.
+    """
+    tensor = _require_endomorphism(tensor, "eigh_trunc")
+    if trunc is None:
+        return eigh_full(tensor)
+    trunc = _ensure_strategy(trunc)
+
+    diagonal, vectors = eigh_full(tensor)
+    values = diagonal.diag()
+    selected = _find_truncated_indices(values, trunc)
+    keep = {sector: tuple(sorted(indices)) for sector, indices in selected.items()}
+
+    sector_dims = tuple(
+        (sector, len(indices))
+        for sector, _dim in values.sectors
+        if (indices := keep.get(sector, ()))
+    )
+    bond = _native.make_space(values.sector_type, sector_dims, False)
+    vector_space = hom(tensor.space.codomain, (bond,))
+
+    value_blocks: dict[tuple[int, ...], Array] = {}
+    vector_blocks: dict[tuple[int, ...], Array] = {}
+    for sector, _dim in bond.sectors:
+        indices = jnp.asarray(keep[sector], dtype=jnp.int32)
+        value_blocks[sector] = jnp.take(values.block(sector), indices, axis=0)
+        vector_blocks[sector] = jnp.take(vectors.block(sector), indices, axis=1)
+
+    return (
+        DiagonalTensorMap(
+            bond,
+            _packed_sector_values(
+                bond,
+                value_blocks,
+                dtype=diagonal.storage.data.dtype,
+            ),
+        ),
+        TensorMap(
+            vector_space,
+            pack_blocks(
+                vector_space,
+                vector_blocks,
+                dtype=vectors.storage.data.dtype,
+            ),
         ),
     )
 

@@ -19,6 +19,7 @@ evolving, and Tensor0 is not yet a production-ready tensor-network framework.
 Tensor0 currently covers typed sector metadata, graded spaces, `TensorMap`
 storage, block access, composition, SVD helpers, transforms, symmetry-aware
 contractions, deterministic morphism constructors, explicit tensor products
-and random construction, QR/LQ- and SVD-backed orthogonalization, Hermitian
-eigendecomposition, monoidal-unit insertion and removal, correctness-first
+and random construction, inverse/pseudoinverse, direct solves, QR/LQ- and
+SVD-backed orthogonalization, full/truncated Hermitian eigendecomposition,
+numerical structure predicates, monoidal-unit insertion and removal, correctness-first
 dense conversion, and JAX `jit` / `grad` smoke gates.

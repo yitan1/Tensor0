@@ -31,14 +31,6 @@ _STRIDED_INDICES_CACHE_MAXSIZE = 1_024
 _STRIDED_INDICES_CACHE: OrderedDict[_StridedIndicesCacheKey, Array] = OrderedDict()
 
 
-def subblock_indices(subblock: _native.SubblockStructure) -> Array:
-    return strided_indices(
-        tuple(subblock.sizes),
-        tuple(subblock.strides),
-        subblock.offset,
-    )
-
-
 def get_subblock(
     storage: object,
     subblock: _native.SubblockStructure,
@@ -235,6 +227,29 @@ def pack_blocks(
     if flat_blocks:
         return jnp.concatenate(tuple(flat_blocks), axis=0)
     return jnp.zeros((degeneracystructure.total_dim,), dtype=dtype)
+
+
+def _packed_sector_values(
+    space: _native.ElementarySpace,
+    sector_arrays: Mapping[tuple[int, ...], Array],
+    *,
+    dtype: DTypeLike | None,
+) -> Array:
+    flat_blocks: list[Array] = []
+    for sector, dim in space.sectors:
+        value = sector_arrays[sector]
+        actual_shape = tuple(getattr(value, "shape", ()))
+        expected_shape = (dim,)
+        if actual_shape != expected_shape:
+            raise ValueError(
+                f"sector vector block {sector} has shape {actual_shape}; "
+                f"expected {expected_shape}",
+            )
+        flat_blocks.append(jnp.reshape(value, (-1,)))
+
+    if flat_blocks:
+        return jnp.concatenate(tuple(flat_blocks), axis=0)
+    return jnp.zeros((0,), dtype=dtype)
 
 
 def normalize_fusiontree_pair_key(

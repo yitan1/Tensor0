@@ -15,6 +15,7 @@ from ..structure.spaces import (
     is_monomorphic,
     storage_dim,
 )
+from ._orthogonal import positive_qr
 from .tensor_map import TensorMap, from_blocks
 
 _TensorSpace = _native.ElementarySpace | _native.ProductSpace
@@ -86,6 +87,37 @@ def random_normal(
         dtype=dtype,
     )
     return TensorMap(target_space, data)
+
+
+def random_isometry(
+    key: Array,
+    codomain: _TensorSpace,
+    domain: _TensorSpace,
+    *,
+    dtype: DTypeLike | None = None,
+) -> TensorMap:
+    """Sample a blockwise random isometry from domain to codomain."""
+    codomain_product = _as_product_space(codomain, "codomain", "random_isometry")
+    domain_product = _as_product_space(domain, "domain", "random_isometry")
+    if not is_monomorphic(fuse(domain_product), fuse(codomain_product)):
+        raise ValueError(
+            "random_isometry() requires the domain to be monomorphic into "
+            "the codomain",
+        )
+    if dtype is not None:
+        normalized_dtype = jnp.dtype(dtype)
+        if not (
+            jnp.issubdtype(normalized_dtype, jnp.floating)
+            or jnp.issubdtype(normalized_dtype, jnp.complexfloating)
+        ):
+            raise ValueError("random_isometry() requires a float or complex dtype")
+
+    target = hom(codomain_product, domain_product)
+    sample = random_normal(key, target, dtype=dtype)
+    q_blocks = (
+        (coupled, positive_qr(block)[0]) for coupled, block in sample.blocks()
+    )
+    return from_blocks(target, q_blocks, dtype=sample.dtype)
 
 
 def _as_product_space(

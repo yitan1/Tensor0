@@ -9,18 +9,28 @@ from tensor0 import (
     TensorMap,
     U1Irrep,
     eigh_full,
+    eigh_trunc,
     from_blocks,
     from_dense,
     hom,
     identity,
+    inverse,
+    is_isometric,
+    is_positive_definite,
+    is_unitary,
     isometry,
     is_hermitian,
+    left_solve,
+    pseudoinverse,
     qr_compact,
+    random_isometry,
     random_normal,
+    right_solve,
     space,
     svd_compact,
     tensor_product,
     to_dense,
+    truncrank,
 )
 from tensor0.structure import get_degeneracystructure
 
@@ -130,6 +140,14 @@ def canonical_and_random_example():
         (embedding.adjoint() @ embedding).storage.data,
         unit.storage.data,
     )
+    random_embedding = random_isometry(
+        jax.random.key(1),
+        large,
+        small,
+        dtype=jnp.float32,
+    )
+    assert bool(is_isometric(random_embedding, rtol=1e-5, atol=1e-6))
+    assert bool(is_unitary(unit))
 
     product = tensor_product(unit, unit)
     assert product.codomain.spaces == (small, small)
@@ -154,9 +172,35 @@ def blockwise_factorization_example():
     _assert_allclose((q @ r).storage.data, tensor.storage.data)
 
     assert bool(is_hermitian(tensor))
+    assert bool(is_positive_definite(tensor))
+    tensor_inverse = inverse(tensor)
+    tensor_pseudoinverse = pseudoinverse(tensor)
+    unit = identity(factor, dtype=tensor.dtype)
+    _assert_allclose((tensor @ tensor_inverse).storage.data, unit.storage.data)
+    _assert_allclose(
+        (tensor @ tensor_pseudoinverse).storage.data,
+        unit.storage.data,
+    )
+    _assert_allclose(
+        (tensor @ left_solve(tensor, unit)).storage.data,
+        unit.storage.data,
+    )
+    _assert_allclose(
+        (right_solve(unit, tensor) @ tensor).storage.data,
+        unit.storage.data,
+    )
+
     eigenvalues, eigenvectors = eigh_full(tensor)
     reconstructed = eigenvectors @ eigenvalues @ eigenvectors.adjoint()
     _assert_allclose(reconstructed.storage.data, tensor.storage.data)
+
+    truncated_values, truncated_vectors = eigh_trunc(
+        tensor,
+        trunc=truncrank(1),
+    )
+    assert truncated_values.storage.data.shape == (1,)
+    projected = truncated_vectors @ truncated_values @ truncated_vectors.adjoint()
+    assert projected.space == tensor.space
 
 
 def jax_example():

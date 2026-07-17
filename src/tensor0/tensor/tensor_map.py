@@ -486,6 +486,21 @@ class TensorMap:
             result = jnp.logical_and(result, jnp.all(block == diagonal))
         return result
 
+    def inverse(self) -> TensorMap:
+        from .linalg import inverse
+
+        return inverse(self)
+
+    def pseudoinverse(
+        self,
+        *,
+        atol: float = 0.0,
+        rtol: float | None = None,
+    ) -> TensorMap:
+        from .linalg import pseudoinverse
+
+        return pseudoinverse(self, atol=atol, rtol=rtol)
+
     def __matmul__(self, other: object) -> TensorMap:
         if isinstance(other, DiagonalTensorMap):
             if self.space.domain != other.space.codomain:

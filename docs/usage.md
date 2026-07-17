@@ -143,6 +143,34 @@ assert c.space == hom((v,), (x,))
 For partial contractions, traces, named tensor networks, and integer-label
 networks, see the [contraction guide](contractions.md).
 
+## Inverse, Pseudoinverse, and Direct Solves
+
+`inverse(tensor)` and `tensor.inverse()` invert every square reduced block and
+return the reversed `HomSpace`. `pseudoinverse(tensor, *, atol=0.0, rtol=None)`
+and its method form also support rectangular maps and apply one global singular
+value cutoff. Both functional forms accept ordinary and diagonal tensor maps.
+
+Use direct solves when the goal is an equation rather than an inverse:
+
+```python
+from tensor0 import inverse, left_solve, right_solve
+
+operator_inverse = inverse(operator)
+x_left = left_solve(operator, rhs)   # operator @ x_left == rhs
+x_right = right_solve(lhs, operator) # x_right @ operator == lhs
+```
+
+The operator in either solve must be a blockwise square isomorphism. Both
+solves call JAX's linear solver directly on each reduced block; they do not
+form an explicit inverse. Singularity and nonsingularity are numerical
+preconditions, so traced execution follows JAX numerical behavior rather than
+raising data-dependent Python exceptions.
+
+Pseudoinverse rejects singular values at or below
+`max(atol, rtol * max(singular_values))`. If `rtol` is omitted, it is ten times
+the largest reduced block dimension times machine epsilon for the promoted
+real dtype. This policy is shared by ordinary and diagonal tensor maps.
+
 ## Morphism Constructors
 
 `identity(space, *, dtype=None)` constructs the identity on an elementary or
@@ -222,7 +250,9 @@ not attach this operation to an overloaded tensor-product operator.
 ## Explicit-Key Random Construction
 
 `random_normal(key, space, *, dtype=None)` samples the packed reduced storage
-of a `HomSpace` directly. Tensor0 passes the supplied key to exactly one
+of a `HomSpace` directly. `random_isometry(key, codomain, domain, *,
+dtype=None)` samples and blockwise orthogonalizes an isometric embedding while
+preserving the exact requested product-space partitions. Tensor0 passes the supplied key to exactly one
 `jax.random.normal` call without pre-splitting or mutating it, returning a
 replacement key, or reading global RNG state. JAX may internally split the key
 when implementing complex sampling:
@@ -231,7 +261,7 @@ when implementing complex sampling:
 import jax
 import jax.numpy as jnp
 
-from tensor0 import U1Irrep, equal, hom, random_normal, space
+from tensor0 import U1Irrep, equal, hom, is_isometric, random_isometry, random_normal, space
 
 factor = space(U1Irrep, {0: 2, 1: 1})
 target = hom((factor,), (factor,))
@@ -240,14 +270,20 @@ key = jax.random.key(0)
 sample = random_normal(key, target, dtype=jnp.complex64)
 repeated = random_normal(key, target, dtype=jnp.complex64)
 assert bool(equal(sample, repeated))
+
+large = space(U1Irrep, {0: 3, 1: 2})
+embedding = random_isometry(key, large, factor, dtype=jnp.float32)
+assert embedding.codomain.spaces == (large,)
+assert embedding.domain.spaces == (factor,)
+assert bool(is_isometric(embedding, rtol=1e-5, atol=1e-6))
 ```
 
 `dtype=None` follows `jax.random.normal`'s configured real default. An explicit
 complex dtype follows JAX's complex-normal semantics, and an empty `HomSpace`
 produces empty storage of the requested dtype. Capture the space and dtype in a
 jitted wrapper, for example `jax.jit(lambda key: random_normal(key, target))`,
-so the `HomSpace` remains static metadata. There is no `randn` alias, classmethod,
-implicit key, or global generator.
+so the spaces remain static metadata. There are no `randn` or `randisometry`
+aliases, classmethods, implicit keys, or global generators.
 
 ## Compact QR/LQ and Orthogonalization
 
@@ -310,16 +346,21 @@ diagonals; Tensor0 does not promise QR/LQ derivatives at rank deficiency.
 array. Its default check is exact; nonzero tolerances are always explicit.
 `eigh_vals(tensor)` returns a real `SectorVector`, and `eigh_full(tensor)`
 returns `(d, v)` with eigenvalues ordered within each sector and reconstruction
-`tensor == v @ d @ v.adjoint()`.
+`tensor == v @ d @ v.adjoint()`. `eigh_trunc(tensor, *, trunc=None)` returns the
+same `(d, v)` shape after selecting by absolute eigenvalue magnitude while
+preserving eigenvalue signs and JAX's ascending within-sector order.
 
 ```python
-from tensor0 import allclose, eigh_full, eigh_vals, is_hermitian
+from tensor0 import allclose, eigh_full, eigh_trunc, eigh_vals, is_hermitian, truncrank
 
 assert bool(is_hermitian(tensor, rtol=1e-5, atol=1e-6))
 values = eigh_vals(tensor)
 d, v = eigh_full(tensor)
 reconstructed = v @ d @ v.adjoint()
 assert bool(allclose(reconstructed, tensor, rtol=1e-5, atol=1e-6))
+
+truncated_d, truncated_v = eigh_trunc(tensor, trunc=truncrank(1))
+projected = truncated_v @ truncated_d @ truncated_v.adjoint()
 ```
 
 All three functions first require the static `TensorMap` space to be an
@@ -329,6 +370,14 @@ boolean, raise on data inside JIT, project, or symmetrize a non-Hermitian input.
 Eager callers that need validation should call
 `bool(is_hermitian(tensor, ...))` before decomposition; jitted callers can keep
 the predicate as a JAX scalar.
+
+`eigh_trunc` accepts the same rank, tolerance, error, space, and combined
+truncation strategies as `svd_trunc`, but intentionally does not return a
+discarded-weight error because signed Hermitian spectra need a separate error
+contract. Nontrivial strategies select value-dependent output shapes and must
+therefore run eagerly. The no-truncation path has fixed shapes and supports
+whole-function JIT; results selected eagerly remain ordinary JAX-compatible
+tensor maps for downstream jitted computation.
 
 Eigenvalue and eigenvector dtypes also follow JAX promotion: integer or boolean
 storage produces inexact eigenvectors and real inexact eigenvalues, including
@@ -375,9 +424,8 @@ assert s.codomain.spaces == (s.index_space,)
 diagonal-preserving arithmetic, adjoint, norm, inverse, and cutoff
 pseudoinverse. `to_tensor_map()` remains available for interoperability, but is
 not required for ordinary composition or SVD reconstruction. Pseudoinverse uses
-`max(atol, rtol * max(abs(values)))` and maps values at or below the cutoff to
-zero; both tolerances are non-negative. When omitted, `rtol` is
-`10 * max(shape) * eps` for the promoted real dtype.
+the shared ordinary/diagonal reduced-block cutoff described above and maps
+values at or below the cutoff to zero; both tolerances are non-negative.
 
 Use `svd_trunc(...)` with `notrunc()`, `truncrank(...)`, `trunctol(...)`,
 `truncspace(...)`, or `truncerror(...)` when a truncation strategy is needed.
@@ -387,22 +435,37 @@ with quantum-dimension weighting, and `cond` currently supports the 2-norm.
 ## Predicates and Comparison
 
 `TensorMap.dtype` and `DiagonalTensorMap.dtype` report the storage dtype.
-`is_diagonal(...)`, `equal(...)`, and `allclose(...)` return scalar JAX boolean
-arrays, so eager code may call `bool(...)` while jitted code keeps the result as
-an array. Exact comparison requires equal spaces, dtypes, and values.
+`is_diagonal(...)`, `is_isometric(...)`, `is_unitary(...)`,
+`is_positive_definite(...)`, `equal(...)`, and `allclose(...)` return scalar
+JAX boolean arrays, so eager code may call `bool(...)` while jitted code keeps
+the result as an array. Exact comparison requires equal spaces, dtypes, and values.
 Approximate comparison requires equal spaces, uses JAX numerical promotion, and
 requires both tolerances as keyword arguments:
 
 ```python
-from tensor0 import allclose, equal, is_diagonal
+from tensor0 import allclose, equal, is_diagonal, is_positive_definite, is_unitary
 
 diagonal_predicate = is_diagonal(s)
 same_values = allclose(reconstructed, tensor, rtol=1e-5, atol=1e-6)
 exact_copy = equal(tensor, tensor.copy())
+unitary_predicate = is_unitary(identity(s.index_space))
+positive_predicate = is_positive_definite(identity(s.index_space))
 ```
 
 Mixed ordinary/diagonal comparison uses mathematical tensor values. Neither
 comparison contract is attached to `TensorMap.__eq__`.
+
+`is_isometric(tensor, side="left")` checks `tensor.adjoint() @ tensor` against
+the domain identity. With `side="right"`, it checks
+`tensor @ tensor.adjoint()` against the codomain identity. The side is static
+configuration in jitted code, so capture it in a wrapper such as
+`jax.jit(lambda value: is_isometric(value, side="right"))`. A unitary checks
+both identities and first requires statically isomorphic spaces. A statically
+impossible relation returns scalar false without reading numerical storage.
+Positive definiteness requires an equal-space endomorphism and checks both
+Hermiticity and that every eigenvalue exceeds
+`max(atol, rtol * max(abs(eigenvalues)))`. Empty isometries, unitaries, and
+positive-definite endomorphisms use the explicit vacuous truth value `True`.
 
 ## Transforms
 

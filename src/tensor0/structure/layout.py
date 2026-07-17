@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Generic, TypeVar
 
 from .. import _native
+from .sector_dict import SectorDict
 
 # Sector structures depend only on visible sector labels; degeneracy structures also
 # depend on degeneracy dimensions.
@@ -20,6 +21,10 @@ _sectorstructure_cache: OrderedDict[
 _degeneracystructure_cache: OrderedDict[
     tuple[object, ...],
     _native.DegeneracyStructure,
+] = OrderedDict()
+_sector_slice_cache: OrderedDict[
+    tuple[object, ...],
+    SectorDict[slice],
 ] = OrderedDict()
 
 
@@ -105,9 +110,28 @@ def get_blockstructure(
     )
 
 
+def _sector_slices_for_space(
+    space: _native.ElementarySpace,
+) -> SectorDict[slice]:
+    key = ("sector-slices", space.sector_spec.static_key, space.sectors)
+    cached = _cache_get(_sector_slice_cache, key)
+    if cached is not None:
+        return cached
+
+    offset = 0
+    items: list[tuple[tuple[int, ...], slice]] = []
+    for sector, dim in space.sectors:
+        next_offset = offset + dim
+        items.append((sector, slice(offset, next_offset)))
+        offset = next_offset
+
+    return _cache_set(_sector_slice_cache, key, SectorDict(items))
+
+
 def _clear_layout_caches_for_tests() -> None:
     _sectorstructure_cache.clear()
     _degeneracystructure_cache.clear()
+    _sector_slice_cache.clear()
 
 
 def _get_sectorstructure(space: _native.HomSpace) -> _native.SectorStructure:

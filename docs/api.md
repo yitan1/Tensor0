@@ -60,6 +60,7 @@ against these lists.
 - `isomorphism`
 - `unitary`
 - `isometry`
+- `random_isometry`
 - `random_normal`
 - `diag`
 - `diagm`
@@ -84,6 +85,13 @@ against these lists.
 - `equal`
 - `allclose`
 - `tensor_product`
+- `inverse`
+- `pseudoinverse`
+- `left_solve`
+- `right_solve`
+- `is_isometric`
+- `is_unitary`
+- `is_positive_definite`
 
 ### Transforms
 
@@ -113,6 +121,7 @@ against these lists.
 - `right_orth`
 - `eigh_vals`
 - `eigh_full`
+- `eigh_trunc`
 - `is_hermitian`
 - `svd_vals`
 - `svd_compact`

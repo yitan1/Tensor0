@@ -19,6 +19,15 @@ from tensor0 import (
     zero_space,
 )
 from tensor0.structure import get_degeneracystructure
+from tensor0.tensor.linalg import (
+    inverse,
+    is_isometric,
+    is_positive_definite,
+    is_unitary,
+    left_solve,
+    pseudoinverse,
+    right_solve,
+)
 from tests.cases import (
     InaccessibleVectorData,
     assert_allclose,
@@ -63,6 +72,22 @@ def _tensor(target, dtype=jnp.float32):
 def _metadata_only_tensor(target):
     size = get_degeneracystructure(target).total_dim
     return TensorMap(target, InaccessibleVectorData(size))
+
+
+def _invertible_tensor(target, dtype=jnp.float32):
+    zero = TensorMap(
+        target,
+        jnp.zeros(get_degeneracystructure(target).total_dim, dtype=dtype),
+    )
+    blocks = {}
+    for index, (coupled, block) in enumerate(zero.blocks()):
+        values = jnp.arange(block.size, dtype=jnp.float32).reshape(block.shape)
+        values = values / max(block.size, 1)
+        values = values + (index + block.shape[0] + 1) * jnp.eye(block.shape[0])
+        if jnp.issubdtype(dtype, jnp.complexfloating):
+            values = values + 0.1j * values.T
+        blocks[coupled] = values.astype(dtype)
+    return tensor0.from_blocks(target, blocks, dtype=dtype)
 
 
 def _dense_contract(left, right, axes, output):
@@ -666,6 +691,384 @@ def test_tensormap_diagm_rejects_missing_unexpected_and_wrong_shape_blocks():
         {0: jnp.arange(2), 1: jnp.arange(0)},
     )
     assert_allclose(tensor.block(0), jnp.diag(jnp.arange(2)))
+
+
+# Inverse, pseudoinverse, and direct solves.
+
+
+@pytest.mark.parametrize(
+    ("sector_type", "sector_dims", "dtype"),
+    [
+        (U1Irrep, {0: 2, 1: 1}, jnp.float32),
+        (SU2Irrep, {0: 2, 1: 1}, jnp.float32),
+        (FermionParity, {0: 2, 1: 1}, jnp.float32),
+        (U1Irrep @ FermionParity, {(0, 0): 2, (1, 1): 1}, jnp.complex64),
+    ],
+    ids=["u1", "su2", "fermionic", "product-sector-complex"],
+)
+def test_inverse_matches_blockwise_oracle_and_two_sided_identities(
+    sector_type,
+    sector_dims,
+    dtype,
+):
+    factor = space(sector_type, sector_dims)
+    value = _invertible_tensor(hom((factor,), (factor,)), dtype=dtype)
+
+    result = inverse(value)
+
+    assert result.space == hom(value.domain, value.codomain)
+    for coupled, block in value.blocks():
+        assert_allclose(result.block(coupled), jnp.linalg.inv(block))
+        assert_allclose(block @ result.block(coupled), jnp.eye(block.shape[0]))
+        assert_allclose(result.block(coupled) @ block, jnp.eye(block.shape[0]))
+
+
+def test_inverse_preserves_reversed_multileg_product_space_metadata():
+    left = space(U1Irrep, {0: 1, 1: 1})
+    right = space(U1Irrep, {0: 1, -1: 1})
+    target = hom((left, right), (right, left))
+    value = _invertible_tensor(target)
+
+    result = value.inverse()
+
+    assert result.space == hom(target.domain, target.codomain)
+    assert result.codomain == target.domain
+    assert result.domain == target.codomain
+    assert_allclose((value @ result).storage.data, tensor0.identity(target.codomain).storage.data)
+    assert_allclose((result @ value).storage.data, tensor0.identity(target.domain).storage.data)
+
+
+def test_pseudoinverse_satisfies_moore_penrose_identities_and_cutoff():
+    codomain = space(U1Irrep, {0: 3, 1: 2})
+    domain = space(U1Irrep, {0: 2, 1: 3})
+    target = hom((codomain,), (domain,))
+    value = tensor0.from_blocks(
+        target,
+        {
+            0: jnp.asarray(
+                [[4.0, 0.0], [0.0, 0.1], [0.0, 0.0]],
+                dtype=jnp.float32,
+            ),
+            1: jnp.asarray(
+                [[1.0, 0.0, 0.0], [0.0, 2.0, 0.0]],
+                dtype=jnp.float32,
+            ),
+        },
+    )
+
+    result = pseudoinverse(value, atol=0.0, rtol=0.0)
+    cutoff_result = pseudoinverse(value, atol=0.2, rtol=0.0)
+
+    assert result.space == hom(target.domain, target.codomain)
+    assert_allclose(
+        cutoff_result.block(0),
+        jnp.asarray([[0.25, 0.0, 0.0], [0.0, 0.0, 0.0]]),
+    )
+    assert_allclose(
+        cutoff_result.block(1),
+        jnp.asarray([[1.0, 0.0], [0.0, 0.5], [0.0, 0.0]]),
+    )
+    assert_allclose((value @ result @ value).storage.data, value.storage.data)
+    assert_allclose((result @ value @ result).storage.data, result.storage.data)
+    assert_allclose(
+        (value @ result).adjoint().storage.data,
+        (value @ result).storage.data,
+    )
+    assert_allclose(
+        (result @ value).adjoint().storage.data,
+        (result @ value).storage.data,
+    )
+
+
+def test_inverse_and_pseudoinverse_cover_scalar_empty_diagonal_jit_and_grad():
+    scalar_space = hom((), (), sector_type=U1Irrep)
+    scalar = TensorMap(scalar_space, jnp.asarray([4.0], dtype=jnp.float32))
+    empty_factor = zero_space(U1Irrep)
+    empty = TensorMap(
+        hom((empty_factor,), (empty_factor,)),
+        jnp.zeros((0,), dtype=jnp.float32),
+    )
+    diagonal = tensor0.DiagonalTensorMap(
+        space(U1Irrep, {0: 2}),
+        jnp.asarray([2.0, 0.0], dtype=jnp.float32),
+    )
+
+    compiled_inverse = jax.jit(inverse)(scalar)
+    compiled_pseudoinverse = jax.jit(
+        lambda value: pseudoinverse(value, atol=0.0, rtol=0.0),
+    )(scalar)
+    gradient = jax.grad(
+        lambda value: jnp.sum(value.pseudoinverse(rtol=0.0).storage.data),
+    )(scalar)
+
+    assert_allclose(compiled_inverse.storage.data, jnp.asarray([0.25]))
+    assert_allclose(compiled_pseudoinverse.storage.data, jnp.asarray([0.25]))
+    assert_allclose(gradient.storage.data, jnp.asarray([-1.0 / 16.0]))
+    assert inverse(empty).storage.data.shape == (0,)
+    assert pseudoinverse(empty).storage.data.shape == (0,)
+    assert isinstance(inverse(diagonal), tensor0.DiagonalTensorMap)
+    assert_allclose(
+        pseudoinverse(diagonal, rtol=0.0).storage.data,
+        jnp.asarray([0.5, 0.0]),
+    )
+
+
+def test_pseudoinverse_default_rtol_matches_diagonal_reduced_blocks():
+    diagonal = tensor0.DiagonalTensorMap(
+        space(SU2Irrep, {0: 1, 2: 1}),
+        jnp.asarray([1.0, 2.0e-6], dtype=jnp.float32),
+    )
+
+    diagonal_result = pseudoinverse(diagonal)
+    ordinary_result = pseudoinverse(diagonal.to_tensor_map())
+
+    assert_allclose(
+        diagonal_result.to_tensor_map().storage.data,
+        ordinary_result.storage.data,
+    )
+    assert_allclose(diagonal_result.block(2), jnp.asarray([[5.0e5]]))
+
+
+def test_inverse_and_pseudoinverse_validate_before_numerical_storage_access():
+    codomain = space(U1Irrep, {0: 2})
+    domain = space(U1Irrep, {0: 3})
+    rectangular_space = hom((codomain,), (domain,))
+    rectangular = _metadata_only_tensor(rectangular_space)
+
+    with pytest.raises(ValueError, match="inverse.*isomorphic|square"):
+        inverse(rectangular)
+    with pytest.raises(ValueError, match="atol.*non-negative"):
+        pseudoinverse(rectangular, atol=-1.0)
+    with pytest.raises(ValueError, match="rtol.*non-negative"):
+        pseudoinverse(rectangular, rtol=-1.0)
+    with pytest.raises(TypeError, match="inverse.*TensorMap"):
+        inverse(object())  # pyright: ignore[reportArgumentType, reportCallIssue]
+    with pytest.raises(TypeError, match="pseudoinverse.*TensorMap"):
+        pseudoinverse(  # pyright: ignore[reportCallIssue]
+            object(),  # pyright: ignore[reportArgumentType]
+        )
+
+
+def test_left_and_right_solve_have_explicit_equation_orientations():
+    middle = space(U1Irrep, {0: 2, 1: 1})
+    right = space(U1Irrep, {0: 1, 1: 2})
+    left = space(U1Irrep, {0: 3, 1: 2})
+    operator = tensor0.from_blocks(
+        hom((middle,), (middle,)),
+        {
+            0: jnp.asarray([[2.0, 1.0], [0.0, 3.0]]),
+            1: jnp.asarray([[4.0]]),
+        },
+    )
+    rhs = _tensor(hom((middle,), (right,)))
+    lhs = _tensor(hom((left,), (middle,)))
+
+    left_result = left_solve(operator, rhs)
+    right_result = right_solve(lhs, operator)
+
+    assert left_result.space == hom(operator.domain, rhs.domain)
+    assert right_result.space == hom(lhs.codomain, operator.codomain)
+    assert_allclose((operator @ left_result).storage.data, rhs.storage.data)
+    assert_allclose((right_result @ operator).storage.data, lhs.storage.data)
+    for coupled, block in rhs.blocks():
+        assert_allclose(
+            left_result.block(coupled),
+            jnp.linalg.solve(operator.block(coupled), block),
+        )
+    for coupled, block in lhs.blocks():
+        assert_allclose(
+            right_result.block(coupled),
+            jnp.linalg.solve(operator.block(coupled).T, block.T).T,
+        )
+
+
+@pytest.mark.parametrize(
+    ("sector_type", "sector_dims"),
+    [
+        (SU2Irrep, {0: 2, 1: 1}),
+        (FermionParity, {0: 2, 1: 1}),
+        (U1Irrep @ FermionParity, {(0, 0): 2, (1, 1): 1}),
+    ],
+    ids=["su2", "fermionic", "product-sector"],
+)
+def test_direct_solves_cover_sector_families_jit_and_grad(
+    sector_type,
+    sector_dims,
+):
+    factor = space(sector_type, sector_dims)
+    target = hom((factor,), (factor,))
+    operator = _invertible_tensor(target)
+    rhs = _tensor(target)
+
+    left_result = jax.jit(left_solve)(operator, rhs)
+    right_result = jax.jit(right_solve)(rhs, operator)
+    gradient = jax.grad(
+        lambda value: jnp.sum(left_solve(operator, value).storage.data),
+    )(rhs)
+
+    assert_allclose((operator @ left_result).storage.data, rhs.storage.data)
+    assert_allclose((right_result @ operator).storage.data, rhs.storage.data)
+    assert bool(jnp.all(jnp.isfinite(gradient.storage.data)))
+
+
+def test_direct_solves_cover_scalar_and_empty_spaces():
+    scalar_space = hom((), (), sector_type=U1Irrep)
+    operator = TensorMap(scalar_space, jnp.asarray([2.0]))
+    rhs = TensorMap(scalar_space, jnp.asarray([6.0]))
+    empty_factor = zero_space(U1Irrep)
+    empty_space = hom((empty_factor,), (empty_factor,))
+    empty = TensorMap(empty_space, jnp.zeros((0,), dtype=jnp.float32))
+
+    assert_allclose(left_solve(operator, rhs).storage.data, jnp.asarray([3.0]))
+    assert_allclose(right_solve(rhs, operator).storage.data, jnp.asarray([3.0]))
+    assert left_solve(empty, empty).storage.data.shape == (0,)
+    assert right_solve(empty, empty).storage.data.shape == (0,)
+
+
+def test_direct_solves_validate_complete_equations_before_storage_access():
+    operator_factor = space(U1Irrep, {0: 2})
+    incompatible_factor = space(U1Irrep, {0: 3})
+    operator_space = hom((operator_factor,), (operator_factor,))
+    operator = _metadata_only_tensor(operator_space)
+    incompatible = _metadata_only_tensor(
+        hom((incompatible_factor,), (incompatible_factor,)),
+    )
+
+    with pytest.raises(ValueError, match="left_solve.*codomain"):
+        left_solve(operator, incompatible)
+    with pytest.raises(ValueError, match="right_solve.*domain"):
+        right_solve(incompatible, operator)
+    with pytest.raises(TypeError, match="left_solve.*TensorMap"):
+        left_solve(object(), incompatible)  # pyright: ignore[reportArgumentType]
+    with pytest.raises(TypeError, match="right_solve.*TensorMap"):
+        right_solve(incompatible, object())  # pyright: ignore[reportArgumentType]
+
+
+# Numerical structure predicates.
+
+
+def test_isometric_and_unitary_predicates_cover_embeddings_and_tolerances():
+    codomain = space(U1Irrep, {0: 3, 1: 2})
+    domain = space(U1Irrep, {0: 2, 1: 1})
+    embedding = tensor0.isometry(codomain, domain, dtype=jnp.float32)
+    square = tensor0.unitary(domain, domain, dtype=jnp.complex64)
+    perturbed = TensorMap(
+        square.space,
+        square.storage.data.at[0].add(1.0e-4),
+    )
+    coisometry = embedding.adjoint()
+
+    assert bool(is_isometric(embedding))
+    assert not bool(is_isometric(embedding, side="right"))
+    assert not bool(is_isometric(coisometry))
+    assert bool(is_isometric(coisometry, side="right"))
+    assert not bool(is_unitary(embedding))
+    assert bool(is_isometric(square))
+    assert bool(is_unitary(square))
+    assert not bool(is_unitary(perturbed))
+    assert bool(is_unitary(perturbed, atol=3.0e-4))
+
+
+def test_isometric_and_unitary_static_false_avoids_numerical_storage():
+    small = space(U1Irrep, {0: 1})
+    large = space(U1Irrep, {0: 2})
+    impossible_isometry = _metadata_only_tensor(hom((small,), (large,)))
+    impossible_coisometry = _metadata_only_tensor(hom((large,), (small,)))
+    nonisomorphic = _metadata_only_tensor(hom((small,), (large,)))
+
+    isometric = is_isometric(impossible_isometry)
+    coisometric = is_isometric(impossible_coisometry, side="right")
+    unitary = is_unitary(nonisomorphic)
+
+    assert isometric.shape == () and isometric.dtype == jnp.dtype(jnp.bool_)
+    assert coisometric.shape == () and coisometric.dtype == jnp.dtype(jnp.bool_)
+    assert unitary.shape == () and unitary.dtype == jnp.dtype(jnp.bool_)
+    assert not bool(isometric)
+    assert not bool(coisometric)
+    assert not bool(unitary)
+
+
+def test_positive_definite_checks_hermiticity_spectrum_and_cutoff():
+    factor = space(U1Irrep, {0: 2, 1: 1})
+    target = hom((factor,), (factor,))
+    positive = tensor0.from_blocks(
+        target,
+        {
+            0: jnp.asarray([[2.0, 0.5j], [-0.5j, 3.0]], dtype=jnp.complex64),
+            1: jnp.asarray([[0.1]], dtype=jnp.complex64),
+        },
+    )
+    indefinite = tensor0.from_blocks(
+        target,
+        {0: jnp.diag(jnp.asarray([1.0, -0.1])), 1: jnp.asarray([[2.0]])},
+    )
+    nonhermitian = tensor0.from_blocks(
+        target,
+        {0: jnp.asarray([[2.0, 1.0], [0.0, 3.0]]), 1: jnp.asarray([[1.0]])},
+    )
+
+    assert bool(is_positive_definite(positive))
+    assert not bool(is_positive_definite(positive, atol=0.2))
+    assert not bool(is_positive_definite(indefinite))
+    assert not bool(is_positive_definite(nonhermitian))
+
+
+def test_numerical_predicates_are_jittable_scalar_booleans_and_empty_true():
+    factor = space(SU2Irrep, {0: 1, 1: 1})
+    unitary_value = tensor0.unitary(factor, factor)
+    positive = tensor0.identity(factor)
+    empty_factor = zero_space(U1Irrep)
+    empty = TensorMap(
+        hom((empty_factor,), (empty_factor,)),
+        jnp.zeros((0,), dtype=jnp.float32),
+    )
+
+    results = (
+        jax.jit(is_isometric)(unitary_value),
+        jax.jit(lambda value: is_isometric(value, side="right"))(unitary_value),
+        jax.jit(is_unitary)(unitary_value),
+        jax.jit(is_positive_definite)(positive),
+        is_isometric(empty),
+        is_isometric(empty, side="right"),
+        is_unitary(empty),
+        is_positive_definite(empty),
+    )
+
+    assert all(result.shape == () for result in results)
+    assert all(result.dtype == jnp.dtype(jnp.bool_) for result in results)
+    assert all(bool(result) for result in results)
+
+
+def test_isometric_predicate_rejects_unknown_side():
+    value = _invertible_tensor(_u1_hom())
+
+    with pytest.raises(ValueError, match="side.*left.*right"):
+        is_isometric(
+            value,
+            side="center",  # pyright: ignore[reportArgumentType]
+        )
+
+
+@pytest.mark.parametrize(
+    "operation",
+    [is_isometric, is_unitary, is_positive_definite],
+)
+def test_numerical_predicates_reject_invalid_inputs_and_tolerances(operation):
+    value = _invertible_tensor(_u1_hom())
+
+    with pytest.raises(TypeError, match=rf"{operation.__name__}.*TensorMap"):
+        operation(object())
+    with pytest.raises(ValueError, match="atol.*non-negative"):
+        operation(value, atol=-1.0)
+    with pytest.raises(ValueError, match="rtol.*non-negative"):
+        operation(value, rtol=-1.0)
+
+
+def test_positive_definite_rejects_non_endomorphism_before_storage_access():
+    rectangular = _metadata_only_tensor(_u1_rectangular_hom())
+
+    with pytest.raises(ValueError, match="endomorphism"):
+        is_positive_definite(rectangular)
 
 
 # Composition.

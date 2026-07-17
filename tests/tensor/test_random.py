@@ -8,11 +8,16 @@ from tensor0 import (
     SU2Irrep,
     TensorMap,
     U1Irrep,
+    U1SU2Irrep,
+    fuse,
     hom,
     space,
     storage_dim,
+    zero_space,
 )
-from tensor0.tensor.constructors import random_normal
+import tensor0.tensor as tensor_api
+from tensor0.tensor.constructors import identity, random_isometry, random_normal
+from tests.cases import assert_allclose, float_data_for
 
 
 def _random_space_cases():
@@ -167,3 +172,197 @@ def test_random_normal_jit_captures_static_space_and_reuses_key_signature():
         ),
     )
     assert not bool(jnp.array_equal(first.storage.data, second.storage.data))
+
+
+def _random_isometry_space_cases():
+    return (
+        (
+            "u1",
+            space(U1Irrep, {0: 3, 1: 2}),
+            space(U1Irrep, {0: 2, 1: 1}),
+        ),
+        (
+            "su2",
+            space(SU2Irrep, {0: 3, 2: 2}),
+            space(SU2Irrep, {0: 2, 2: 1}),
+        ),
+        (
+            "fermionic",
+            space(FermionParity, {0: 3, 1: 2}),
+            space(FermionParity, {0: 2, 1: 1}),
+        ),
+        (
+            "product-sector",
+            space(U1SU2Irrep, {(0, 0): 3, (1, 1): 2}),
+            space(U1SU2Irrep, {(0, 0): 2, (1, 1): 1}),
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    ("_name", "codomain", "domain"),
+    _random_isometry_space_cases(),
+    ids=[name for name, _codomain, _domain in _random_isometry_space_cases()],
+)
+def test_random_isometry_preserves_homspace_and_is_isometric(
+    _name,
+    codomain,
+    domain,
+):
+    result = random_isometry(
+        jax.random.key(61),
+        codomain,
+        domain,
+        dtype=jnp.complex64,
+    )
+
+    assert result.space == hom((codomain,), (domain,))
+    assert result.dtype == jnp.dtype(jnp.complex64)
+    assert bool(
+        tensor_api.allclose(
+            result.adjoint() @ result,
+            identity(domain, dtype=jnp.complex64),
+            rtol=1e-5,
+            atol=1e-6,
+        ),
+    )
+
+
+def test_random_isometry_preserves_product_and_fused_partitions():
+    half = space(SU2Irrep, {1: 1})
+    product_domain = hom((half, half), ()).codomain
+    fused_codomain = space(SU2Irrep, {0: 2, 2: 2})
+
+    product_to_fused = random_isometry(
+        jax.random.key(62),
+        fused_codomain,
+        product_domain,
+    )
+    assert product_to_fused.space == hom((fused_codomain,), product_domain)
+    assert product_to_fused.space.domain == product_domain
+
+    factor = space(U1Irrep, {0: 2})
+    product_codomain = hom((factor, factor), ()).codomain
+    fused_domain = fuse(hom((factor,), ()).codomain)
+    fused_to_product = random_isometry(
+        jax.random.key(63),
+        product_codomain,
+        fused_domain,
+    )
+    assert fused_to_product.space == hom(product_codomain, (fused_domain,))
+    assert fused_to_product.space.codomain == product_codomain
+
+    for result, domain in (
+        (product_to_fused, product_domain),
+        (fused_to_product, fused_domain),
+    ):
+        assert bool(
+            tensor_api.allclose(
+                result.adjoint() @ result,
+                identity(domain),
+                rtol=1e-5,
+                atol=1e-6,
+            ),
+        )
+
+
+def test_random_isometry_uses_positive_qr_phase_convention():
+    codomain = space(U1Irrep, {0: 4, 1: 3})
+    domain = space(U1Irrep, {0: 3, 1: 2})
+    target = hom((codomain,), (domain,))
+    key = jax.random.key(64)
+    sample = random_normal(key, target, dtype=jnp.complex64)
+    result = random_isometry(key, codomain, domain, dtype=jnp.complex64)
+
+    remainder = result.adjoint() @ sample
+    for _coupled, block in remainder.blocks():
+        diagonal = jnp.diag(block)
+        assert_allclose(jnp.tril(block, -1), jnp.zeros_like(block))
+        assert_allclose(jnp.imag(diagonal), jnp.zeros_like(jnp.imag(diagonal)))
+        assert bool(jnp.all(jnp.real(diagonal) >= 0))
+
+
+@pytest.mark.parametrize("dtype", [None, jnp.float32, jnp.complex64])
+def test_random_isometry_is_reproducible_and_preserves_dtype(dtype):
+    codomain = space(U1Irrep, {0: 3})
+    domain = space(U1Irrep, {0: 2})
+    key = jax.random.key(65)
+    original_key_data = jax.random.key_data(key)
+
+    first = random_isometry(key, codomain, domain, dtype=dtype)
+    second = random_isometry(key, codomain, domain, dtype=dtype)
+    distinct = random_isometry(jax.random.key(66), codomain, domain, dtype=dtype)
+
+    expected_dtype = jax.random.normal(key, (), dtype=dtype).dtype
+    assert first.dtype == expected_dtype
+    assert bool(jnp.array_equal(first.storage.data, second.storage.data))
+    assert not bool(jnp.array_equal(first.storage.data, distinct.storage.data))
+    assert bool(jnp.array_equal(jax.random.key_data(key), original_key_data))
+
+
+def test_random_isometry_supports_scalar_and_zero_spaces():
+    scalar = hom((), (), sector_type=U1Irrep).codomain
+    zero = zero_space(U1Irrep)
+    key = jax.random.key(67)
+
+    scalar_result = random_isometry(key, scalar, scalar, dtype=jnp.complex64)
+    zero_result = random_isometry(key, zero, zero, dtype=jnp.float32)
+
+    assert scalar_result.space == hom(scalar, scalar)
+    assert_allclose(jnp.abs(scalar_result.scalar()), jnp.asarray(1, dtype=jnp.float32))
+    assert zero_result.space == hom((zero,), (zero,))
+    assert zero_result.storage.data.shape == (0,)
+    assert zero_result.dtype == jnp.dtype(jnp.float32)
+
+
+def test_random_isometry_validates_inputs_before_sampling(monkeypatch):
+    codomain = space(U1Irrep, {0: 2})
+    oversized_domain = space(U1Irrep, {0: 3})
+
+    def explode(*_args, **_kwargs):
+        raise AssertionError("random sampling must follow static validation")
+
+    monkeypatch.setattr(constructors_module.random, "normal", explode)
+
+    with pytest.raises(
+        TypeError,
+        match=r"random_isometry\(\).*codomain.*ElementarySpace or ProductSpace",
+    ):
+        random_isometry(
+            jax.random.key(0),
+            object(),  # pyright: ignore[reportArgumentType]
+            oversized_domain,
+        )
+    with pytest.raises(ValueError, match="domain to be monomorphic"):
+        random_isometry(jax.random.key(0), codomain, oversized_domain)
+    with pytest.raises(ValueError, match="float or complex dtype"):
+        random_isometry(
+            jax.random.key(0),
+            codomain,
+            codomain,
+            dtype=jnp.int32,
+        )
+
+
+def test_random_isometry_is_jittable_and_supports_downstream_gradients():
+    codomain = space(U1Irrep, {0: 3, 1: 2})
+    domain = space(U1Irrep, {0: 2, 1: 1})
+
+    @jax.jit
+    def build(key):
+        return random_isometry(key, codomain, domain, dtype=jnp.float32)
+
+    key = jax.random.key(68)
+    result = build(key)
+    eager = random_isometry(key, codomain, domain, dtype=jnp.float32)
+    assert bool(jnp.array_equal(result.storage.data, eager.storage.data))
+
+    operator_space = hom((domain,), (domain,))
+    data = float_data_for(operator_space)
+
+    def objective(storage):
+        operator = TensorMap(operator_space, storage)
+        transformed = result @ operator
+        return jnp.sum(transformed.storage.data**2)
+
+    assert_allclose(jax.grad(objective)(data), 2 * data)

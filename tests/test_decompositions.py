@@ -40,6 +40,7 @@ from tensor0 import (
     trunctol,
     zero_space,
 )
+from tensor0.factorizations.decompositions import eigh_trunc
 from tensor0.structure import get_blockstructure, get_degeneracystructure
 from tensor0.tensor.constructors import identity
 from tests.cases import (
@@ -682,6 +683,19 @@ def _hermitian_tensor(target: HomSpace, dtype: jnp.dtype) -> TensorMap:
     return from_blocks(target, blocks, dtype=dtype)
 
 
+def _known_signed_eigh_tensor() -> TensorMap:
+    factor = space(U1Irrep, {0: 3, 1: 2})
+    target = hom((factor,), (factor,))
+    return from_blocks(
+        target,
+        {
+            0: jnp.diag(jnp.asarray([-5.0, -1.0, 6.0], dtype=jnp.float32)),
+            1: jnp.diag(jnp.asarray([-4.0, 3.0], dtype=jnp.float32)),
+        },
+        dtype=jnp.float32,
+    )
+
+
 @pytest.mark.parametrize("case", _hermitian_cases(), ids=lambda case: case.name)
 @pytest.mark.parametrize("dtype", [jnp.float32, jnp.complex64], ids=["real", "complex"])
 def test_eigh_outputs_match_blockwise_jax_and_reconstruct(case, dtype):
@@ -721,6 +735,165 @@ def test_eigh_outputs_match_blockwise_jax_and_reconstruct(case, dtype):
     )
 
 
+@pytest.mark.parametrize(
+    ("strategy", "expected_sectors", "expected_blocks"),
+    [
+        (
+            None,
+            (((0,), 3), ((1,), 2)),
+            {(0,): (-5.0, -1.0, 6.0), (1,): (-4.0, 3.0)},
+        ),
+        (
+            truncrank(3),
+            (((0,), 2), ((1,), 1)),
+            {(0,): (-5.0, 6.0), (1,): (-4.0,)},
+        ),
+        (
+            trunctol(atol=4.0),
+            (((0,), 2), ((1,), 1)),
+            {(0,): (-5.0, 6.0), (1,): (-4.0,)},
+        ),
+        (
+            truncerror(atol=1.1),
+            (((0,), 2), ((1,), 2)),
+            {(0,): (-5.0, 6.0), (1,): (-4.0, 3.0)},
+        ),
+        (
+            truncspace(space(U1Irrep, {0: 1, 1: 1})),
+            (((0,), 1), ((1,), 1)),
+            {(0,): (6.0,), (1,): (-4.0,)},
+        ),
+        (
+            truncspace(space(U1Irrep, {0: 1, 1: 1}), rev=False),
+            (((0,), 1), ((1,), 1)),
+            {(0,): (-1.0,), (1,): (3.0,)},
+        ),
+        (
+            truncrank(4) & trunctol(atol=4.0),
+            (((0,), 2), ((1,), 1)),
+            {(0,): (-5.0, 6.0), (1,): (-4.0,)},
+        ),
+        (
+            truncrank(2) | trunctol(atol=4.0),
+            (((0,), 2), ((1,), 1)),
+            {(0,): (-5.0, 6.0), (1,): (-4.0,)},
+        ),
+    ],
+    ids=[
+        "none",
+        "rank",
+        "tolerance",
+        "error",
+        "space-largest",
+        "space-smallest",
+        "intersection",
+        "union",
+    ],
+)
+def test_eigh_trunc_selects_signed_magnitudes_without_reordering(
+    strategy,
+    expected_sectors,
+    expected_blocks,
+):
+    tensor = _known_signed_eigh_tensor()
+
+    diagonal, vectors = eigh_trunc(tensor, trunc=strategy)
+
+    assert diagonal.index_space.sectors == expected_sectors
+    assert not diagonal.index_space.is_dual
+    assert vectors.space == hom(tensor.codomain, (diagonal.index_space,))
+    for sector, expected in expected_blocks.items():
+        actual = diagonal.diag().block(sector)
+        assert_allclose(actual, jnp.asarray(expected, dtype=jnp.float32))
+        assert bool(jnp.all(actual[:-1] <= actual[1:]))
+
+    _assert_tensors_allclose(tensor @ vectors, vectors @ diagonal)
+
+
+@pytest.mark.parametrize("case", _hermitian_cases(), ids=lambda case: case.name)
+@pytest.mark.parametrize("dtype", [jnp.float32, jnp.complex64], ids=["real", "complex"])
+def test_eigh_trunc_matches_blockwise_jax_across_sector_families(case, dtype):
+    tensor = _hermitian_tensor(case.space, dtype)
+
+    diagonal, vectors = eigh_trunc(tensor, trunc=trunctol(atol=3.0))
+
+    expected_sectors = []
+    for coupled, block in tensor.blocks():
+        expected_values = jnp.linalg.eigvalsh(
+            block,
+            UPLO="L",
+            symmetrize_input=False,
+        )
+        retained = expected_values[jnp.abs(expected_values) >= 3.0]
+        if retained.size:
+            expected_sectors.append((coupled, int(retained.size)))
+            assert_allclose(diagonal.diag().block(coupled), retained)
+
+    assert diagonal.index_space.sectors == tuple(expected_sectors)
+    _assert_tensors_allclose(tensor @ vectors, vectors @ diagonal)
+
+
+@pytest.mark.parametrize(
+    ("rank_limit", "expected_sector", "expected_value"),
+    [(3, 2, 5.0), (2, 0, -4.0)],
+    ids=["keeps-weighted-largest", "skips-overweight-largest"],
+)
+def test_eigh_trunc_rank_uses_quantum_dimensions(
+    rank_limit,
+    expected_sector,
+    expected_value,
+):
+    factor = space(SU2Irrep, {0: 1, 2: 1})
+    target = hom((factor,), (factor,))
+    tensor = from_blocks(
+        target,
+        {
+            0: jnp.asarray([[-4.0]], dtype=jnp.float32),
+            2: jnp.asarray([[5.0]], dtype=jnp.float32),
+        },
+    )
+
+    diagonal, vectors = eigh_trunc(tensor, trunc=truncrank(rank_limit))
+
+    assert diagonal.index_space.sectors == (((expected_sector,), 1),)
+    assert_allclose(
+        diagonal.diag().block(expected_sector),
+        jnp.asarray([expected_value], dtype=jnp.float32),
+    )
+    _assert_tensors_allclose(tensor @ vectors, vectors @ diagonal)
+
+
+def test_eigh_trunc_notrunc_is_jittable_and_differentiable():
+    factor = space(U1Irrep, {0: 2})
+    target = hom((factor,), (factor,))
+    parameters = jnp.asarray([2.0, 0.5, 5.0], dtype=jnp.float32)
+
+    def objective(value):
+        block = jnp.asarray(
+            [[value[0], value[1]], [value[1], value[2]]],
+            dtype=jnp.float32,
+        )
+        tensor = from_blocks(target, {0: block}, dtype=jnp.float32)
+        diagonal, vectors = eigh_trunc(tensor)
+        reconstructed = vectors @ diagonal @ vectors.adjoint()
+        return jnp.sum(reconstructed.storage.data**2)
+
+    actual = jax.jit(jax.grad(objective))(parameters)
+    expected = jax.grad(
+        lambda value: value[0] ** 2 + 2 * value[1] ** 2 + value[2] ** 2
+    )(parameters)
+
+    assert_allclose(actual, expected)
+    assert bool(jnp.all(jnp.isfinite(actual)))
+
+
+def test_eigh_trunc_rejects_invalid_truncation_strategy():
+    tensor = _known_signed_eigh_tensor()
+
+    with pytest.raises(TypeError, match="truncation strategy expected"):
+        eigh_trunc(tensor, trunc=object())
+
+
 @pytest.mark.parametrize("scale", [0.0, 3.0], ids=["zero", "degenerate"])
 def test_zero_and_degenerate_spectra_are_stable_under_jit(scale):
     factor = space(U1Irrep, {0: 3, 1: 2})
@@ -735,6 +908,10 @@ def test_zero_and_degenerate_spectra_are_stable_under_jit(scale):
     eager_diagonal, eager_vectors = eigh_full(tensor)
     jitted_values = jax.jit(eigh_vals)(tensor)
     jitted_diagonal, jitted_vectors = jax.jit(eigh_full)(tensor)
+    truncated_diagonal, truncated_vectors = eigh_trunc(
+        tensor,
+        trunc=truncrank(2),
+    )
 
     assert_allclose(jitted_values.storage.data, eager_values.storage.data)
     assert_allclose(jitted_diagonal.storage.data, eager_diagonal.storage.data)
@@ -742,6 +919,11 @@ def test_zero_and_degenerate_spectra_are_stable_under_jit(scale):
     _assert_tensors_allclose(
         jitted_vectors @ jitted_diagonal @ jitted_vectors.adjoint(),
         tensor,
+    )
+    assert truncated_diagonal.index_space.sectors == (((0,), 2),)
+    _assert_tensors_allclose(
+        tensor @ truncated_vectors,
+        truncated_vectors @ truncated_diagonal,
     )
     assert bool(jax.jit(is_hermitian)(tensor))
 
@@ -756,6 +938,7 @@ def test_typed_zero_space_has_empty_outputs_and_is_hermitian_under_jit(dtype):
 
     values = jax.jit(eigh_vals)(tensor)
     diagonal, vectors = jax.jit(eigh_full)(tensor)
+    truncated_diagonal, truncated_vectors = jax.jit(eigh_trunc)(tensor)
 
     assert values.sectors == ()
     assert values.storage.data.shape == (0,)
@@ -765,6 +948,9 @@ def test_typed_zero_space_has_empty_outputs_and_is_hermitian_under_jit(dtype):
     assert diagonal.storage.data.dtype == value_dtype
     assert vectors.storage.data.shape == (0,)
     assert vectors.storage.data.dtype == vector_dtype
+    assert truncated_diagonal.index_space == diagonal.index_space
+    assert truncated_diagonal.storage.data.shape == (0,)
+    assert truncated_vectors.storage.data.shape == (0,)
     assert bool(jax.jit(is_hermitian)(tensor))
     _assert_tensors_allclose(vectors @ diagonal @ vectors.adjoint(), tensor)
 
@@ -797,13 +983,20 @@ def test_scalar_eigh_uses_unit_connecting_sector_and_real_values():
 
     values = eigh_vals(tensor)
     diagonal, vectors = eigh_full(tensor)
+    truncated_diagonal, truncated_vectors = eigh_trunc(tensor)
 
     assert values.sectors == (((0,), 1),)
     assert diagonal.index_space == fuse(tensor.domain)
     assert values.storage.data.dtype == jnp.float32
     assert diagonal.storage.data.dtype == jnp.float32
+    assert truncated_diagonal.index_space == diagonal.index_space
+    assert_allclose(truncated_diagonal.storage.data, diagonal.storage.data)
     assert_allclose(values.storage.data, jnp.asarray([3.0], dtype=jnp.float32))
     _assert_tensors_allclose(vectors @ diagonal @ vectors.adjoint(), tensor)
+    _assert_tensors_allclose(
+        truncated_vectors @ truncated_diagonal @ truncated_vectors.adjoint(),
+        tensor,
+    )
 
 
 def test_is_hermitian_has_exact_defaults_and_explicit_tolerances():
@@ -880,7 +1073,7 @@ def test_nondegenerate_hermitian_gradients_match_direct_reconstruction(decomposi
     assert bool(jnp.all(jnp.isfinite(actual)))
 
 
-@pytest.mark.parametrize("function", [eigh_vals, eigh_full, is_hermitian])
+@pytest.mark.parametrize("function", [eigh_vals, eigh_full, eigh_trunc, is_hermitian])
 def test_hermitian_factorizations_reject_non_endomorphisms(function):
     codomain = space(U1Irrep, {0: 2})
     domain = space(U1Irrep, {0: 3})
@@ -893,7 +1086,7 @@ def test_hermitian_factorizations_reject_non_endomorphisms(function):
         function(tensor)
 
 
-@pytest.mark.parametrize("function", [eigh_vals, eigh_full, is_hermitian])
+@pytest.mark.parametrize("function", [eigh_vals, eigh_full, eigh_trunc, is_hermitian])
 def test_hermitian_factorizations_reject_non_tensormaps(function):
     with pytest.raises(TypeError, match=f"{function.__name__}.*TensorMap"):
         function(object())

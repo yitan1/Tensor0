@@ -11,8 +11,9 @@ from jax.typing import DTypeLike
 
 from .. import _native
 from ..structure.layout import get_degeneracystructure, get_sectorstructure
-from ..structure.spaces import dim as space_dim, hom
-from .sector_vector import SectorVector, _space_dim
+from ..structure.spaces import dim as space_dim, hom, reduced_dim
+from ._tolerances import default_pseudoinverse_rtol, nonnegative_tolerance
+from .sector_vector import SectorVector
 from .storage import VectorStorage, _validate_vector_storage_data
 
 if TYPE_CHECKING:
@@ -32,7 +33,7 @@ class DiagonalTensorMap:
         if not isinstance(vector_storage, VectorStorage):
             vector_storage = VectorStorage(vector_storage)
 
-        _validate_vector_storage_data(vector_storage.data, _space_dim(index_space))
+        _validate_vector_storage_data(vector_storage.data, reduced_dim(index_space))
 
         object.__setattr__(self, "index_space", index_space)
         object.__setattr__(self, "storage", vector_storage)
@@ -270,19 +271,27 @@ class DiagonalTensorMap:
         """Return a cutoff pseudoinverse, rejecting values at or below tolerance.
 
         The cutoff is ``max(atol, rtol * max(abs(values)))``. When ``rtol`` is
-        omitted it is ``10 * max(shape) * eps`` for the promoted real dtype.
+        omitted it is ten times the largest reduced block dimension times
+        machine epsilon for the promoted real dtype.
         Rejected entries, including exact zeros, map to zero.
         """
-        atol_value = _nonnegative_tolerance(atol, "atol")
+        atol_value = nonnegative_tolerance(atol, "atol")
         values = jnp.asarray(
             self.storage.data,
             dtype=jnp.result_type(self.storage.data, 1.0),
         )
         real_dtype = jnp.abs(values).dtype
         if rtol is None:
-            rtol_value = 10 * max(self.shape, default=0) * jnp.finfo(real_dtype).eps
+            largest_block_dim = max(
+                (dimension for _sector, dimension in self.index_space.sectors),
+                default=0,
+            )
+            rtol_value = default_pseudoinverse_rtol(
+                real_dtype,
+                largest_block_dim,
+            )
         else:
-            rtol_value = _nonnegative_tolerance(rtol, "rtol")
+            rtol_value = nonnegative_tolerance(rtol, "rtol")
 
         magnitudes = jnp.abs(values)
         max_magnitude = jnp.max(
@@ -361,18 +370,6 @@ def _as_scalar_array(value: object, argument_name: str) -> Array:
     if scalar.shape != ():
         raise TypeError(f"{argument_name} must be a scalar")
     return scalar
-
-
-def _nonnegative_tolerance(value: SupportsFloat, argument_name: str) -> float:
-    if isinstance(value, bool):
-        raise TypeError(f"{argument_name} must be a non-negative float")
-    try:
-        result = float(value)
-    except (TypeError, ValueError, OverflowError):
-        raise TypeError(f"{argument_name} must be a non-negative float") from None
-    if not math.isfinite(result) or result < 0:
-        raise ValueError(f"{argument_name} must be a non-negative finite float")
-    return result
 
 
 def _max_abs_diagonal_entry(diagonal: DiagonalTensorMap) -> Array:

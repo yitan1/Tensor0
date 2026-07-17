@@ -11,12 +11,12 @@ Documentation: <https://yitan1.github.io/Tensor0/>
 - `space(...)`, typed scalar `hom(...)`, public `ProductSpace`, and a focused
   space-algebra facade.
 - `TensorMap` and structured `DiagonalTensorMap` storage backed by JAX arrays.
-- Block access, direct ordinary/diagonal composition, compact SVD, and
-  truncation helpers.
+- Block access, direct ordinary/diagonal composition, inverse, pseudoinverse,
+  oriented direct solves, compact SVD, and truncation helpers.
 - Canonical identity/isomorphism/unitary/isometry construction, explicit tensor
-  products, and random-normal construction with explicit JAX keys.
-- Compact QR/LQ- and SVD-backed orthogonalization plus Hermitian
-  eigendecomposition with blockwise JAX linear algebra.
+  products, and random-normal/random-isometry construction with explicit JAX keys.
+- Compact QR/LQ- and SVD-backed orthogonalization plus full and truncated
+  Hermitian eigendecomposition with blockwise JAX linear algebra.
 - `permute`, `braid`, `transpose`, and `repartition` transform helpers.
 - Symmetry-aware index `flip` and `twist`, binary `tensorcontract`, single-tensor
   `tensortrace`, named-label `contract`, and integer-label `ncon` operations.
