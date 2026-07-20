@@ -41,6 +41,7 @@ pub(crate) struct PyGenericTransformData {
 macro_rules! dispatch_twist_is_trivial {
     ($space:expr, $indices:expr) => {
         match $space.inner() {
+            HomSpaceInner::Trivial(hom) => core_twist_is_trivial(hom, $indices),
             HomSpaceInner::U1Irrep(hom) => core_twist_is_trivial(hom, $indices),
             HomSpaceInner::SU2Irrep(hom) => core_twist_is_trivial(hom, $indices),
             HomSpaceInner::FermionParity(hom) => core_twist_is_trivial(hom, $indices),
@@ -59,6 +60,9 @@ macro_rules! dispatch_twist_is_trivial {
 macro_rules! dispatch_twist_subblock_factors {
     ($space:expr, $structure:expr, $indices:expr, $inv:expr) => {
         match ($space.inner(), &$structure.inner) {
+            (HomSpaceInner::Trivial(hom), SectorStructureInner::Trivial(structure)) => {
+                core_twist_subblock_factors(hom, structure, $indices, $inv).map_err(core_err)
+            }
             (HomSpaceInner::U1Irrep(hom), SectorStructureInner::U1Irrep(structure)) => {
                 core_twist_subblock_factors(hom, structure, $indices, $inv).map_err(core_err)
             }
@@ -111,6 +115,12 @@ macro_rules! dispatch_matching_homspaces_and_structures {
             &$src_structure.inner,
             &$dst_structure.inner,
         ) {
+            (
+                HomSpaceInner::Trivial($src_hom),
+                HomSpaceInner::Trivial($dst_hom),
+                SectorStructureInner::Trivial($src_layout),
+                SectorStructureInner::Trivial($dst_layout),
+            ) => $body,
             (
                 HomSpaceInner::U1Irrep($src_hom),
                 HomSpaceInner::U1Irrep($dst_hom),

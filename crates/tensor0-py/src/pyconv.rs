@@ -78,6 +78,7 @@ pub(crate) fn tuple_from_usizes(py: Python<'_>, values: &[usize]) -> PyResult<Py
 
 pub(crate) fn sector_spec_static_key(py: Python<'_>, spec: &CoreSectorSpec) -> PyResult<Py<PyAny>> {
     match spec {
+        CoreSectorSpec::Trivial => Ok(("trivial",).into_pyobject(py)?.into_any().unbind()),
         CoreSectorSpec::Irrep {
             group: GroupSpec::U1,
         } => Ok(("irrep", ("u1",)).into_pyobject(py)?.into_any().unbind()),

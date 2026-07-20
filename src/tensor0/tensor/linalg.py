@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
+import math
 from typing import Any, Literal, SupportsFloat, overload
 
 from jax import Array
@@ -15,9 +16,11 @@ from ..structure.spaces import (
     hom,
     is_isomorphic,
     is_monomorphic,
+    sector_spec,
 )
 from ._blocks import pack_blocks
 from ._tolerances import default_pseudoinverse_rtol, nonnegative_tolerance
+from .dense import _trivial_dense_array
 from .diagonal import DiagonalTensorMap
 from .tensor_map import TensorMap
 
@@ -530,6 +533,9 @@ def _compose(left: TensorMap, right: TensorMap) -> TensorMap:
 
     result_space = hom(left.space.codomain, right.space.domain)
     dtype = jnp.result_type(left.storage.data, right.storage.data)
+    if sector_spec(left.space) == _native.Trivial:
+        return _trivial_compose_validated(left, right, result_space, dtype)
+
     left_blocks = SectorDict(left.blocks())
     right_blocks = SectorDict(right.blocks())
     result_blocks: list[tuple[tuple[int, ...], Array]] = []
@@ -548,6 +554,26 @@ def _compose(left: TensorMap, right: TensorMap) -> TensorMap:
             dtype=dtype,
         ),
     )
+
+
+def _trivial_compose_validated(
+    left: TensorMap,
+    right: TensorMap,
+    result_space: _native.HomSpace,
+    dtype: jnp.dtype,
+) -> TensorMap:
+    left_value = _trivial_dense_array(left)
+    right_value = _trivial_dense_array(right)
+    left_shape = (
+        math.prod(left_value.shape[: left.numout]),
+        math.prod(left_value.shape[left.numout :]),
+    )
+    right_shape = (
+        math.prod(right_value.shape[: right.numout]),
+        math.prod(right_value.shape[right.numout :]),
+    )
+    value = left_value.reshape(left_shape) @ right_value.reshape(right_shape)
+    return TensorMap(result_space, jnp.asarray(value, dtype=dtype).reshape(-1))
 
 
 def tensor_product(left: TensorMap, right: TensorMap) -> TensorMap:

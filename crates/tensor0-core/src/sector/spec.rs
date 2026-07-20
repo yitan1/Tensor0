@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{Result, Tensor0Error};
 
-use super::{EncodedSectorValue, FermionParity, SU2Irrep, Sector, U1Irrep};
+use super::{EncodedSectorValue, FermionParity, SU2Irrep, Sector, Trivial, U1Irrep};
 
 /// Built-in group families supported by v0 irreducible representations.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -24,6 +24,7 @@ pub enum GroupSpec {
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SectorSpec {
+    Trivial,
     Irrep { group: GroupSpec },
     FermionParity,
     Product { components: Vec<SectorSpec> },
@@ -68,6 +69,10 @@ impl<'a> EncodedValueCursor<'a> {
 }
 
 impl SectorSpec {
+    pub fn trivial() -> SectorSpec {
+        SectorSpec::Trivial
+    }
+
     pub fn u1() -> SectorSpec {
         SectorSpec::Irrep {
             group: GroupSpec::U1,
@@ -97,6 +102,7 @@ impl SectorSpec {
 
     pub fn canonicalize(self) -> Result<SectorSpec> {
         match self {
+            SectorSpec::Trivial => Ok(SectorSpec::Trivial),
             SectorSpec::Irrep {
                 group: GroupSpec::ZN { n },
             } => {
@@ -134,6 +140,9 @@ impl SectorSpec {
         cursor: &mut EncodedValueCursor<'_>,
     ) -> Result<EncodedSectorValue> {
         match self {
+            SectorSpec::Trivial => {
+                decode_sector::<Trivial>(cursor).map(|value| value.encode_value())
+            }
             SectorSpec::Irrep {
                 group: GroupSpec::U1,
             } => decode_sector::<U1Irrep>(cursor).map(|value| value.encode_value()),
@@ -161,6 +170,9 @@ impl SectorSpec {
 
     fn quantum_dim_from_cursor(&self, cursor: &mut EncodedValueCursor<'_>) -> Result<usize> {
         match self {
+            SectorSpec::Trivial => {
+                decode_sector::<Trivial>(cursor).map(|value| value.quantum_dim())
+            }
             SectorSpec::Irrep {
                 group: GroupSpec::U1,
             } => decode_sector::<U1Irrep>(cursor).map(|value| value.quantum_dim()),

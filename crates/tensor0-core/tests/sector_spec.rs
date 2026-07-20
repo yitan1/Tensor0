@@ -1,5 +1,5 @@
 use tensor0_core::error::Tensor0Error;
-use tensor0_core::sector::{EncodedSectorValue, Sector, SectorSpec, ZNIrrep};
+use tensor0_core::sector::{EncodedSectorValue, Sector, SectorSpec, Trivial, ZNIrrep};
 
 fn ev(xs: &[i64]) -> EncodedSectorValue {
     xs.iter().copied().collect()
@@ -49,6 +49,8 @@ fn assert_quantum_dim_bad_width(spec: SectorSpec, value: &[i64], expected: usize
 fn sector_spec_decodes_encoded_values_for_quantum_dim_and_canonicalization() {
     let u1_su2 = u1_su2_spec();
 
+    assert_quantum_dim(SectorSpec::trivial(), &[], 1);
+    assert_canonical_value(SectorSpec::trivial(), &[], &[]);
     assert_quantum_dim(SectorSpec::u1(), &[7], 1);
     assert_quantum_dim(SectorSpec::fermion_parity(), &[1], 1);
     assert_quantum_dim(z4_spec(), &[3], 1);
@@ -79,6 +81,7 @@ fn sector_spec_rejects_invalid_encoded_values() {
 fn sector_spec_rejects_bad_encoded_value_widths() {
     let product = u1_su2_spec();
 
+    assert_quantum_dim_bad_width(SectorSpec::trivial(), &[0], 0, 1);
     assert_quantum_dim_bad_width(z4_spec(), &[], 1, 0);
     assert_quantum_dim_bad_width(z4_spec(), &[1, 2], 1, 2);
     assert_quantum_dim_bad_width(product.clone(), &[4], 1, 0);
@@ -166,12 +169,31 @@ fn sector_spec_serde_uses_python_jax_metadata_shape() {
         }),
     );
     assert_eq!(
+        serde_json::to_value(SectorSpec::trivial()).unwrap(),
+        serde_json::json!({ "kind": "trivial" }),
+    );
+    assert_eq!(
         serde_json::to_value(SectorSpec::su2()).unwrap(),
         serde_json::json!({
             "kind": "irrep",
             "group": { "kind": "su2" }
         }),
     );
+}
+
+#[test]
+fn trivial_spec_roundtrips_and_differs_from_zn_one_metadata() {
+    let trivial = SectorSpec::trivial();
+    let zn_one = SectorSpec::zn(1).unwrap();
+    let encoded = serde_json::to_string(&trivial).unwrap();
+    let decoded: SectorSpec = serde_json::from_str(&encoded).unwrap();
+
+    assert_eq!(decoded, trivial);
+    assert_ne!(trivial, zn_one);
+    assert_eq!(Trivial::encoded_width(), 0);
+    assert_eq!(ZNIrrep::<1>::encoded_width(), 1);
+    assert_eq!(trivial.canonicalize_value(&[]).unwrap(), ev(&[]));
+    assert_eq!(zn_one.canonicalize_value(&[0]).unwrap(), ev(&[0]));
 }
 
 #[cfg(target_pointer_width = "64")]

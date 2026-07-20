@@ -1,16 +1,22 @@
+from collections import Counter
+
 import jax
 import jax.numpy as jnp
 import pytest
 
 import tensor0
 import tensor0.tensor as tensor_api
+import tensor0.tensor.linalg as linalg_module
 from tensor0 import (
+    ComplexSpace,
     FermionParity,
     SU2Irrep,
     SectorDict,
     TensorMap,
+    Trivial,
     U1Irrep,
     contract,
+    from_dense,
     hom,
     idx,
     space,
@@ -1277,3 +1283,243 @@ def test_tensor_product_rejects_invalid_operands_and_sector_mismatch():
 
     with pytest.raises(ValueError, match="same sector family"):
         tensor_product(left, right)
+
+
+def _forced_generic_trivial_composition(monkeypatch, left, right):
+    with monkeypatch.context() as context:
+        context.setattr(
+            linalg_module,
+            "sector_spec",
+            lambda _space: U1Irrep,
+        )
+        return left @ right
+
+
+def test_trivial_composition_rectangular_dual_complex_matches_generic_and_dense(
+    monkeypatch,
+):
+    output = (ComplexSpace(2), ComplexSpace(3, dual=True))
+    middle = (ComplexSpace(4), ComplexSpace(2, dual=True))
+    input_spaces = (ComplexSpace(5, dual=True),)
+    left_space = hom(output, middle)
+    right_space = hom(middle, input_spaces)
+    left_dense = (
+        jnp.arange(48, dtype=jnp.float32).reshape(2, 3, 4, 2)
+        * (1.0 + 0.25j)
+    )
+    right_dense = (
+        jnp.arange(40, dtype=jnp.float32).reshape(4, 2, 5)
+        * (1.0 - 0.5j)
+    )
+    left = from_dense(left_space, left_dense)
+    right = from_dense(right_space, right_dense)
+
+    result = left @ right
+    generic = _forced_generic_trivial_composition(monkeypatch, left, right)
+    expected = (left_dense.reshape(6, 8) @ right_dense.reshape(8, 5)).reshape(
+        2,
+        3,
+        5,
+    )
+
+    assert result.space == hom(output, input_spaces)
+    assert result.space == generic.space
+    assert result.storage.data.dtype == generic.storage.data.dtype
+    assert jnp.array_equal(result.storage.data, generic.storage.data)
+    assert jnp.array_equal(to_dense(result), expected)
+
+
+def test_trivial_composition_rank_zero_scalar_matches_generic(monkeypatch):
+    target = hom((), (), sector_type=Trivial)
+    left = TensorMap(target, jnp.asarray([2.0 + 3.0j], dtype=jnp.complex64))
+    right = TensorMap(target, jnp.asarray([4.0 - 0.5j], dtype=jnp.complex64))
+
+    direct = left @ right
+    generic = _forced_generic_trivial_composition(monkeypatch, left, right)
+
+    assert direct.space == target
+    assert direct.storage.data.shape == (1,)
+    assert jnp.array_equal(direct.storage.data, generic.storage.data)
+    assert jnp.array_equal(
+        direct.storage.data[0],
+        left.storage.data[0] * right.storage.data[0],
+    )
+
+
+def test_trivial_composition_vector_pair_returns_rank_zero(monkeypatch):
+    middle = ComplexSpace(3, dual=True)
+    left_values = jnp.asarray([1.0, 2.0, 3.0], dtype=jnp.float32)
+    right_values = jnp.asarray([4.0, 5.0, 6.0], dtype=jnp.float32)
+    left = TensorMap(hom((), (middle,)), left_values)
+    right = TensorMap(hom((middle,), ()), right_values)
+
+    direct = left @ right
+    generic = _forced_generic_trivial_composition(monkeypatch, left, right)
+
+    assert direct.numind == 0
+    assert direct.storage.data.shape == (1,)
+    assert jnp.array_equal(direct.storage.data, generic.storage.data)
+    assert jnp.array_equal(direct.storage.data[0], left_values @ right_values)
+
+
+@pytest.mark.parametrize(
+    ("out_dim", "middle_dim", "in_dim"),
+    [(2, 0, 3), (0, 2, 3), (2, 3, 0)],
+    ids=["zero-middle", "zero-output", "zero-input"],
+)
+def test_trivial_composition_zero_dimensions_match_generic(
+    monkeypatch,
+    out_dim,
+    middle_dim,
+    in_dim,
+):
+    output = ComplexSpace(out_dim)
+    middle = ComplexSpace(middle_dim)
+    input_space = ComplexSpace(in_dim)
+    left = TensorMap(
+        hom((output,), (middle,)),
+        jnp.arange(out_dim * middle_dim, dtype=jnp.float32),
+    )
+    right = TensorMap(
+        hom((middle,), (input_space,)),
+        jnp.arange(middle_dim * in_dim, dtype=jnp.float32),
+    )
+
+    direct = left @ right
+    generic = _forced_generic_trivial_composition(monkeypatch, left, right)
+
+    assert direct.space == generic.space
+    assert direct.storage.data.dtype == generic.storage.data.dtype
+    assert direct.storage.data.shape == (out_dim * in_dim,)
+    assert jnp.array_equal(direct.storage.data, generic.storage.data)
+
+
+@pytest.mark.parametrize(
+    ("left_dtype", "right_dtype"),
+    [
+        (jnp.bool_, jnp.bool_),
+        (jnp.int8, jnp.int16),
+        (jnp.int8, jnp.float32),
+    ],
+    ids=["bool", "narrow-integer", "mixed-integer-float"],
+)
+def test_trivial_composition_dtype_promotion_matches_generic(
+    monkeypatch,
+    left_dtype,
+    right_dtype,
+):
+    output = ComplexSpace(2)
+    middle = ComplexSpace(3)
+    input_space = ComplexSpace(2)
+    left_values = jnp.asarray([[1, 0, 1], [0, 1, 1]], dtype=left_dtype)
+    right_values = jnp.asarray([[1, 1], [0, 1], [1, 0]], dtype=right_dtype)
+    left = TensorMap(hom((output,), (middle,)), left_values.reshape(-1))
+    right = TensorMap(hom((middle,), (input_space,)), right_values.reshape(-1))
+
+    direct = left @ right
+    generic = _forced_generic_trivial_composition(monkeypatch, left, right)
+
+    assert direct.storage.data.dtype == generic.storage.data.dtype
+    assert direct.storage.data.dtype == jnp.result_type(left_values, right_values)
+    assert jnp.array_equal(direct.storage.data, generic.storage.data)
+
+
+def test_trivial_composition_rejects_incompatible_space_before_fast_path(monkeypatch):
+    left = TensorMap(
+        hom((ComplexSpace(2),), (ComplexSpace(3),)),
+        jnp.zeros((6,), dtype=jnp.float32),
+    )
+    right = TensorMap(
+        hom((ComplexSpace(4),), (ComplexSpace(5),)),
+        jnp.zeros((20,), dtype=jnp.float32),
+    )
+
+    def explode(*_args, **_kwargs):
+        raise AssertionError("invalid composition must not enter numerical execution")
+
+    monkeypatch.setattr(linalg_module, "_trivial_compose_validated", explode)
+
+    with pytest.raises(ValueError, match="spaces are not composable"):
+        _ = left @ right
+
+
+def test_trivial_composition_jit_vmap_and_grad_match_direct_matmul():
+    left_space = hom((ComplexSpace(2),), (ComplexSpace(3),))
+    right_space = hom((ComplexSpace(3),), (ComplexSpace(4),))
+    left = jnp.arange(6, dtype=jnp.float32).reshape(2, 3)
+    right = jnp.arange(12, dtype=jnp.float32).reshape(3, 4)
+
+    def run(left_value, right_value):
+        return (
+            TensorMap(left_space, left_value.reshape(-1))
+            @ TensorMap(right_space, right_value.reshape(-1))
+        ).storage.data
+
+    expected = (left @ right).reshape(-1)
+    left_batch = jnp.stack((left, left + 1))
+    right_batch = jnp.stack((right, right - 1))
+
+    assert jnp.array_equal(jax.jit(run)(left, right), expected)
+    assert jnp.array_equal(
+        jax.vmap(run)(left_batch, right_batch),
+        jax.vmap(lambda x, y: (x @ y).reshape(-1))(left_batch, right_batch),
+    )
+    assert jnp.array_equal(
+        jax.grad(lambda value: jnp.sum(run(value, right) ** 2))(left),
+        jax.grad(lambda value: jnp.sum((value @ right) ** 2))(left),
+    )
+
+
+def test_trivial_composition_execution_bypasses_generic_block_metadata(monkeypatch):
+    left = TensorMap(
+        hom((ComplexSpace(2),), (ComplexSpace(3),)),
+        jnp.arange(6, dtype=jnp.float32),
+    )
+    right = TensorMap(
+        hom((ComplexSpace(3),), (ComplexSpace(4),)),
+        jnp.arange(12, dtype=jnp.float32),
+    )
+
+    def explode(*_args, **_kwargs):
+        raise AssertionError("Trivial composition must not request block metadata")
+
+    monkeypatch.setattr(TensorMap, "blocks", explode)
+    monkeypatch.setattr(linalg_module, "get_sectorstructure", explode)
+    monkeypatch.setattr(linalg_module, "SectorDict", explode)
+    monkeypatch.setattr(linalg_module, "pack_blocks", explode)
+
+    result = left @ right
+
+    assert jnp.array_equal(
+        result.storage.data,
+        (
+            left.storage.data.reshape(2, 3)
+            @ right.storage.data.reshape(3, 4)
+        ).reshape(-1),
+    )
+
+
+def test_trivial_validated_composition_jaxpr_has_one_direct_dot():
+    left_space = hom((ComplexSpace(2),), (ComplexSpace(3),))
+    right_space = hom((ComplexSpace(3),), (ComplexSpace(4),))
+    result_space = hom((ComplexSpace(2),), (ComplexSpace(4),))
+    left = jnp.arange(6, dtype=jnp.float32)
+    right = jnp.arange(12, dtype=jnp.float32)
+
+    equations = jax.make_jaxpr(
+        lambda left_data, right_data: linalg_module._trivial_compose_validated(
+            TensorMap(left_space, left_data),
+            TensorMap(right_space, right_data),
+            result_space,
+            jnp.dtype(jnp.float32),
+        ).storage.data,
+    )(left, right).jaxpr.eqns
+    primitives = Counter(equation.primitive.name for equation in equations)
+
+    assert primitives["dot_general"] == 1
+    assert not primitives.keys() & {
+        "broadcast_in_dim",
+        "mul",
+        "scatter-add",
+        "slice",
+    }

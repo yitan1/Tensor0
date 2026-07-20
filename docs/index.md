@@ -11,7 +11,7 @@ evolving, and Tensor0 is not yet a production-ready tensor-network framework.
 - [Usage Guide](usage.md): current public API examples and boundaries.
 - [Contractions](contractions.md): primitive and tensor-network contraction
   interfaces.
-- `examples/basic_usage.py`: executable public example covered by pytest.
+- `examples/basic_usage.py`: executable ordinary and symmetric tensor example.
 - `examples/contractions.py`: executable contraction and JAX example.
 
 ## Current Scope
@@ -22,4 +22,5 @@ contractions, deterministic morphism constructors, explicit tensor products
 and random construction, inverse/pseudoinverse, direct solves, QR/LQ- and
 SVD-backed orthogonalization, full/truncated Hermitian eigendecomposition,
 numerical structure predicates, monoidal-unit insertion and removal, correctness-first
-dense conversion, and JAX `jit` / `grad` smoke gates.
+dense conversion for symmetric sectors, direct immutable array execution for
+Trivial tensors, and JAX `jit` / `grad` smoke gates.

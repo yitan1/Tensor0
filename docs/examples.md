@@ -10,8 +10,9 @@ uv run python examples/basic_usage.py
 uv run python examples/contractions.py
 ```
 
-The example covers:
+The basic usage example covers:
 
+- ordinary dense tensors built with `Vect(dim)`,
 - layout and storage construction,
 - dense roundtrip checks,
 - blockwise composition,

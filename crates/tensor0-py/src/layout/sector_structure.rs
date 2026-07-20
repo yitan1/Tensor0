@@ -1,5 +1,6 @@
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
+use pyo3::sync::PyOnceLock;
 use pyo3::types::{PyAny, PyTuple};
 use pyo3::IntoPyObject;
 use tensor0_core::fusion_tree::{FusionTree, FusionTreePair};
@@ -8,7 +9,8 @@ use tensor0_core::layout::{
 };
 use tensor0_core::sector::{
     FermionNumber, FermionParity, FermionParitySU2Irrep, FermionParityU1Irrep,
-    FermionParityU1SU2Irrep, SU2Irrep, Sector, U1Irrep, U1SU2Irrep, Z2Irrep, Z3Irrep, Z4Irrep,
+    FermionParityU1SU2Irrep, SU2Irrep, Sector, Trivial, U1Irrep, U1SU2Irrep, Z2Irrep, Z3Irrep,
+    Z4Irrep,
 };
 use tensor0_core::space::HomSpace;
 
@@ -20,13 +22,14 @@ use crate::pyconv::{core_err, sector_key_from_py, sectors_tuple_py};
 use crate::space::{HomSpaceInner, PyHomSpace};
 
 #[pyclass(name = "SectorStructure", skip_from_py_object)]
-#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PySectorStructure {
     pub(crate) inner: SectorStructureInner,
+    blocksectors: PyOnceLock<Py<PyAny>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum SectorStructureInner {
+    Trivial(SectorStructure<Trivial>),
     U1Irrep(SectorStructure<U1Irrep>),
     SU2Irrep(SectorStructure<SU2Irrep>),
     FermionParity(SectorStructure<FermionParity>),
@@ -43,6 +46,9 @@ pub(crate) enum SectorStructureInner {
 impl SectorStructureInner {
     fn from_hom(space: &HomSpaceInner) -> PyResult<Self> {
         match space {
+            HomSpaceInner::Trivial(hom) => core_build_sector_structure(hom)
+                .map(SectorStructureInner::Trivial)
+                .map_err(core_err),
             HomSpaceInner::U1Irrep(hom) => core_build_sector_structure(hom)
                 .map(SectorStructureInner::U1Irrep)
                 .map_err(core_err),
@@ -81,6 +87,9 @@ impl SectorStructureInner {
 
     fn blocksectors_py(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         match self {
+            SectorStructureInner::Trivial(structure) => {
+                sectors_tuple_py(py, structure.blocksectors())
+            }
             SectorStructureInner::U1Irrep(structure) => {
                 sectors_tuple_py(py, structure.blocksectors())
             }
@@ -119,6 +128,9 @@ impl SectorStructureInner {
 
     fn fusiontree_pairs_py(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         match self {
+            SectorStructureInner::Trivial(structure) => {
+                fusiontree_pairs_py(py, structure.fusiontree_pairs(), FusionTreeInner::Trivial)
+            }
             SectorStructureInner::U1Irrep(structure) => {
                 fusiontree_pairs_py(py, structure.fusiontree_pairs(), FusionTreeInner::U1Irrep)
             }
@@ -169,6 +181,9 @@ impl SectorStructureInner {
 
     fn static_key_py(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         match self {
+            SectorStructureInner::Trivial(structure) => {
+                sector_structure_static_key_py(py, structure)
+            }
             SectorStructureInner::U1Irrep(structure) => {
                 sector_structure_static_key_py(py, structure)
             }
@@ -207,6 +222,7 @@ impl SectorStructureInner {
 
     fn blocksector_index_py(&self, sector: &Bound<'_, PyAny>) -> PyResult<Option<usize>> {
         match self {
+            SectorStructureInner::Trivial(structure) => blocksector_index_py(structure, sector),
             SectorStructureInner::U1Irrep(structure) => blocksector_index_py(structure, sector),
             SectorStructureInner::SU2Irrep(structure) => blocksector_index_py(structure, sector),
             SectorStructureInner::FermionParity(structure) => {
@@ -233,6 +249,7 @@ impl SectorStructureInner {
 
     fn fusiontree_pair_count(&self) -> usize {
         match self {
+            SectorStructureInner::Trivial(structure) => structure.fusiontree_pair_count(),
             SectorStructureInner::U1Irrep(structure) => structure.fusiontree_pair_count(),
             SectorStructureInner::SU2Irrep(structure) => structure.fusiontree_pair_count(),
             SectorStructureInner::FermionParity(structure) => structure.fusiontree_pair_count(),
@@ -257,6 +274,9 @@ impl SectorStructureInner {
 
     fn fusiontree_pair_at_py(&self, py: Python<'_>, index: usize) -> PyResult<Option<Py<PyAny>>> {
         match self {
+            SectorStructureInner::Trivial(structure) => {
+                fusiontree_pair_at_py(py, structure, index, FusionTreeInner::Trivial)
+            }
             SectorStructureInner::U1Irrep(structure) => {
                 fusiontree_pair_at_py(py, structure, index, FusionTreeInner::U1Irrep)
             }
@@ -298,6 +318,11 @@ impl SectorStructureInner {
 
     fn fusiontree_pair_index(&self, row: &FusionTreeInner, col: &FusionTreeInner) -> Option<usize> {
         match (self, row, col) {
+            (
+                SectorStructureInner::Trivial(structure),
+                FusionTreeInner::Trivial(row),
+                FusionTreeInner::Trivial(col),
+            ) => fusiontree_pair_index(structure, row, col),
             (
                 SectorStructureInner::U1Irrep(structure),
                 FusionTreeInner::U1Irrep(row),
@@ -361,7 +386,10 @@ impl SectorStructureInner {
 #[pyfunction]
 pub(crate) fn build_sectorstructure(space: PyRef<'_, PyHomSpace>) -> PyResult<PySectorStructure> {
     let inner = SectorStructureInner::from_hom(space.inner())?;
-    Ok(PySectorStructure { inner })
+    Ok(PySectorStructure {
+        inner,
+        blocksectors: PyOnceLock::new(),
+    })
 }
 
 #[pyfunction]
@@ -371,6 +399,9 @@ pub(crate) fn unique_fusiontree_pair_index(
     visible_sectors: &Bound<'_, PyTuple>,
 ) -> PyResult<Option<usize>> {
     match (space.inner(), &sectorstructure.inner) {
+        (HomSpaceInner::Trivial(hom), SectorStructureInner::Trivial(structure)) => {
+            unique_fusiontree_pair_index_py(hom, structure, visible_sectors)
+        }
         (HomSpaceInner::U1Irrep(hom), SectorStructureInner::U1Irrep(structure)) => {
             unique_fusiontree_pair_index_py(hom, structure, visible_sectors)
         }
@@ -418,7 +449,9 @@ pub(crate) fn unique_fusiontree_pair_index(
 impl PySectorStructure {
     #[getter]
     fn blocksectors(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        self.inner.blocksectors_py(py)
+        self.blocksectors
+            .get_or_try_init(py, || self.inner.blocksectors_py(py))
+            .map(|blocksectors| blocksectors.clone_ref(py))
     }
 
     #[getter]

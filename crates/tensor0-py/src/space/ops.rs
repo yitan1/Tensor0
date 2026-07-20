@@ -1,11 +1,10 @@
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyAny;
-use tensor0_core::layout::build_degeneracy_structure;
 use tensor0_core::sector::{
     FermionNumber, FermionParity, FermionParitySU2Irrep, FermionParityU1Irrep,
-    FermionParityU1SU2Irrep, GroupSpec, SU2Irrep, Sector, SectorSpec as CoreSectorSpec, U1Irrep,
-    U1SU2Irrep, Z2Irrep, Z3Irrep, Z4Irrep,
+    FermionParityU1SU2Irrep, GroupSpec, SU2Irrep, Sector, SectorSpec as CoreSectorSpec, Trivial,
+    U1Irrep, U1SU2Irrep, Z2Irrep, Z3Irrep, Z4Irrep,
 };
 use tensor0_core::space::{supremum_space as core_supremum_space, GradedSpace};
 
@@ -13,12 +12,14 @@ use crate::pyconv::core_err;
 use crate::sector_type::PySectorSpec;
 
 use super::graded::{GradedSpaceInner, PyElementarySpace};
-use super::hom::{HomSpaceInner, PyHomSpace};
 use super::product::{ProductSpaceInner, PyProductSpace};
 
 macro_rules! dispatch_binary_space_result {
     ($left:expr, $right:expr, $operation:path, $name:literal) => {
         match ($left, $right) {
+            (GradedSpaceInner::Trivial(left), GradedSpaceInner::Trivial(right)) => {
+                $operation(left, right).map(GradedSpaceInner::Trivial)
+            }
             (GradedSpaceInner::U1Irrep(left), GradedSpaceInner::U1Irrep(right)) => {
                 $operation(left, right).map(GradedSpaceInner::U1Irrep)
             }
@@ -70,6 +71,9 @@ macro_rules! dispatch_binary_space_result {
 macro_rules! dispatch_binary_space_predicate {
     ($left:expr, $right:expr, $method:ident) => {
         match ($left, $right) {
+            (GradedSpaceInner::Trivial(left), GradedSpaceInner::Trivial(right)) => {
+                left.$method(right)
+            }
             (GradedSpaceInner::U1Irrep(left), GradedSpaceInner::U1Irrep(right)) => {
                 left.$method(right)
             }
@@ -128,25 +132,6 @@ pub(crate) fn dim(space: &Bound<'_, PyAny>) -> PyResult<usize> {
 #[pyfunction]
 pub(crate) fn reduced_dim(space: PyRef<'_, PyElementarySpace>) -> usize {
     elementary_reduced_dim(&space.inner)
-}
-
-#[pyfunction]
-pub(crate) fn storage_dim(space: PyRef<'_, PyHomSpace>) -> PyResult<usize> {
-    let structure = match space.inner() {
-        HomSpaceInner::U1Irrep(space) => build_degeneracy_structure(space),
-        HomSpaceInner::SU2Irrep(space) => build_degeneracy_structure(space),
-        HomSpaceInner::FermionParity(space) => build_degeneracy_structure(space),
-        HomSpaceInner::Z2Irrep(space) => build_degeneracy_structure(space),
-        HomSpaceInner::Z3Irrep(space) => build_degeneracy_structure(space),
-        HomSpaceInner::Z4Irrep(space) => build_degeneracy_structure(space),
-        HomSpaceInner::U1IrrepFermionParity(space) => build_degeneracy_structure(space),
-        HomSpaceInner::FermionParityU1Irrep(space) => build_degeneracy_structure(space),
-        HomSpaceInner::U1SU2Irrep(space) => build_degeneracy_structure(space),
-        HomSpaceInner::FermionParitySU2Irrep(space) => build_degeneracy_structure(space),
-        HomSpaceInner::FermionParityU1SU2Irrep(space) => build_degeneracy_structure(space),
-    }
-    .map_err(core_err)?;
-    Ok(structure.total_dim)
 }
 
 #[pyfunction(signature = (sector_spec, is_dual=false))]
@@ -209,6 +194,7 @@ pub(crate) fn is_epimorphic(
 
 fn elementary_dim(space: &GradedSpaceInner) -> usize {
     match space {
+        GradedSpaceInner::Trivial(space) => space.dim(),
         GradedSpaceInner::U1Irrep(space) => space.dim(),
         GradedSpaceInner::SU2Irrep(space) => space.dim(),
         GradedSpaceInner::FermionParity(space) => space.dim(),
@@ -225,6 +211,7 @@ fn elementary_dim(space: &GradedSpaceInner) -> usize {
 
 fn elementary_reduced_dim(space: &GradedSpaceInner) -> usize {
     match space {
+        GradedSpaceInner::Trivial(space) => space.reduced_dim(),
         GradedSpaceInner::U1Irrep(space) => space.reduced_dim(),
         GradedSpaceInner::SU2Irrep(space) => space.reduced_dim(),
         GradedSpaceInner::FermionParity(space) => space.reduced_dim(),
@@ -241,6 +228,7 @@ fn elementary_reduced_dim(space: &GradedSpaceInner) -> usize {
 
 fn product_dim(space: &ProductSpaceInner) -> usize {
     match space {
+        ProductSpaceInner::Trivial(space) => space.dim(),
         ProductSpaceInner::U1Irrep(space) => space.dim(),
         ProductSpaceInner::SU2Irrep(space) => space.dim(),
         ProductSpaceInner::FermionParity(space) => space.dim(),
@@ -264,6 +252,11 @@ fn core_direct_sum<I: Sector>(
 
 fn canonical_space(spec: &CoreSectorSpec, is_dual: bool, unit: bool) -> PyResult<GradedSpaceInner> {
     match spec.clone().canonicalize().map_err(core_err)? {
+        CoreSectorSpec::Trivial => Ok(canonical_space_variant::<Trivial>(
+            is_dual,
+            unit,
+            GradedSpaceInner::Trivial,
+        )),
         CoreSectorSpec::Irrep {
             group: GroupSpec::U1,
         } => Ok(canonical_space_variant::<U1Irrep>(

@@ -6,8 +6,9 @@ Documentation: <https://yitan1.github.io/Tensor0/>
 
 ## Features
 
-- Built-in sector families including `U1Irrep`, `SU2Irrep`, cyclic `ZNIrrep`
-  aliases, fermion parity, and selected product-sector aliases.
+- Built-in sector families including no-symmetry `Trivial`, `U1Irrep`,
+  `SU2Irrep`, cyclic `ZNIrrep` aliases, fermion parity, and selected
+  product-sector aliases.
 - `space(...)`, typed scalar `hom(...)`, public `ProductSpace`, and a focused
   space-algebra facade.
 - `TensorMap` and structured `DiagonalTensorMap` storage backed by JAX arrays.
@@ -20,7 +21,8 @@ Documentation: <https://yitan1.github.io/Tensor0/>
 - `permute`, `braid`, `transpose`, and `repartition` transform helpers.
 - Symmetry-aware index `flip` and `twist`, binary `tensorcontract`, single-tensor
   `tensortrace`, named-label `contract`, and integer-label `ncon` operations.
-- `to_dense(...)` and `from_dense(...)` for small correctness checks.
+- Direct immutable dense-array conversion for Trivial tensors and
+  correctness-first dense conversion for other supported sectors.
 - JAX `jit` and `grad` support through pytree registration.
 
 ## Installation

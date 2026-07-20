@@ -4,13 +4,16 @@ import pytest
 
 import tensor0.tensor as tensor_api
 from tensor0 import (
+    ComplexSpace,
     DiagonalTensorMap,
     FermionParity,
     SU2Irrep,
     TensorMap,
+    Trivial,
     U1Irrep,
     contract,
     flip,
+    from_dense,
     hom,
     idx,
     insertleftunit,
@@ -23,8 +26,10 @@ from tensor0 import (
     space,
     tensorcontract,
     tensortrace,
+    to_dense,
     twist,
 )
+from tensor0.structure import dim, get_sectorstructure
 from tests.cases import assert_allclose, float_data_for
 
 
@@ -708,3 +713,98 @@ def test_jitted_grad_through_unit_insertion_is_storage_identity():
     assert compiled.space == tensor.space
     assert_allclose(eager.storage.data, weights)
     assert_allclose(compiled.storage.data, weights)
+
+
+def test_trivial_rank_zero_hom_preserves_family_layout_and_pytree_metadata():
+    target = hom((), (), sector_type=Trivial)
+    tensor = from_dense(target, jnp.asarray(3.0, dtype=jnp.float32))
+    sectorstructure = get_sectorstructure(target)
+    row_tree, col_tree = sectorstructure.fusiontree_pairs[0]
+
+    assert target.codomain.sector_spec == Trivial
+    assert target.domain.sector_spec == Trivial
+    assert target.numind == 0
+    assert sectorstructure.blocksectors == ((),)
+    assert row_tree.uncoupled == col_tree.uncoupled == ()
+    assert row_tree.coupled == col_tree.coupled == ()
+    assert tensor.storage.data.shape == (1,)
+    assert to_dense(tensor).shape == ()
+    assert float(scalar(tensor)) == pytest.approx(3.0)
+
+    same = TensorMap(target, jnp.asarray([5.0], dtype=jnp.float32))
+    u1_scalar = TensorMap(
+        hom((), (), sector_type=U1Irrep),
+        jnp.asarray([3.0], dtype=jnp.float32),
+    )
+    _leaves, treedef = jax.tree_util.tree_flatten(tensor)
+    _same_leaves, same_treedef = jax.tree_util.tree_flatten(same)
+    _u1_leaves, u1_treedef = jax.tree_util.tree_flatten(u1_scalar)
+
+    assert treedef == same_treedef
+    assert treedef != u1_treedef
+    assert target.static_key != u1_scalar.space.static_key
+
+
+def test_trivial_dense_fast_path_matches_reshape_under_jit_vmap_and_grad():
+    target = hom((ComplexSpace(2), ComplexSpace(3)), (ComplexSpace(4),))
+    dense = jnp.arange(24, dtype=jnp.float32).reshape(2, 3, 4)
+
+    @jax.jit
+    def roundtrip(value):
+        return to_dense(from_dense(target, value))
+
+    batch = jnp.stack((dense, dense + 1))
+    actual = roundtrip(dense)
+    batched = jax.vmap(roundtrip)(batch)
+    gradient = jax.grad(lambda value: jnp.sum(roundtrip(value) ** 2))(dense)
+
+    assert jnp.array_equal(actual, dense)
+    assert jnp.array_equal(batched, batch)
+    assert jnp.array_equal(gradient, 2 * dense)
+
+
+def test_trivial_dense_fast_path_handles_rank_zero_and_every_zero_axis_position():
+    scalar_target = hom((), (), sector_type=Trivial)
+    scalar = jnp.asarray(3.0, dtype=jnp.float32)
+
+    assert jnp.array_equal(
+        jax.jit(lambda value: to_dense(from_dense(scalar_target, value)))(scalar),
+        scalar,
+    )
+    assert jnp.array_equal(
+        to_dense(from_dense(scalar_target, scalar.reshape(1, 1))),
+        scalar,
+    )
+
+    for zero_position in range(3):
+        dimensions = [2, 3, 4]
+        dimensions[zero_position] = 0
+        factors = tuple(ComplexSpace(value) for value in dimensions)
+        target = hom(factors[:2], factors[2:])
+        shape = tuple(dim(factor) for factor in factors)
+        dense = jnp.zeros(shape, dtype=jnp.float32)
+
+        actual = jax.jit(lambda value: to_dense(from_dense(target, value)))(dense)
+
+        assert actual.shape == shape
+        assert jnp.array_equal(actual, dense)
+
+
+def test_trivial_dense_fast_paths_have_reshape_only_jaxprs():
+    target = hom((ComplexSpace(2), ComplexSpace(3)), (ComplexSpace(4),))
+    dense = jnp.arange(24, dtype=jnp.float32).reshape(2, 3, 4)
+    tensor = TensorMap(target, dense.reshape(-1))
+
+    from_primitives = {
+        equation.primitive.name
+        for equation in jax.make_jaxpr(
+            lambda value: from_dense(target, value).storage.data,
+        )(dense).jaxpr.eqns
+    }
+    to_primitives = {
+        equation.primitive.name
+        for equation in jax.make_jaxpr(to_dense)(tensor).jaxpr.eqns
+    }
+
+    assert from_primitives <= {"reshape"}
+    assert to_primitives == {"reshape"}

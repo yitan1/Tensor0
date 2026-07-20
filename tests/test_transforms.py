@@ -1,12 +1,15 @@
 import math
+import sys
 from collections.abc import Callable
 from typing import cast
 
+import jax
 import jax.numpy as jnp
 import pytest
 
 import tensor0.operations.transforms as transforms
 from tensor0 import (
+    ComplexSpace,
     FermionNumber,
     FermionParity,
     FermionParitySU2Irrep,
@@ -14,6 +17,7 @@ from tensor0 import (
     FermionParityU1SU2Irrep,
     SU2Irrep,
     TensorMap,
+    Trivial,
     U1Irrep,
     U1SU2Irrep,
     Z2Irrep,
@@ -21,6 +25,7 @@ from tensor0 import (
     Z4Irrep,
     braid,
     flip,
+    from_dense,
     hom,
     insertleftunit,
     insertrightunit,
@@ -905,3 +910,264 @@ def test_tensormap_transform_methods_match_functional_errors(
         getattr(tensor, method_name)(*args, **kwargs)
 
     assert str(method_error.value) == str(functional_error.value)
+
+
+@pytest.mark.parametrize(
+    "operation",
+    [
+        lambda tensor, p: permute(tensor, p),
+        lambda tensor, p: braid(tensor, p, (5, 1, 2, 0)),
+        lambda tensor, p: transpose(tensor, p),
+    ],
+    ids=["permute", "bosonic-braid", "transpose"],
+)
+def test_trivial_index_transforms_match_direct_dense_oracle_with_dual_legs(
+    operation,
+):
+    target = hom(
+        (ComplexSpace(2), ComplexSpace(3, dual=True)),
+        (ComplexSpace(4), ComplexSpace(5, dual=True)),
+    )
+    dense = (
+        jnp.arange(120, dtype=jnp.float32).reshape(2, 3, 4, 5)
+        * (1.0 + 0.25j)
+    )
+    tensor = from_dense(target, dense)
+    permutation = ((1, 3), (0, 2))
+
+    result = operation(tensor, permutation)
+
+    assert result.space == target.permute(*permutation)
+    assert result.numout == result.numin == 2
+    assert result.storage.data.dtype == tensor.storage.data.dtype
+    assert jnp.array_equal(to_dense(result), jnp.transpose(dense, (1, 3, 0, 2)))
+
+
+def test_trivial_index_transforms_preserve_identity_and_rank_zero_storage_reuse():
+    target = hom((), (), sector_type=Trivial)
+    tensor = from_dense(target, jnp.asarray(3.0, dtype=jnp.float32))
+    identity = ((), ())
+
+    assert permute(tensor, identity) is tensor
+    assert braid(tensor, identity, ()) is tensor
+    assert transpose(tensor, identity) is tensor
+    assert transpose(tensor) is tensor
+
+    rank_two_target = hom((ComplexSpace(2),), (ComplexSpace(3),))
+    rank_two = TensorMap(rank_two_target, jnp.zeros((6,), dtype=jnp.float32))
+    assert braid(rank_two, ((0,), (1,)), (0, 1)) is rank_two
+    u1_factor = space(U1Irrep, {0: 2})
+    u1_target = hom((u1_factor,), (u1_factor,))
+    u1_tensor = TensorMap(u1_target, jnp.zeros((4,), dtype=jnp.float32))
+    assert braid(u1_tensor, ((0,), (1,)), (0, 1)) is u1_tensor
+
+
+@pytest.mark.parametrize(
+    "operation",
+    [
+        lambda tensor: permute(tensor, ((0,), (0,))),
+        lambda tensor: braid(tensor, ((1,), (0,)), (0,)),
+        lambda tensor: transpose(tensor, ((0,), (0,))),
+    ],
+    ids=[
+        "permute-duplicate",
+        "braid-level-count",
+        "transpose-duplicate",
+    ],
+)
+def test_trivial_index_transform_validation_matches_nontrivial_path(operation):
+    trivial_target = hom((ComplexSpace(2),), (ComplexSpace(3),))
+    u1_factor = space(U1Irrep, {0: 2})
+    u1_target = hom((u1_factor,), (u1_factor,))
+    tensors = (
+        TensorMap(trivial_target, jnp.zeros((6,), dtype=jnp.float32)),
+        TensorMap(u1_target, jnp.zeros((4,), dtype=jnp.float32)),
+    )
+    errors = []
+
+    for tensor in tensors:
+        with pytest.raises((TypeError, ValueError)) as error:
+            operation(tensor)
+        errors.append((type(error.value), str(error.value)))
+
+    assert errors[0] == errors[1]
+
+
+@pytest.mark.parametrize(
+    ("level", "error", "message"),
+    [
+        (-1, ValueError, "braid levels must be non-negative"),
+        (
+            2 * sys.maxsize + 2,
+            OverflowError,
+            "braid level is too large for a platform unsigned integer",
+        ),
+    ],
+)
+def test_braid_levels_reject_values_outside_platform_unsigned_range(
+    level,
+    error,
+    message,
+):
+    trivial_target = hom((ComplexSpace(2),), (ComplexSpace(3),))
+    u1_factor = space(U1Irrep, {0: 2})
+    u1_target = hom((u1_factor,), (u1_factor,))
+    permutation = ((1,), (0,))
+
+    for target in (trivial_target, u1_target):
+        tensor = TensorMap(
+            target,
+            jnp.zeros((get_degeneracystructure(target).total_dim,), dtype=jnp.float32),
+        )
+        with pytest.raises(error, match=message):
+            braid(tensor, permutation, (level, 0))
+
+
+def test_trivial_permute_and_braid_accept_noncyclic_permutations():
+    target = hom(
+        (ComplexSpace(2), ComplexSpace(3)),
+        (ComplexSpace(4), ComplexSpace(5)),
+    )
+    dense = jnp.arange(120, dtype=jnp.float32).reshape(2, 3, 4, 5)
+    tensor = from_dense(target, dense)
+    permutation = ((1, 0), (3, 2))
+    expected = jnp.transpose(dense, (1, 0, 3, 2))
+
+    assert jnp.array_equal(to_dense(permute(tensor, permutation)), expected)
+    assert jnp.array_equal(
+        to_dense(braid(tensor, permutation, (5, 1, 2, 0))),
+        expected,
+    )
+
+
+def test_trivial_transpose_noncyclic_validation_matches_nontrivial_path():
+    trivial_target = hom(
+        (ComplexSpace(2), ComplexSpace(3)),
+        (ComplexSpace(4), ComplexSpace(5)),
+    )
+    u1_factor = space(U1Irrep, {0: 2})
+    u1_target = hom((u1_factor, u1_factor), (u1_factor, u1_factor))
+    tensors = (
+        TensorMap(trivial_target, jnp.zeros((120,), dtype=jnp.float32)),
+        TensorMap(
+            u1_target,
+            jnp.zeros(
+                (get_degeneracystructure(u1_target).total_dim,),
+                dtype=jnp.float32,
+            ),
+        ),
+    )
+    errors = []
+
+    for tensor in tensors:
+        with pytest.raises(ValueError) as error:
+            transpose(tensor, ((1, 0), (3, 2)))
+        errors.append(str(error.value))
+
+    assert errors == [
+        "fusion tree transpose requires a cyclic planar permutation",
+        "fusion tree transpose requires a cyclic planar permutation",
+    ]
+
+
+def test_zero_storage_transpose_rejects_noncyclic_permutations():
+    trivial_factors = (
+        ComplexSpace(2),
+        ComplexSpace(0),
+        ComplexSpace(3),
+        ComplexSpace(4),
+    )
+    empty_u1 = space(U1Irrep, {})
+    u1_factor = space(U1Irrep, {0: 2})
+    u1_factors = (u1_factor, empty_u1, u1_factor, u1_factor)
+    targets = (
+        hom(trivial_factors[:2], trivial_factors[2:]),
+        hom(u1_factors[:2], u1_factors[2:]),
+    )
+    permutation = ((1, 0), (3, 2))
+
+    for target in targets:
+        tensor = TensorMap(target, jnp.zeros((0,), dtype=jnp.float32))
+        with pytest.raises(
+            ValueError,
+            match="fusion tree transpose requires a cyclic planar permutation",
+        ):
+            transpose(tensor, permutation)
+
+
+def test_trivial_index_transform_execution_bypasses_transformer_metadata(
+    monkeypatch,
+):
+    target = hom(
+        (ComplexSpace(2), ComplexSpace(3)),
+        (ComplexSpace(4), ComplexSpace(5)),
+    )
+    dense = jnp.arange(120, dtype=jnp.float32).reshape(2, 3, 4, 5)
+    tensor = from_dense(target, dense)
+    permutation = ((1, 3), (0, 2))
+
+    def explode(*_args, **_kwargs):
+        raise AssertionError("Trivial numerical execution must not request metadata")
+
+    monkeypatch.setattr(transforms, "_treepermuter", explode)
+    monkeypatch.setattr(transforms, "_treebraider", explode)
+    monkeypatch.setattr(transforms, "_treetransposer", explode)
+    monkeypatch.setattr(transforms, "get_sectorstructure", explode)
+    monkeypatch.setattr(transforms, "get_degeneracystructure", explode)
+
+    results = (
+        permute(tensor, permutation),
+        braid(tensor, permutation, (0, 1, 2, 3)),
+        transpose(tensor, permutation),
+    )
+
+    expected = jnp.transpose(dense, (1, 3, 0, 2))
+    assert all(jnp.array_equal(to_dense(result), expected) for result in results)
+
+
+def test_trivial_index_transform_handles_zero_axis_jit_vmap_and_grad():
+    target = hom(
+        (ComplexSpace(2), ComplexSpace(0)),
+        (ComplexSpace(3), ComplexSpace(4)),
+    )
+    destination = target.permute((1, 3), (0, 2))
+    dense = jnp.zeros((2, 0, 3, 4), dtype=jnp.float32)
+
+    @jax.jit
+    def run(value):
+        tensor = TensorMap(target, value.reshape(-1))
+        return transpose(tensor, ((1, 3), (0, 2))).storage.data
+
+    expected = jnp.transpose(dense, (1, 3, 0, 2)).reshape(-1)
+    batch = jnp.stack((dense, dense))
+
+    assert destination.numout == destination.numin == 2
+    assert jnp.array_equal(run(dense), expected)
+    assert jnp.array_equal(jax.vmap(run)(batch), jnp.stack((expected, expected)))
+    assert jnp.array_equal(
+        jax.grad(lambda value: jnp.sum(run(value) ** 2))(dense),
+        jnp.zeros_like(dense),
+    )
+
+
+def test_apply_trivial_index_transform_jaxpr_is_transpose_and_reshape_only():
+    target = hom(
+        (ComplexSpace(2), ComplexSpace(3)),
+        (ComplexSpace(4), ComplexSpace(5)),
+    )
+    permutation = ((1, 3), (0, 2))
+    destination = target.permute(*permutation)
+    data = jnp.arange(120, dtype=jnp.float32)
+
+    primitives = {
+        equation.primitive.name
+        for equation in jax.make_jaxpr(
+            lambda value: transforms._apply_trivial_index_transform(
+                TensorMap(target, value),
+                destination,
+                *permutation,
+            ).storage.data,
+        )(data).jaxpr.eqns
+    }
+
+    assert primitives == {"reshape", "transpose"}

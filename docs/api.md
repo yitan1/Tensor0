@@ -10,6 +10,7 @@ against these lists.
 
 ### Sector Families
 
+- `Trivial`
 - `U1Irrep`
 - `SU2Irrep`
 - `Z2Irrep`
@@ -24,6 +25,7 @@ against these lists.
 
 ### Spaces and Public Values
 
+- `ComplexSpace`
 - `space`
 - `hom`
 - `Vect`
@@ -36,6 +38,7 @@ against these lists.
 - `dim`
 - `reduced_dim`
 - `storage_dim`
+- `sector_spec`
 - `fuse`
 - `unit_space`
 - `zero_space`
@@ -137,6 +140,10 @@ against these lists.
 
 <!-- tensor0-root-api:end -->
 
+Use `Vect(dim)` for the default no-symmetry space, `Vect[Sector](...)` for an
+explicit sector family, and `ComplexSpace(dim)` as the supported compatibility
+spelling for `Vect(dim)`.
+
 See the [usage guide](usage.md) for construction, comparison, transforms, and
 factorization examples. See the [contraction guide](contractions.md) for axes,
 labels, output partitions, order, and scalar-result conventions.
@@ -148,6 +155,7 @@ are intentionally not re-exported from the package root.
 
 <!-- tensor0-structure-api:start -->
 
+- `ComplexSpace`
 - `BlockStructure`
 - `DegeneracyStructure`
 - `SectorDict`
@@ -167,6 +175,7 @@ are intentionally not re-exported from the package root.
 - `is_isomorphic`
 - `is_monomorphic`
 - `reduced_dim`
+- `sector_spec`
 - `space`
 - `storage_dim`
 - `supremum`

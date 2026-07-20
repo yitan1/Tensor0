@@ -13,7 +13,7 @@ use crate::error::{Result, Tensor0Error};
 use crate::fusion_tree::{FusionTree, FusionTreeBlock, FusionTreePair};
 use crate::sector::{FusionStyle, Sector};
 
-use super::auxiliary::{is_cyclic_permutation, linearize_permutation};
+use super::auxiliary::linearize_permutation;
 use super::basic_ops::{multi_fmove, multi_fmove_inv};
 
 type FMoveTerms<I> = Vec<(FusionTree<I>, f64)>;
@@ -77,6 +77,7 @@ pub(crate) fn repartition_block<I: Sector>(
     Ok((dst, transform))
 }
 
+/// Applies a transpose whose cyclic-planar permutation was validated by the caller.
 pub(crate) fn transpose_pair<I: Sector>(
     src: &FusionTreePair<I>,
     p_codomain: &[usize],
@@ -94,11 +95,6 @@ pub(crate) fn transpose_pair<I: Sector>(
         src.row.uncoupled.len(),
         src.col.uncoupled.len(),
     )?;
-    if !is_cyclic_permutation(&permutation) {
-        return Err(Tensor0Error::Message(
-            "fusion tree transpose requires a cyclic planar permutation".to_string(),
-        ));
-    }
 
     let (mut dst, mut coeff) = repartition_pair(src, p_codomain.len())?;
     if permutation.is_empty() {
@@ -133,17 +129,13 @@ pub(crate) fn transpose_pair<I: Sector>(
     Ok((dst, coeff))
 }
 
+/// Applies a transpose whose cyclic-planar permutation was validated by the caller.
 pub(crate) fn transpose_block<I: Sector>(
     src: &FusionTreeBlock<I>,
     p_codomain: &[usize],
     p_domain: &[usize],
 ) -> Result<(FusionTreeBlock<I>, Array2<f64>)> {
     let permutation = linearize_permutation(p_codomain, p_domain, src.numout(), src.numin())?;
-    if !is_cyclic_permutation(&permutation) {
-        return Err(Tensor0Error::Message(
-            "fusion tree transpose requires a cyclic planar permutation".to_string(),
-        ));
-    }
 
     let (mut dst, mut transform) = repartition_block(src, p_codomain.len())?;
     if permutation.is_empty() {

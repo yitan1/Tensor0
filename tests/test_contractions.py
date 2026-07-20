@@ -1,3 +1,5 @@
+from collections import Counter
+
 import jax
 import jax.numpy as jnp
 import pytest
@@ -5,6 +7,7 @@ import pytest
 import tensor0.operations.contractions.primitives as contractions
 import tensor0.operations.transforms as transforms
 from tensor0 import (
+    ComplexSpace,
     FermionNumber,
     FermionParity,
     FermionParitySU2Irrep,
@@ -12,12 +15,14 @@ from tensor0 import (
     FermionParityU1SU2Irrep,
     SU2Irrep,
     TensorMap,
+    Trivial,
     U1Irrep,
     U1SU2Irrep,
     Z2Irrep,
     Z3Irrep,
     Z4Irrep,
     contract,
+    from_dense,
     hom,
     idx,
     ncon,
@@ -1562,3 +1567,971 @@ def test_ncon_validates_complete_network_before_storage_access():
             (u1_tensor, z2_tensor),
             ((-1,), (-2,)),
         )
+
+
+def _trivial_contract_dense_oracle(
+    left,
+    right,
+    *,
+    axes,
+    output,
+    conjugate=(False, False),
+):
+    left_value = jnp.conj(left) if conjugate[0] else left
+    right_value = jnp.conj(right) if conjugate[1] else right
+    value = jnp.tensordot(left_value, right_value, axes=axes)
+    left_contracted = set(axes[0])
+    right_contracted = set(axes[1])
+    canonical_refs = tuple(
+        (0, axis) for axis in range(left.ndim) if axis not in left_contracted
+    ) + tuple(
+        (1, axis) for axis in range(right.ndim) if axis not in right_contracted
+    )
+    canonical_positions = {
+        ref: position for position, ref in enumerate(canonical_refs)
+    }
+    permutation = tuple(
+        canonical_positions[ref] for group in output for ref in group
+    )
+    return jnp.transpose(value, permutation)
+
+
+def _forced_generic_trivial_tensorcontract(
+    monkeypatch,
+    left,
+    right,
+    **arguments,
+):
+    with monkeypatch.context() as context:
+        context.setattr(
+            contractions,
+            "sector_spec",
+            lambda _space: U1Irrep,
+        )
+        return tensorcontract(left, right, **arguments)
+
+
+def _trivial_partial_contraction_case(
+    conjugate=(False, False),
+    *,
+    contracted_dim=3,
+    left_dtype=jnp.complex64,
+    right_dtype=jnp.complex64,
+):
+    left_factors = (
+        ComplexSpace(2),
+        ComplexSpace(contracted_dim, dual=True),
+        ComplexSpace(4),
+    )
+    contracted_right = (
+        left_factors[1].dual()
+        if conjugate[0] == conjugate[1]
+        else left_factors[1]
+    )
+    right_factors = (
+        contracted_right,
+        ComplexSpace(5, dual=True),
+        ComplexSpace(6),
+    )
+    left_space = hom(left_factors[:2], left_factors[2:])
+    right_space = hom(right_factors[:2], right_factors[2:])
+    left_values = jnp.arange(
+        2 * contracted_dim * 4,
+        dtype=jnp.float32,
+    ).reshape(2, contracted_dim, 4)
+    right_values = jnp.arange(
+        contracted_dim * 5 * 6,
+        dtype=jnp.float32,
+    ).reshape(contracted_dim, 5, 6)
+    if jnp.issubdtype(left_dtype, jnp.complexfloating):
+        left_values = left_values * (1.0 + 0.25j)
+    if jnp.issubdtype(right_dtype, jnp.complexfloating):
+        right_values = right_values * (1.0 - 0.5j)
+    left_values = left_values.astype(left_dtype)
+    right_values = right_values.astype(right_dtype)
+    arguments = {
+        "axes": ((1,), (0,)),
+        "output": (((1, 2), (0, 0)), ((1, 1), (0, 2))),
+        "conjugate": conjugate,
+    }
+    return (
+        TensorMap(left_space, left_values.reshape(-1)),
+        TensorMap(right_space, right_values.reshape(-1)),
+        left_values,
+        right_values,
+        arguments,
+    )
+
+
+@pytest.mark.parametrize(
+    "conjugate",
+    [(False, False), (False, True), (True, False), (True, True)],
+    ids=["neither", "right", "left", "both"],
+)
+def test_trivial_tensorcontract_partial_conjugation_duals_and_output_order_match_generic(
+    conjugate,
+    monkeypatch,
+):
+    left, right, left_dense, right_dense, arguments = (
+        _trivial_partial_contraction_case(conjugate)
+    )
+
+    result = tensorcontract(left, right, **arguments)
+    generic = _forced_generic_trivial_tensorcontract(
+        monkeypatch,
+        left,
+        right,
+        **arguments,
+    )
+    expected = _trivial_contract_dense_oracle(
+        left_dense,
+        right_dense,
+        **arguments,
+    )
+
+    assert result.space == generic.space
+    assert result.storage.data.dtype == generic.storage.data.dtype
+    assert jnp.allclose(result.storage.data, generic.storage.data)
+    assert jnp.allclose(to_dense(result), expected)
+
+
+def test_trivial_tensorcontract_disconnected_full_and_rank_zero_match_generic(
+    monkeypatch,
+):
+    left_vector = from_dense(
+        hom((ComplexSpace(2),), ()),
+        jnp.asarray([2.0, 3.0], dtype=jnp.float32),
+    )
+    right_vector = from_dense(
+        hom((), (ComplexSpace(3),)),
+        jnp.asarray([5.0, 7.0, 11.0], dtype=jnp.float32),
+    )
+    disconnected_arguments = {
+        "axes": ((), ()),
+        "output": (((1, 0),), ((0, 0),)),
+    }
+    disconnected = tensorcontract(
+        left_vector,
+        right_vector,
+        **disconnected_arguments,
+    )
+    disconnected_generic = _forced_generic_trivial_tensorcontract(
+        monkeypatch,
+        left_vector,
+        right_vector,
+        **disconnected_arguments,
+    )
+
+    a = ComplexSpace(2)
+    x = ComplexSpace(3)
+    left_matrix = from_dense(
+        hom((a,), (x,)),
+        jnp.arange(6, dtype=jnp.float32).reshape(2, 3),
+    )
+    right_matrix = from_dense(
+        hom((x,), (a,)),
+        jnp.arange(6, dtype=jnp.float32).reshape(3, 2),
+    )
+    full_arguments = {
+        "axes": ((0, 1), (1, 0)),
+        "output": ((), ()),
+    }
+    full = tensorcontract(left_matrix, right_matrix, **full_arguments)
+    full_generic = _forced_generic_trivial_tensorcontract(
+        monkeypatch,
+        left_matrix,
+        right_matrix,
+        **full_arguments,
+    )
+
+    scalar_space = hom((), (), sector_type=Trivial)
+    left_scalar = TensorMap(scalar_space, jnp.asarray([2.0], dtype=jnp.float32))
+    right_scalar = TensorMap(scalar_space, jnp.asarray([3.0], dtype=jnp.float32))
+    scalar_result = tensorcontract(
+        left_scalar,
+        right_scalar,
+        axes=((), ()),
+        output=((), ()),
+    )
+    scalar_generic = _forced_generic_trivial_tensorcontract(
+        monkeypatch,
+        left_scalar,
+        right_scalar,
+        axes=((), ()),
+        output=((), ()),
+    )
+
+    assert disconnected.space == disconnected_generic.space
+    assert jnp.array_equal(
+        disconnected.storage.data,
+        disconnected_generic.storage.data,
+    )
+    assert jnp.array_equal(
+        to_dense(disconnected),
+        jnp.outer(
+            to_dense(right_vector),
+            to_dense(left_vector),
+        ),
+    )
+    assert full.numind == full_generic.numind == 0
+    assert jnp.array_equal(full.storage.data, full_generic.storage.data)
+    assert jnp.array_equal(scalar_result.storage.data, scalar_generic.storage.data)
+    assert jnp.array_equal(scalar(scalar_result), jnp.asarray(6.0))
+
+
+@pytest.mark.parametrize(
+    ("left_dtype", "right_dtype"),
+    [
+        (jnp.bool_, jnp.bool_),
+        (jnp.int8, jnp.int8),
+        (jnp.uint8, jnp.uint8),
+        (jnp.int8, jnp.uint8),
+        (jnp.float16, jnp.float32),
+        (jnp.float32, jnp.complex64),
+    ],
+    ids=[
+        "bool",
+        "int8-overflow",
+        "uint8-overflow",
+        "mixed-narrow-integer",
+        "mixed-real",
+        "real-complex",
+    ],
+)
+def test_trivial_tensorcontract_matches_generic_narrow_dtype_and_promotion(
+    left_dtype,
+    right_dtype,
+    monkeypatch,
+):
+    left, right, _left_dense, _right_dense, arguments = (
+        _trivial_partial_contraction_case(
+            left_dtype=left_dtype,
+            right_dtype=right_dtype,
+        )
+    )
+    left_values = jnp.arange(1, left.dim + 1, dtype=jnp.int32)
+    right_values = jnp.arange(1, right.dim + 1, dtype=jnp.int32)
+    if left_dtype == jnp.bool_:
+        left_values = left_values % 2
+    elif left_dtype == jnp.int8:
+        left_values = left_values * 100
+    elif left_dtype == jnp.uint8:
+        left_values = left_values * 250
+    if right_dtype == jnp.bool_:
+        right_values = right_values % 2
+    elif right_dtype == jnp.int8:
+        right_values = right_values * 100
+    elif right_dtype == jnp.uint8:
+        right_values = right_values * 250
+    left = TensorMap(left.space, left_values.astype(left_dtype))
+    right = TensorMap(right.space, right_values.astype(right_dtype))
+
+    result = tensorcontract(left, right, **arguments)
+    generic = _forced_generic_trivial_tensorcontract(
+        monkeypatch,
+        left,
+        right,
+        **arguments,
+    )
+
+    assert result.storage.data.dtype == generic.storage.data.dtype
+    assert result.storage.data.dtype == jnp.result_type(
+        left.storage.data,
+        right.storage.data,
+    )
+    assert jnp.array_equal(result.storage.data, generic.storage.data)
+
+
+@pytest.mark.parametrize(
+    "conjugate",
+    [(False, False), (False, True), (True, False), (True, True)],
+    ids=["neither", "right", "left", "both"],
+)
+def test_trivial_tensorcontract_zero_contracted_dimension_matches_generic(
+    conjugate,
+    monkeypatch,
+):
+    left, right, _left_dense, _right_dense, arguments = (
+        _trivial_partial_contraction_case(
+            conjugate,
+            contracted_dim=0,
+        )
+    )
+
+    result = tensorcontract(left, right, **arguments)
+    generic = _forced_generic_trivial_tensorcontract(
+        monkeypatch,
+        left,
+        right,
+        **arguments,
+    )
+
+    assert result.space == generic.space
+    assert result.storage.data.shape == generic.storage.data.shape == (240,)
+    assert result.storage.data.dtype == generic.storage.data.dtype
+    assert jnp.array_equal(result.storage.data, generic.storage.data)
+
+
+@pytest.mark.parametrize(
+    "conjugate",
+    [(False, False), (False, True), (True, False), (True, True)],
+    ids=["neither", "right", "left", "both"],
+)
+def test_trivial_tensorcontract_zero_uncontracted_output_matches_generic_dtype(
+    conjugate,
+    monkeypatch,
+):
+    contracted = ComplexSpace(3, dual=True)
+    contracted_right = (
+        contracted.dual()
+        if conjugate[0] == conjugate[1]
+        else contracted
+    )
+    left_space = hom(
+        (ComplexSpace(0), contracted),
+        (ComplexSpace(4),),
+    )
+    right_space = hom(
+        (contracted_right, ComplexSpace(5, dual=True)),
+        (ComplexSpace(6),),
+    )
+    left = TensorMap(left_space, jnp.zeros((0,), dtype=jnp.float16))
+    right = TensorMap(
+        right_space,
+        jnp.arange(90, dtype=jnp.float16),
+    )
+    arguments = {
+        "axes": ((1,), (0,)),
+        "output": (((1, 2), (0, 0)), ((1, 1), (0, 2))),
+        "conjugate": conjugate,
+    }
+
+    result = tensorcontract(left, right, **arguments)
+    generic = _forced_generic_trivial_tensorcontract(
+        monkeypatch,
+        left,
+        right,
+        **arguments,
+    )
+
+    assert result.space == generic.space
+    assert result.dims == generic.dims == (6, 0, 5, 4)
+    assert result.storage.data.shape == generic.storage.data.shape == (0,)
+    assert result.storage.data.dtype == generic.storage.data.dtype
+    assert result.storage.data.dtype == (
+        jnp.float32 if conjugate[0] else jnp.float16
+    )
+    assert jnp.array_equal(result.storage.data, generic.storage.data)
+
+
+def test_trivial_tensorcontract_validation_precedes_numerical_fast_path(
+    monkeypatch,
+):
+    left, right, _left_dense, _right_dense, arguments = (
+        _trivial_partial_contraction_case()
+    )
+
+    def explode(*_args, **_kwargs):
+        raise AssertionError("invalid contraction must not enter numerical execution")
+
+    monkeypatch.setattr(
+        contractions,
+        "_trivial_tensorcontract_validated",
+        explode,
+    )
+    invalid_coverage = dict(arguments)
+    invalid_coverage["output"] = ((), arguments["output"][1])
+    invalid_conjugate = dict(arguments)
+    invalid_conjugate["conjugate"] = (False, 0)
+
+    with pytest.raises(ValueError, match="exactly once"):
+        tensorcontract(left, right, **invalid_coverage)
+    with pytest.raises(TypeError, match="conjugate entries must be bool"):
+        tensorcontract(left, right, **invalid_conjugate)
+
+    mismatched = TensorMap(
+        hom((ComplexSpace(4), ComplexSpace(5)), (ComplexSpace(6),)),
+        jnp.zeros((120,), dtype=jnp.float32),
+    )
+    with pytest.raises(ValueError, match="contracted axes must be dual-compatible"):
+        tensorcontract(left, mismatched, **arguments)
+
+
+def test_trivial_tensorcontract_jit_vmap_and_grad_match_direct_tensordot():
+    left, right, _left_dense, _right_dense, arguments = (
+        _trivial_partial_contraction_case(
+            left_dtype=jnp.float32,
+            right_dtype=jnp.float32,
+        )
+    )
+
+    def run(left_data, right_data):
+        return tensorcontract(
+            TensorMap(left.space, left_data),
+            TensorMap(right.space, right_data),
+            **arguments,
+        ).storage.data
+
+    def oracle(left_data, right_data):
+        value = _trivial_contract_dense_oracle(
+            left_data.reshape(left.dims),
+            right_data.reshape(right.dims),
+            **arguments,
+        )
+        return value.reshape(-1)
+
+    compiled = jax.jit(run)
+    actual = compiled(left.storage.data, right.storage.data)
+    expected = oracle(left.storage.data, right.storage.data)
+    left_batch = jnp.stack((left.storage.data, left.storage.data + 1))
+    right_batch = jnp.stack((right.storage.data, right.storage.data + 1))
+    actual_batch = jax.vmap(run)(left_batch, right_batch)
+    expected_batch = jax.vmap(oracle)(left_batch, right_batch)
+    actual_gradients = jax.grad(
+        lambda left_data, right_data: jnp.sum(run(left_data, right_data) ** 2),
+        argnums=(0, 1),
+    )(left.storage.data, right.storage.data)
+    expected_gradients = jax.grad(
+        lambda left_data, right_data: jnp.sum(
+            oracle(left_data, right_data) ** 2,
+        ),
+        argnums=(0, 1),
+    )(left.storage.data, right.storage.data)
+
+    assert jnp.array_equal(actual, expected)
+    assert jnp.array_equal(actual_batch, expected_batch)
+    assert all(
+        jnp.array_equal(actual_gradient, expected_gradient)
+        for actual_gradient, expected_gradient in zip(
+            actual_gradients,
+            expected_gradients,
+            strict=True,
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    "conjugate",
+    [(False, False), (False, True), (True, False), (True, True)],
+    ids=["neither", "right", "left", "both"],
+)
+def test_trivial_tensorcontract_complex_conjugate_jitted_grad_matches_oracle(
+    conjugate,
+):
+    left, right, _left_dense, _right_dense, arguments = (
+        _trivial_partial_contraction_case(conjugate)
+    )
+
+    def result(left_data, right_data):
+        return tensorcontract(
+            TensorMap(left.space, left_data),
+            TensorMap(right.space, right_data),
+            **arguments,
+        ).storage.data
+
+    def oracle(left_data, right_data):
+        return _trivial_contract_dense_oracle(
+            left_data.reshape(left.dims),
+            right_data.reshape(right.dims),
+            **arguments,
+        ).reshape(-1)
+
+    def squared_norm(function, left_data, right_data):
+        value = function(left_data, right_data)
+        return jnp.real(jnp.vdot(value, value))
+
+    actual_gradients = jax.jit(
+        jax.grad(
+            lambda left_data, right_data: squared_norm(
+                result,
+                left_data,
+                right_data,
+            ),
+            argnums=(0, 1),
+        ),
+    )(left.storage.data, right.storage.data)
+    expected_gradients = jax.jit(
+        jax.grad(
+            lambda left_data, right_data: squared_norm(
+                oracle,
+                left_data,
+                right_data,
+            ),
+            argnums=(0, 1),
+        ),
+    )(left.storage.data, right.storage.data)
+
+    assert all(
+        jnp.allclose(actual_gradient, expected_gradient)
+        for actual_gradient, expected_gradient in zip(
+            actual_gradients,
+            expected_gradients,
+            strict=True,
+        )
+    )
+
+
+def test_trivial_contract_and_ncon_three_tensor_network_match_primitive_oracle():
+    a = ComplexSpace(2)
+    x = ComplexSpace(3)
+    y = ComplexSpace(4)
+    b = ComplexSpace(5)
+    left_dense = jnp.arange(6, dtype=jnp.float32).reshape(2, 3)
+    middle_dense = jnp.arange(12, dtype=jnp.float32).reshape(3, 4)
+    right_dense = jnp.arange(20, dtype=jnp.float32).reshape(4, 5)
+    left = from_dense(hom((a,), (x,)), left_dense)
+    middle = from_dense(hom((x,), (y,)), middle_dense)
+    right = from_dense(hom((y,), (b,)), right_dense)
+
+    named = contract(
+        idx(left, "a,x"),
+        idx(middle, "x,y"),
+        idx(right, "y,b"),
+        output=("a", "b"),
+        order=("y", "x"),
+    )
+    integer_labeled = ncon(
+        (left, middle, right),
+        ((-1, 1), (1, 2), (2, -2)),
+        order=(2, 1),
+    )
+    middle_right = tensorcontract(
+        middle,
+        right,
+        axes=((1,), (0,)),
+        output=(((0, 0),), ((1, 1),)),
+    )
+    primitive = tensorcontract(
+        left,
+        middle_right,
+        axes=((1,), (0,)),
+        output=(((0, 0),), ((1, 1),)),
+    )
+    expected = left_dense @ middle_dense @ right_dense
+
+    assert named.space == integer_labeled.space == primitive.space
+    assert jnp.array_equal(to_dense(named), expected)
+    assert jnp.array_equal(to_dense(integer_labeled), expected)
+    assert jnp.array_equal(to_dense(primitive), expected)
+
+
+def test_trivial_tensorcontract_execution_bypasses_generic_metadata(monkeypatch):
+    left, right, left_dense, right_dense, arguments = (
+        _trivial_partial_contraction_case()
+    )
+
+    def explode(*_args, **_kwargs):
+        raise AssertionError("Trivial contraction must not use generic execution")
+
+    monkeypatch.setattr(contractions, "_treepermuter", explode)
+    monkeypatch.setattr(contractions, "get_sectorstructure", explode)
+    monkeypatch.setattr(contractions, "get_degeneracystructure", explode)
+    monkeypatch.setattr(contractions, "permute", explode)
+    monkeypatch.setattr(contractions, "twist", explode)
+    monkeypatch.setattr(contractions, "_compose", explode)
+    monkeypatch.setattr(TensorMap, "adjoint", explode)
+
+    result = tensorcontract(left, right, **arguments)
+    expected = _trivial_contract_dense_oracle(
+        left_dense,
+        right_dense,
+        **arguments,
+    )
+
+    assert jnp.allclose(to_dense(result), expected)
+
+
+def test_trivial_validated_tensorcontract_jaxpr_has_one_direct_dot():
+    left, right, _left_dense, _right_dense, arguments = (
+        _trivial_partial_contraction_case(
+            left_dtype=jnp.float32,
+            right_dtype=jnp.float32,
+        )
+    )
+    destination = tensorcontract(left, right, **arguments).space
+
+    equations = jax.make_jaxpr(
+        lambda left_data, right_data: (
+            contractions._trivial_tensorcontract_validated(
+                TensorMap(left.space, left_data),
+                TensorMap(right.space, right_data),
+                destination,
+                arguments["axes"],
+                ((3, 0), (2, 1)),
+                arguments["conjugate"],
+            ).storage.data
+        ),
+    )(left.storage.data, right.storage.data).jaxpr.eqns
+    primitives = Counter(equation.primitive.name for equation in equations)
+
+    assert primitives["dot_general"] == 1
+    assert not primitives.keys() & {
+        "broadcast_in_dim",
+        "mul",
+        "scatter-add",
+        "slice",
+    }
+
+
+def _trivial_trace_dense_oracle(
+    dense,
+    *,
+    numout,
+    axes,
+    output,
+    conjugate=False,
+):
+    rank = dense.ndim
+    if conjugate:
+        dense = jnp.transpose(
+            jnp.conj(dense),
+            tuple(range(numout, rank)) + tuple(range(numout)),
+        )
+
+        def map_axis(axis):
+            return rank - numout + axis if axis < numout else axis - numout
+
+        axes = tuple(tuple(map_axis(axis) for axis in group) for group in axes)
+        output = tuple(tuple(map_axis(axis) for axis in group) for group in output)
+
+    permutation = output[0] + axes[0] + output[1] + axes[1]
+    value = jnp.transpose(dense, permutation)
+    for trace_index in reversed(range(len(axes[0]))):
+        value = jnp.trace(
+            value,
+            axis1=len(output[0]) + trace_index,
+            axis2=value.ndim - 1,
+        )
+    return value
+
+
+@pytest.mark.parametrize("dtype", [jnp.float32, jnp.complex64])
+def test_trivial_tensortrace_matches_dense_oracle_for_multiple_pairs_and_output_order(
+    dtype,
+):
+    factors = tuple(ComplexSpace(dim) for dim in (2, 3, 4, 5, 3, 4))
+    target = hom(factors[:3], factors[3:])
+    dense = jnp.arange(1440, dtype=jnp.float32).reshape(2, 3, 4, 5, 3, 4)
+    if jnp.issubdtype(dtype, jnp.complexfloating):
+        dense = dense * (1.0 + 0.25j)
+    dense = dense.astype(dtype)
+    tensor = from_dense(target, dense)
+    axes = ((1, 2), (4, 5))
+    output = ((3,), (0,))
+
+    result = tensortrace(tensor, axes=axes, output=output)
+    expected = _trivial_trace_dense_oracle(
+        dense,
+        numout=target.numout,
+        axes=axes,
+        output=output,
+    )
+
+    assert result.space == hom((factors[3].dual(),), (factors[0].dual(),))
+    assert result.storage.data.dtype == dtype
+    assert jnp.array_equal(to_dense(result), expected)
+
+
+def test_trivial_tensortrace_full_trace_returns_rank_zero_scalar():
+    factor = ComplexSpace(3)
+    dense = jnp.arange(9, dtype=jnp.float32).reshape(3, 3)
+    tensor = from_dense(hom((factor,), (factor,)), dense)
+
+    result = tensortrace(tensor, axes=((0,), (1,)), output=((), ()))
+
+    assert result.numind == 0
+    assert result.storage.data.shape == (1,)
+    assert jnp.array_equal(scalar(result), jnp.trace(dense))
+
+
+def test_trivial_tensortrace_conjugation_and_dual_output_partition_match_oracle():
+    factors = (
+        ComplexSpace(2),
+        ComplexSpace(3, dual=True),
+        ComplexSpace(4),
+        ComplexSpace(3, dual=True),
+    )
+    target = hom(factors[:2], factors[2:])
+    dense = (
+        jnp.arange(72, dtype=jnp.float32).reshape(2, 3, 4, 3)
+        * (1.0 + 0.5j)
+    )
+    axes = ((1,), (3,))
+    output = ((2,), (0,))
+
+    result = tensortrace(
+        from_dense(target, dense),
+        axes=axes,
+        output=output,
+        conjugate=True,
+    )
+    expected = _trivial_trace_dense_oracle(
+        dense,
+        numout=target.numout,
+        axes=axes,
+        output=output,
+        conjugate=True,
+    )
+
+    assert result.space == hom((factors[2],), (factors[0],))
+    assert jnp.array_equal(to_dense(result), expected)
+
+
+@pytest.mark.parametrize("zero_position", range(4))
+def test_trivial_tensortrace_handles_every_zero_axis_position(zero_position):
+    dimensions = [2, 3, 4, 3]
+    dimensions[zero_position] = 0
+    if zero_position == 1:
+        dimensions[3] = 0
+    elif zero_position == 3:
+        dimensions[1] = 0
+    factors = tuple(ComplexSpace(dim) for dim in dimensions)
+    target = hom(factors[:2], factors[2:])
+    dense = jnp.zeros(tuple(dimensions), dtype=jnp.float32)
+
+    result = tensortrace(
+        from_dense(target, dense),
+        axes=((1,), (3,)),
+        output=((0,), (2,)),
+    )
+    expected = _trivial_trace_dense_oracle(
+        dense,
+        numout=target.numout,
+        axes=((1,), (3,)),
+        output=((0,), (2,)),
+    )
+
+    assert to_dense(result).shape == (dimensions[0], dimensions[2])
+    assert jnp.array_equal(to_dense(result), expected)
+
+
+@pytest.mark.parametrize("dtype", [jnp.float16, jnp.complex64])
+def test_trivial_zero_storage_conjugate_trace_matches_generic_dtype(
+    dtype,
+    monkeypatch,
+):
+    factors = (
+        ComplexSpace(2),
+        ComplexSpace(0),
+        ComplexSpace(3),
+        ComplexSpace(0),
+    )
+    target = hom(factors[:2], factors[2:])
+    tensor = from_dense(target, jnp.zeros((2, 0, 3, 0), dtype=dtype))
+
+    direct = tensortrace(
+        tensor,
+        axes=((1,), (3,)),
+        output=((0,), (2,)),
+        conjugate=True,
+    )
+    monkeypatch.setattr(
+        contractions,
+        "sector_spec",
+        lambda _space: U1Irrep,
+    )
+    generic = tensortrace(
+        tensor,
+        axes=((1,), (3,)),
+        output=((0,), (2,)),
+        conjugate=True,
+    )
+
+    assert direct.storage.data.dtype == generic.storage.data.dtype
+    assert direct.storage.data.shape == generic.storage.data.shape == (6,)
+    assert jnp.array_equal(direct.storage.data, generic.storage.data)
+
+
+@pytest.mark.parametrize(
+    "dtype",
+    [jnp.bool_, jnp.int8, jnp.int16, jnp.uint8],
+    ids=["bool", "int8", "int16", "uint8"],
+)
+def test_trivial_multiple_trace_matches_generic_small_integer_dtype(
+    dtype,
+    monkeypatch,
+):
+    factor = ComplexSpace(2)
+    target = hom((factor, factor), (factor, factor))
+    values = jnp.asarray(
+        [
+            1,
+            0,
+            0,
+            1,
+            0,
+            1,
+            1,
+            0,
+            1,
+            1,
+            0,
+            0,
+            0,
+            0,
+            1,
+            1,
+        ],
+        dtype=dtype,
+    )
+    if dtype == jnp.int8:
+        values = values * jnp.asarray(120, dtype=dtype)
+    elif dtype == jnp.int16:
+        values = values * jnp.asarray(30_000, dtype=dtype)
+    elif dtype == jnp.uint8:
+        values = values * jnp.asarray(250, dtype=dtype)
+    tensor = TensorMap(target, values)
+    arguments = {
+        "axes": ((0, 1), (2, 3)),
+        "output": ((), ()),
+    }
+
+    direct = tensortrace(tensor, **arguments)
+    monkeypatch.setattr(
+        contractions,
+        "sector_spec",
+        lambda _space: U1Irrep,
+    )
+    with pytest.warns(FutureWarning, match="scatter inputs have incompatible types"):
+        generic = tensortrace(tensor, **arguments)
+
+    assert direct.storage.data.dtype == generic.storage.data.dtype == dtype
+    assert jnp.array_equal(direct.storage.data, generic.storage.data)
+
+
+def test_trivial_tensortrace_empty_trace_rank_zero_reuses_permute_identity():
+    target = hom((), (), sector_type=Trivial)
+    tensor = from_dense(target, jnp.asarray(3.0, dtype=jnp.float32))
+
+    result = tensortrace(tensor, axes=((), ()), output=((), ()))
+
+    assert result is tensor
+
+
+def test_trivial_tensortrace_jit_vmap_and_grad_match_dense_oracle():
+    traced = ComplexSpace(3)
+    target = hom((ComplexSpace(2), traced), (ComplexSpace(4), traced))
+    dense = jnp.arange(72, dtype=jnp.float32).reshape(2, 3, 4, 3)
+
+    @jax.jit
+    def run(value):
+        result = tensortrace(
+            TensorMap(target, value.reshape(-1)),
+            axes=((1,), (3,)),
+            output=((0,), (2,)),
+        )
+        return result.storage.data
+
+    expected = jnp.trace(dense, axis1=1, axis2=3).reshape(-1)
+    batch = jnp.stack((dense, dense + 1))
+
+    assert jnp.array_equal(run(dense), expected)
+    assert jnp.array_equal(
+        jax.vmap(run)(batch),
+        jnp.stack((expected, jnp.trace(dense + 1, axis1=1, axis2=3).reshape(-1))),
+    )
+    assert jnp.array_equal(
+        jax.grad(lambda value: jnp.sum(run(value) ** 2))(dense),
+        jax.grad(
+            lambda value: jnp.sum(jnp.trace(value, axis1=1, axis2=3) ** 2)
+        )(dense),
+    )
+
+
+def test_trivial_tensortrace_validation_matches_nontrivial_path():
+    trivial = from_dense(
+        hom((ComplexSpace(2),), (ComplexSpace(3),)),
+        jnp.zeros((2, 3), dtype=jnp.float32),
+    )
+    u1 = space(U1Irrep, {0: 2})
+    nontrivial = TensorMap(
+        hom((u1,), (u1,)),
+        jnp.zeros((4,), dtype=jnp.float32),
+    )
+    operations = (
+        lambda tensor: tensortrace(
+            tensor,
+            axes=((0, 0), (1, 1)),
+            output=((), ()),
+        ),
+        lambda tensor: tensortrace(
+            tensor,
+            axes=((0,), (1,)),
+            output=((), ()),
+            conjugate=0,  # pyright: ignore[reportArgumentType]
+        ),
+    )
+
+    for operation in operations:
+        errors = []
+        for tensor in (trivial, nontrivial):
+            with pytest.raises((TypeError, ValueError)) as error:
+                operation(tensor)
+            errors.append((type(error.value), str(error.value)))
+        assert errors[0] == errors[1]
+
+
+def test_trivial_tensortrace_rejects_nondual_pair_before_fast_path(monkeypatch):
+    target = hom((ComplexSpace(2),), (ComplexSpace(3),))
+    tensor = from_dense(target, jnp.zeros((2, 3), dtype=jnp.float32))
+
+    def explode(*_args, **_kwargs):
+        raise AssertionError("invalid trace must not enter numerical execution")
+
+    monkeypatch.setattr(
+        contractions,
+        "_trivial_tensortrace_validated",
+        explode,
+    )
+
+    with pytest.raises(ValueError, match="paired trace axes must be dual-compatible"):
+        tensortrace(tensor, axes=((0,), (1,)), output=((), ()))
+
+
+def test_trivial_tensortrace_execution_bypasses_transformer_metadata(monkeypatch):
+    traced = ComplexSpace(3)
+    target = hom((ComplexSpace(2), traced), (ComplexSpace(4), traced))
+    dense = jnp.arange(72, dtype=jnp.float32).reshape(2, 3, 4, 3)
+    tensor = from_dense(target, dense)
+
+    def explode(*_args, **_kwargs):
+        raise AssertionError("Trivial trace execution must not request metadata")
+
+    monkeypatch.setattr(contractions, "_treepermuter", explode)
+    monkeypatch.setattr(contractions._native, "trace_transformer", explode)
+    monkeypatch.setattr(contractions, "get_sectorstructure", explode)
+    monkeypatch.setattr(contractions, "get_degeneracystructure", explode)
+    monkeypatch.setattr(TensorMap, "adjoint", explode)
+
+    result = tensortrace(
+        tensor,
+        axes=((1,), (3,)),
+        output=((0,), (2,)),
+        conjugate=True,
+    )
+
+    expected = jnp.conj(jnp.trace(dense, axis1=1, axis2=3))
+    assert jnp.array_equal(to_dense(result), expected)
+
+
+def test_trivial_validated_tensortrace_jaxpr_has_no_generic_packing_primitives():
+    traced = ComplexSpace(3)
+    target = hom((ComplexSpace(2), traced), (ComplexSpace(4), traced))
+    destination = hom((ComplexSpace(2),), (ComplexSpace(4),))
+    data = jnp.arange(72, dtype=jnp.float32)
+
+    primitives = {
+        equation.primitive.name
+        for equation in jax.make_jaxpr(
+            lambda value: contractions._trivial_tensortrace_validated(
+                TensorMap(target, value),
+                destination,
+                ((0, 1), (2, 3)),
+                1,
+                1,
+                False,
+            ).storage.data,
+        )(data).jaxpr.eqns
+    }
+
+    assert not primitives & {"broadcast_in_dim", "mul", "slice", "scatter-add"}

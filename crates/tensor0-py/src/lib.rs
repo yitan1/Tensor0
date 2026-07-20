@@ -18,8 +18,8 @@ use layout::{
 use sector_type::{add_sector_constants, PySectorSpec};
 use space::{
     dim, direct_sum, fuse, infimum_space, is_epimorphic, is_isomorphic, is_monomorphic,
-    make_hom_products, make_product_space, make_space, reduced_dim, storage_dim, supremum_space,
-    unit_space, zero_space, PyElementarySpace, PyHomSpace, PyProductSpace,
+    make_hom_products, make_product_space, make_space, reduced_dim, supremum_space, unit_space,
+    zero_space, PyElementarySpace, PyHomSpace, PyProductSpace,
 };
 use transform::{
     flip_entries, trace_transformer, tree_braider, tree_transposer, twist_is_trivial,
@@ -54,7 +54,6 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(infimum_space, module)?)?;
     module.add_function(wrap_pyfunction!(dim, module)?)?;
     module.add_function(wrap_pyfunction!(reduced_dim, module)?)?;
-    module.add_function(wrap_pyfunction!(storage_dim, module)?)?;
     module.add_function(wrap_pyfunction!(unit_space, module)?)?;
     module.add_function(wrap_pyfunction!(zero_space, module)?)?;
     module.add_function(wrap_pyfunction!(supremum_space, module)?)?;

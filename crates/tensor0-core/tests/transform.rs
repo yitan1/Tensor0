@@ -278,6 +278,35 @@ fn tree_transformer_rejects_incompatible_destination_for_permutation() {
 }
 
 #[test]
+fn tree_transposer_rejects_noncyclic_permutation_for_empty_structure() {
+    let empty = GradedSpace::<U1Irrep>::new(vec![], false).unwrap();
+    let src = HomSpace::new(
+        ProductSpace::new(vec![empty.clone(), empty.clone()]),
+        ProductSpace::new(vec![empty.clone(), empty]),
+    );
+    let p_codomain = [1, 0];
+    let p_domain = [3, 2];
+    let dst = src.permute(&p_codomain, &p_domain).unwrap();
+    let src_structure = build_sector_structure(&src).unwrap();
+    let dst_structure = build_sector_structure(&dst).unwrap();
+
+    let error = build_tree_transposer(
+        &src,
+        &dst,
+        &src_structure,
+        &dst_structure,
+        &p_codomain,
+        &p_domain,
+    )
+    .unwrap_err();
+
+    assert_eq!(
+        error.to_string(),
+        "fusion tree transpose requires a cyclic planar permutation",
+    );
+}
+
+#[test]
 fn tree_transformer_rejects_incompatible_cached_sector_layouts() {
     let factor = GradedSpace::new(vec![(u1(0), 1)], false).unwrap();
     let src = HomSpace::new(one_factor(factor.clone()), one_factor(factor));

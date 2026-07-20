@@ -2,6 +2,7 @@ import pytest
 
 import tensor0.structure.spaces as spaces
 from tensor0 import (
+    ComplexSpace,
     ElementarySpace,
     FermionNumber,
     FermionParity,
@@ -12,14 +13,24 @@ from tensor0 import (
     ProductSpace,
     SectorType,
     SU2Irrep,
+    Trivial,
     U1Irrep,
     U1SU2Irrep,
     Vect,
     Z2Irrep,
     Z4Irrep,
     _native,
+    dim,
+    direct_sum,
+    fuse,
     hom,
+    infimum,
+    is_epimorphic,
+    is_isomorphic,
+    is_monomorphic,
+    sector_spec,
     space,
+    supremum,
     zeros,
 )
 
@@ -195,6 +206,26 @@ def test_space_dimension_facade_distinguishes_dimension_concepts():
         spaces.reduced_dim(product)  # pyright: ignore[reportArgumentType]
     with pytest.raises(TypeError, match="storage_dim\\(\\) requires"):
         spaces.storage_dim(su2)  # pyright: ignore[reportArgumentType]
+
+
+def test_storage_dim_uses_degeneracystructure_for_nontrivial_space(monkeypatch):
+    factor = space(U1Irrep, {0: 2, 1: 3})
+    target = hom((factor,), (factor,))
+    expected = spaces.get_degeneracystructure(target)
+    calls = []
+
+    def get_degeneracystructure(value):
+        calls.append(value)
+        return expected
+
+    monkeypatch.setattr(
+        spaces,
+        "get_degeneracystructure",
+        get_degeneracystructure,
+    )
+
+    assert spaces.storage_dim(target) == expected.total_dim
+    assert calls == [target]
 
 
 @pytest.mark.parametrize(
@@ -531,3 +562,89 @@ def test_native_hom_unit_methods_validate_indices_and_unit_factors():
     nonunit = space(U1Irrep, {0: 2})
     with pytest.raises(ValueError, match="canonical unit space"):
         hom((nonunit,), empty).remove_unit(0)
+
+
+def test_trivial_sector_constant_uses_only_the_empty_tuple_label():
+    assert isinstance(Trivial, SectorType)
+    assert Trivial.quantum_dim(()) == 1
+    assert Trivial.static_key == ("trivial",)
+
+    with pytest.raises(TypeError):
+        Trivial()  # pyright: ignore[reportCallIssue]
+    for invalid in (0, (0,), (1, 2)):
+        with pytest.raises(ValueError, match="width"):
+            Trivial.quantum_dim(invalid)
+
+
+def test_default_vect_complex_space_and_explicit_trivial_are_equivalent():
+    explicit = space(Trivial, {(): 4})
+    expected = Vect(4)
+
+    assert expected == explicit
+    assert Vect(dim=4) == expected
+    assert ComplexSpace(4) == expected
+    assert Vect[Trivial](4) == expected
+    assert Vect[Trivial]({(): 4}) == expected
+    assert expected.sectors == (((), 4),)
+    assert expected.dual() == Vect(4, dual=True)
+    assert expected.flip() == Vect(4, dual=True)
+    assert ComplexSpace(4, dual=True) == Vect(4, dual=True)
+    assert Vect().sectors == ()
+    assert dim(Vect()) == 0
+    assert ComplexSpace() == Vect()
+
+
+def test_sector_spec_queries_every_typed_space_level():
+    elementary = ComplexSpace(2)
+    product = hom((elementary,), ()).codomain
+    morphism = hom(product, ())
+
+    assert sector_spec(elementary) == Trivial
+    assert sector_spec(product) == Trivial
+    assert sector_spec(morphism) == Trivial
+
+    with pytest.raises(
+        TypeError,
+        match="ElementarySpace, ProductSpace, or HomSpace",
+    ):
+        sector_spec(object())  # pyright: ignore[reportArgumentType]
+
+
+def test_trivial_spaces_reuse_generic_space_algebra_and_morphism_predicates():
+    small = ComplexSpace(2)
+    large = ComplexSpace(3)
+
+    assert direct_sum(small, large) == ComplexSpace(5)
+    assert infimum(small, large) == small
+    assert supremum(small, large) == large
+    assert fuse(hom((small, large), ()).codomain) == ComplexSpace(6)
+    assert is_monomorphic(small, large)
+    assert is_epimorphic(large, small)
+    assert not is_isomorphic(small, large)
+    assert is_isomorphic(small, ComplexSpace(2))
+
+
+@pytest.mark.parametrize("value", [True, -1, 1.5], ids=["bool", "negative", "float"])
+def test_default_vect_and_complex_space_reject_invalid_dimensions(value):
+    expected_error = ValueError if value == -1 else TypeError
+
+    with pytest.raises(expected_error, match="dimension"):
+        Vect(value)
+    with pytest.raises(expected_error, match="dimension"):
+        ComplexSpace(value)
+
+
+def test_explicit_trivial_vect_reuses_default_vect_dimension_validation():
+    with pytest.raises(TypeError, match="dimension"):
+        Vect[Trivial](True)
+
+
+def test_mapping_free_vect_is_restricted_to_trivial():
+    with pytest.raises(TypeError, match="requires the Trivial sector type"):
+        Vect[U1Irrep](3)
+
+
+@pytest.mark.parametrize("invalid", [0, (0,), (1, 2)])
+def test_trivial_space_rejects_nonempty_sector_labels(invalid):
+    with pytest.raises(ValueError, match="width"):
+        space(Trivial, {invalid: 2})

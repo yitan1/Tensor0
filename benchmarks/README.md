@@ -7,6 +7,9 @@ checkout:
   transforms, and JAX execution modes.
 - `contractions.py` covers contraction primitives, named and `ncon` networks,
   and JAX execution modes.
+- `trivial.py` covers Trivial dense conversion, permutation, trace,
+  contraction, composition, and network fast-path candidates together with
+  protected U1 and SU2 scenarios.
 - `_runner.py` provides the shared scenario registry, timing, CLI, and result
   serialization.
 
@@ -18,6 +21,7 @@ Use the project environment through `uv`:
 uv run python benchmarks/core.py --list-scenarios
 uv run python benchmarks/core.py --quick --json
 uv run python benchmarks/contractions.py --quick --json
+uv run python benchmarks/trivial.py --quick --json
 ```
 
 Without `--quick`, the default run includes `quick` and `full-only` scenarios.

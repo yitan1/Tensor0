@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from collections.abc import Callable
+import sys
 from typing import TypeAlias
 
 from jax import Array
@@ -13,18 +14,21 @@ from ..structure.layout import (
     get_degeneracystructure,
     get_sectorstructure,
 )
+from ..structure.spaces import sector_spec
 from ..tensor._blocks import (
     add_to_subblock as _add_to_subblock,
     get_subblock as _get_subblock,
     scale_subblock as _scale_subblock,
     set_subblock as _set_subblock,
 )
+from ..tensor.dense import _trivial_dense_array
 from ..tensor.tensor_map import TensorMap
 
 Permutation: TypeAlias = tuple[tuple[int, ...], tuple[int, ...]]
 _TransformerCache: TypeAlias = OrderedDict[object, _native.TreeTransformer]
 
 _TRANSFORMER_CACHE_MAXSIZE = 10_000
+_USIZE_MAX = 2 * sys.maxsize + 1
 _TREE_BRAIDER_CACHE: _TransformerCache = OrderedDict()
 _TREE_TRANSPOSER_CACHE: _TransformerCache = OrderedDict()
 
@@ -38,6 +42,13 @@ def permute(tensor: TensorMap, p: Permutation) -> TensorMap:
         return tensor
 
     dst_space = tensor.space.permute(p_codomain, p_domain)
+    if sector_spec(tensor.space) == _native.Trivial:
+        return _apply_trivial_index_transform(
+            tensor,
+            dst_space,
+            p_codomain,
+            p_domain,
+        )
     transformer = _treepermuter(
         tensor.space,
         dst_space,
@@ -63,6 +74,13 @@ def braid(tensor: TensorMap, p: Permutation, levels: tuple[int, ...]) -> TensorM
         return tensor
 
     dst_space = tensor.space.permute(p_codomain, p_domain)
+    if sector_spec(tensor.space) == _native.Trivial:
+        return _apply_trivial_index_transform(
+            tensor,
+            dst_space,
+            p_codomain,
+            p_domain,
+        )
     transformer = _treebraider(tensor.space, dst_space, p_codomain, p_domain, levels)
     return _apply_tree_transform(
         tensor,
@@ -90,6 +108,18 @@ def _transpose_normalized(
         return tensor
 
     dst_space = tensor.space.permute(p_codomain, p_domain)
+    if sector_spec(tensor.space) == _native.Trivial:
+        _validate_cyclic_transpose_permutation(
+            tensor.space,
+            p_codomain,
+            p_domain,
+        )
+        return _apply_trivial_index_transform(
+            tensor,
+            dst_space,
+            p_codomain,
+            p_domain,
+        )
     transformer = _treetransposer(tensor.space, dst_space, p_codomain, p_domain)
     return _apply_tree_transform(
         tensor,
@@ -98,6 +128,39 @@ def _transpose_normalized(
         p_domain,
         transformer,
     )
+
+
+def _apply_trivial_index_transform(
+    tensor: TensorMap,
+    dst_space: _native.HomSpace,
+    p_codomain: tuple[int, ...],
+    p_domain: tuple[int, ...],
+) -> TensorMap:
+    data = jnp.transpose(
+        _trivial_dense_array(tensor),
+        p_codomain + p_domain,
+    ).reshape(-1)
+    return TensorMap(dst_space, data)
+
+
+def _validate_cyclic_transpose_permutation(
+    space: _native.HomSpace,
+    p_codomain: tuple[int, ...],
+    p_domain: tuple[int, ...],
+) -> None:
+    numout = space.numout
+    rank = space.numind
+    permutation = tuple(
+        index if index < numout else rank - 1 - (index - numout)
+        for index in p_codomain + tuple(reversed(p_domain))
+    )
+    if permutation and any(
+        permutation[(index + 1) % rank] != (value + 1) % rank
+        for index, value in enumerate(permutation)
+    ):
+        raise ValueError(
+            "fusion tree transpose requires a cyclic planar permutation"
+        )
 
 
 def _apply_tree_transform(
@@ -586,7 +649,11 @@ def _normalize_levels(space: _native.HomSpace, levels: object) -> tuple[int, ...
     for level in levels:
         if isinstance(level, bool) or not isinstance(level, int):
             raise TypeError("braid() requires levels to contain integers")
-        normalized.append(level)
+        if level < 0:
+            raise ValueError("braid levels must be non-negative")
+        if level > _USIZE_MAX:
+            raise OverflowError("braid level is too large for a platform unsigned integer")
+        normalized.append(int(level))
     return tuple(normalized)
 
 

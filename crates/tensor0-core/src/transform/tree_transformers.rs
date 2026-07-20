@@ -7,6 +7,7 @@
 use ndarray::Array2;
 
 use crate::error::{Result, Tensor0Error};
+use crate::fusion_tree::auxiliary::{is_cyclic_permutation, linearize_permutation};
 use crate::fusion_tree::braiding_ops::{braid_block, braid_pair, flip_pair};
 use crate::fusion_tree::duality_ops::{transpose_block, transpose_pair};
 use crate::fusion_tree::{fusion_blocks, FusionTreeBlock, FusionTreePair};
@@ -184,6 +185,12 @@ pub fn tree_transposer<I: Sector>(
     if &expected_dst != dst {
         return Err(Tensor0Error::Message(
             "incompatible spaces for transposing".to_string(),
+        ));
+    }
+    let permutation = linearize_permutation(p_codomain, p_domain, src.numout(), src.numin())?;
+    if !is_cyclic_permutation(&permutation) {
+        return Err(Tensor0Error::Message(
+            "fusion tree transpose requires a cyclic planar permutation".to_string(),
         ));
     }
 

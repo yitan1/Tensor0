@@ -1,5 +1,6 @@
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
+use pyo3::sync::PyOnceLock;
 use pyo3::types::{PyAny, PyTuple};
 use pyo3::IntoPyObject;
 use tensor0_core::layout::{
@@ -14,9 +15,9 @@ use crate::space::{HomSpaceInner, PyHomSpace};
 use super::sector_structure::{PySectorStructure, SectorStructureInner};
 
 #[pyclass(name = "DegeneracyStructure", skip_from_py_object)]
-#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PyDegeneracyStructure {
     inner: DegeneracyStructure,
+    blockstructure: PyOnceLock<Py<PyAny>>,
 }
 
 #[pyclass(name = "BlockStructure", skip_from_py_object)]
@@ -36,6 +37,7 @@ pub(crate) fn build_degeneracystructure(
     space: PyRef<'_, PyHomSpace>,
 ) -> PyResult<PyDegeneracyStructure> {
     let inner = match space.inner() {
+        HomSpaceInner::Trivial(hom) => core_build_degeneracy_structure(hom),
         HomSpaceInner::U1Irrep(hom) => core_build_degeneracy_structure(hom),
         HomSpaceInner::SU2Irrep(hom) => core_build_degeneracy_structure(hom),
         HomSpaceInner::FermionParity(hom) => core_build_degeneracy_structure(hom),
@@ -49,7 +51,10 @@ pub(crate) fn build_degeneracystructure(
         HomSpaceInner::FermionParityU1SU2Irrep(hom) => core_build_degeneracy_structure(hom),
     }
     .map_err(core_err)?;
-    Ok(PyDegeneracyStructure { inner })
+    Ok(PyDegeneracyStructure {
+        inner,
+        blockstructure: PyOnceLock::new(),
+    })
 }
 
 #[pyfunction]
@@ -58,6 +63,9 @@ pub(crate) fn _build_degeneracystructure_from_sectorstructure(
     sectorstructure: PyRef<'_, PySectorStructure>,
 ) -> PyResult<PyDegeneracyStructure> {
     let inner = match (space.inner(), &sectorstructure.inner) {
+        (HomSpaceInner::Trivial(hom), SectorStructureInner::Trivial(structure)) => {
+            core_build_degeneracy_structure_from_sector_structure(hom, structure)
+        }
         (HomSpaceInner::U1Irrep(hom), SectorStructureInner::U1Irrep(structure)) => {
             core_build_degeneracy_structure_from_sector_structure(hom, structure)
         }
@@ -102,7 +110,10 @@ pub(crate) fn _build_degeneracystructure_from_sectorstructure(
         }
     }
     .map_err(core_err)?;
-    Ok(PyDegeneracyStructure { inner })
+    Ok(PyDegeneracyStructure {
+        inner,
+        blockstructure: PyOnceLock::new(),
+    })
 }
 
 #[pymethods]
@@ -114,7 +125,9 @@ impl PyDegeneracyStructure {
 
     #[getter]
     fn blockstructure(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        blockstructures_py(py, &self.inner.blockstructure)
+        self.blockstructure
+            .get_or_try_init(py, || blockstructures_py(py, &self.inner.blockstructure))
+            .map(|blockstructure| blockstructure.clone_ref(py))
     }
 
     #[getter]

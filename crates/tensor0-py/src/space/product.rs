@@ -3,8 +3,8 @@ use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyAnyMethods};
 use tensor0_core::sector::{
     FermionNumber, FermionParity, FermionParitySU2Irrep, FermionParityU1Irrep,
-    FermionParityU1SU2Irrep, GroupSpec, SU2Irrep, Sector, SectorSpec as CoreSectorSpec, U1Irrep,
-    U1SU2Irrep, Z2Irrep, Z3Irrep, Z4Irrep,
+    FermionParityU1SU2Irrep, GroupSpec, SU2Irrep, Sector, SectorSpec as CoreSectorSpec, Trivial,
+    U1Irrep, U1SU2Irrep, Z2Irrep, Z3Irrep, Z4Irrep,
 };
 use tensor0_core::space::{
     fuse_product_space as core_fuse_product_space, GradedSpace, ProductSpace, ProductSpaceSpec,
@@ -24,6 +24,7 @@ pub(crate) struct PyProductSpace {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ProductSpaceInner {
+    Trivial(ProductSpace<Trivial>),
     U1Irrep(ProductSpace<U1Irrep>),
     SU2Irrep(ProductSpace<SU2Irrep>),
     FermionParity(ProductSpace<FermionParity>),
@@ -141,6 +142,7 @@ impl ProductSpaceInner {
         spaces: Vec<PyElementarySpace>,
     ) -> PyResult<ProductSpaceInner> {
         match spec.clone().canonicalize().map_err(core_err)? {
+            CoreSectorSpec::Trivial => build_product_space!(Trivial, Trivial, spaces),
             CoreSectorSpec::Irrep {
                 group: GroupSpec::U1,
             } => build_product_space!(U1Irrep, U1Irrep, spaces),
@@ -195,6 +197,7 @@ impl ProductSpaceInner {
 
     pub(super) fn sector_spec(&self) -> CoreSectorSpec {
         match self {
+            ProductSpaceInner::Trivial(_) => Trivial::sector_spec(),
             ProductSpaceInner::U1Irrep(_) => U1Irrep::sector_spec(),
             ProductSpaceInner::SU2Irrep(_) => SU2Irrep::sector_spec(),
             ProductSpaceInner::FermionParity(_) => FermionParity::sector_spec(),
@@ -211,6 +214,9 @@ impl ProductSpaceInner {
 
     pub(super) fn spaces(&self) -> Vec<GradedSpaceInner> {
         match self {
+            ProductSpaceInner::Trivial(product) => {
+                factors_to_spaces(product, GradedSpaceInner::Trivial)
+            }
             ProductSpaceInner::U1Irrep(product) => {
                 factors_to_spaces(product, GradedSpaceInner::U1Irrep)
             }
@@ -249,6 +255,7 @@ impl ProductSpaceInner {
 
     fn len(&self) -> usize {
         match self {
+            ProductSpaceInner::Trivial(product) => product.factors().len(),
             ProductSpaceInner::U1Irrep(product) => product.factors().len(),
             ProductSpaceInner::SU2Irrep(product) => product.factors().len(),
             ProductSpaceInner::FermionParity(product) => product.factors().len(),
@@ -265,6 +272,9 @@ impl ProductSpaceInner {
 
     fn space_at(&self, index: usize) -> Option<GradedSpaceInner> {
         match self {
+            ProductSpaceInner::Trivial(product) => {
+                factor_at(product, index, GradedSpaceInner::Trivial)
+            }
             ProductSpaceInner::U1Irrep(product) => {
                 factor_at(product, index, GradedSpaceInner::U1Irrep)
             }
@@ -303,6 +313,7 @@ impl ProductSpaceInner {
 
     pub(super) fn to_spec(&self) -> ProductSpaceSpec {
         match self {
+            ProductSpaceInner::Trivial(product) => product.to_spec(),
             ProductSpaceInner::U1Irrep(product) => product.to_spec(),
             ProductSpaceInner::SU2Irrep(product) => product.to_spec(),
             ProductSpaceInner::FermionParity(product) => product.to_spec(),
@@ -319,6 +330,7 @@ impl ProductSpaceInner {
 
     fn fuse(&self) -> PyResult<GradedSpaceInner> {
         match self {
+            ProductSpaceInner::Trivial(product) => fuse_product(product, GradedSpaceInner::Trivial),
             ProductSpaceInner::U1Irrep(product) => fuse_product(product, GradedSpaceInner::U1Irrep),
             ProductSpaceInner::SU2Irrep(product) => {
                 fuse_product(product, GradedSpaceInner::SU2Irrep)

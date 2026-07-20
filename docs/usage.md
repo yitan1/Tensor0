@@ -23,6 +23,7 @@ uv run pytest tests -q
 
 Tensor0 currently supports these public sector families and aliases:
 
+- `Trivial` for ordinary tensors without symmetry
 - `U1Irrep`
 - `Z2Irrep`, `Z3Irrep`, `Z4Irrep`
 - `FermionParity`
@@ -34,6 +35,125 @@ Tensor0 currently supports these public sector families and aliases:
 - `FermionParityU1SU2Irrep`
 
 Arbitrary dynamic product sector families are not currently supported.
+
+## Ordinary Tensors with Trivial Symmetry
+
+`Trivial` is the no-symmetry sector family. Its only sector label is the empty
+tuple `()`. It is a `SectorType` constant, not a callable sector-value class.
+These four spellings return the same ordinary `ElementarySpace`:
+
+```python
+from tensor0 import ComplexSpace, Trivial, Vect, space
+
+ordinary = Vect(4)
+
+assert ordinary == Vect[Trivial](4)
+assert ordinary == space(Trivial, {(): 4})
+assert ordinary == ComplexSpace(4)
+```
+
+`Vect(dim=0, *, dual=False)` is the canonical concise constructor.
+`ComplexSpace(...)` remains a compatibility spelling and returns exactly the
+same native space without a separate class. Dimensions are non-boolean,
+non-negative integers. Dual, zero, and unit spaces therefore use the same APIs:
+
+```python
+from tensor0 import ComplexSpace, Trivial, Vect, unit_space, zero_space
+
+dual = Vect(4, dual=True)
+assert dual == Vect(4).dual()
+assert Vect() == zero_space(Trivial)
+assert Vect(1) == unit_space(Trivial)
+assert ComplexSpace(4) == Vect(4)
+```
+
+A rank-zero `HomSpace` has no visible factor from which to infer its sector
+family, so pass `sector_type=Trivial` explicitly:
+
+```python
+import jax.numpy as jnp
+
+from tensor0 import Trivial, from_dense, hom, scalar
+
+rank_zero = hom((), (), sector_type=Trivial)
+value = from_dense(rank_zero, jnp.asarray(2.0))
+assert float(scalar(value)) == 2.0
+```
+
+Every correctly shaped dense array is valid for a Trivial `HomSpace`.
+`from_dense()` accepts either the full visible shape or its codomain-by-domain
+matrix shape. The sole coupled block uses the sector key `()` and has the
+matrix shape:
+
+```python
+import jax.numpy as jnp
+
+from tensor0 import Vect, from_dense, hom, to_dense
+
+target = hom((Vect(2), Vect(3)), (Vect(4),))
+dense = jnp.arange(24, dtype=jnp.float32).reshape(2, 3, 4)
+tensor = from_dense(target, dense)
+
+assert tensor.block(()).shape == (6, 4)
+assert bool(jnp.array_equal(tensor.block(()), dense.reshape(6, 4)))
+assert bool(jnp.array_equal(to_dense(tensor), dense))
+```
+
+Trivial tensors use the same composition, contraction, trace, transform, and
+factorization APIs as symmetric tensors. For example:
+
+```python
+import jax.numpy as jnp
+
+from tensor0 import (
+    Vect,
+    from_dense,
+    hom,
+    scalar,
+    svd_compact,
+    tensorcontract,
+    tensortrace,
+    to_dense,
+)
+
+left_dense = jnp.arange(6, dtype=jnp.float32).reshape(2, 3)
+right_dense = jnp.arange(12, dtype=jnp.float32).reshape(3, 4)
+left = from_dense(hom((Vect(2),), (Vect(3),)), left_dense)
+right = from_dense(hom((Vect(3),), (Vect(4),)), right_dense)
+
+contracted = tensorcontract(
+    left,
+    right,
+    axes=((1,), (0,)),
+    output=(((0, 0),), ((1, 1),)),
+)
+assert bool(jnp.allclose(to_dense(contracted), left_dense @ right_dense))
+
+square_dense = jnp.arange(9, dtype=jnp.float32).reshape(3, 3)
+square = from_dense(
+    hom((Vect(3),), (Vect(3),)),
+    square_dense,
+)
+traced = tensortrace(square, axes=((0,), (1,)), output=((), ()))
+assert bool(jnp.allclose(scalar(traced), jnp.trace(square_dense)))
+
+u, s, vh = svd_compact(left)
+assert bool(jnp.allclose(to_dense(u @ s @ vh), left_dense, atol=1e-5))
+```
+
+For Trivial tensors, `to_dense()` is a direct immutable JAX reshape of packed
+storage. `from_dense()` likewise uses a direct reshape when the input already
+has the target storage dtype; required dtype promotion may materialize a new
+array. Neither API promises physical buffer aliasing or a mutable/write-through
+view. Nontrivial sector families continue to use symmetry-aware projection and
+reconstruction, including `tol` validation in `from_dense()`; they do not use
+Trivial's dense numerical fast paths.
+
+Tensor0 does not currently support product-sector families such as
+`Trivial @ U1Irrep`, `PlanarTrivial`, real or Cartesian space families,
+mutable dense/block views, or generic dense execution for nontrivial
+symmetries. Use `tensor.block(())` for the sole Trivial block; `tensor[()]` is
+not a dense-array access spelling.
 
 ## Spaces, HomSpaces, and TensorMap
 
@@ -604,8 +724,10 @@ conversion.
 
 ## Dense Conversion
 
-`to_dense(...)` and `from_dense(...)` are public APIs intended for
-correctness-first small examples and tests.
+`to_dense(...)` and `from_dense(...)` are public APIs. Trivial tensors use the
+direct immutable array path described above. Other sector families use these
+APIs as correctness-first projection and reconstruction utilities for small
+examples and tests.
 
 ```python
 import jax.numpy as jnp
@@ -621,7 +743,8 @@ dense = to_dense(tensor)
 rebuilt = from_dense(tensor.space, dense)
 ```
 
-Dense conversion is not a production performance path in the current version.
+Dense conversion does not enable dense numerical execution for nontrivial
+sector families.
 
 ## JAX jit and grad
 
@@ -679,7 +802,7 @@ Tensor0 currently does not include:
 - arbitrary dynamic product sector families
 - full NumPy einsum syntax or automatic contraction-order optimization
 - mutable block views or in-place public APIs
-- production dense conversion
+- generic dense numerical execution for nontrivial sector families
 - native JAX kernels
 - performance guarantees or published benchmark reports
 

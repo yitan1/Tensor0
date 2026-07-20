@@ -12,11 +12,9 @@ import jax.numpy as jnp
 from jax.typing import DTypeLike
 
 from .. import _native
-from ..structure.layout import (
-    get_blockstructure,
-    get_degeneracystructure,
-)
+from ..structure.layout import get_blockstructure
 from ..structure.sector_dict import SectorDict
+from ..structure.spaces import storage_dim
 
 
 _StridedIndicesCacheKey = tuple[
@@ -168,7 +166,37 @@ def pack_complete_blocks(
     dtype: DTypeLike | None,
 ) -> Array:
     block_arrays = SectorDict(blocks)
-    degeneracystructure = get_degeneracystructure(space)
+    if space.codomain.sector_spec == _native.Trivial:
+        total_dim = storage_dim(space)
+        if total_dim == 0:
+            for coupled, value in block_arrays.items():
+                if jnp.asarray(value, dtype=dtype).size != 0:
+                    raise ValueError(f"unexpected block sector {coupled}")
+            return jnp.zeros((0,), dtype=dtype)
+
+        coupled = ()
+        if coupled not in block_arrays:
+            raise ValueError(f"missing data for block sector {coupled}")
+
+        expected_shape = (
+            math.prod(_native.product_dims(space.codomain)),
+            math.prod(_native.product_dims(space.domain)),
+        )
+        value = jnp.asarray(block_arrays[coupled], dtype=dtype)
+        actual_shape = tuple(value.shape)
+        if actual_shape != expected_shape:
+            raise ValueError(
+                f"block sector {coupled} has shape {actual_shape}; "
+                f"expected {expected_shape}",
+            )
+        for extra_coupled, extra_value in block_arrays.items():
+            if extra_coupled != coupled and jnp.asarray(
+                extra_value,
+                dtype=dtype,
+            ).size != 0:
+                raise ValueError(f"unexpected block sector {extra_coupled}")
+        return value.reshape((total_dim,))
+
     blockstructures = get_blockstructure(space)
 
     flat_blocks: list[Array] = []
@@ -195,7 +223,7 @@ def pack_complete_blocks(
 
     if flat_blocks:
         return jnp.concatenate(tuple(flat_blocks), axis=0)
-    return jnp.zeros((degeneracystructure.total_dim,), dtype=dtype)
+    return jnp.zeros((0,), dtype=dtype)
 
 
 def pack_blocks(
@@ -205,7 +233,28 @@ def pack_blocks(
     dtype: DTypeLike | None,
 ) -> Array:
     block_arrays = SectorDict(blocks)
-    degeneracystructure = get_degeneracystructure(space)
+    if space.codomain.sector_spec == _native.Trivial:
+        total_dim = storage_dim(space)
+        if total_dim == 0:
+            return jnp.zeros((0,), dtype=dtype)
+
+        expected_shape = (
+            math.prod(_native.product_dims(space.codomain)),
+            math.prod(_native.product_dims(space.domain)),
+        )
+        value = block_arrays.get(())
+        if value is None:
+            value = jnp.zeros(expected_shape, dtype=dtype)
+        else:
+            value = jnp.asarray(value, dtype=dtype)
+            actual_shape = tuple(value.shape)
+            if actual_shape != expected_shape:
+                raise ValueError(
+                    f"block {()} has shape {actual_shape}; "
+                    f"expected {expected_shape}",
+                )
+        return value.reshape((total_dim,))
+
     blockstructures = get_blockstructure(space)
 
     flat_blocks: list[Array] = []
@@ -226,7 +275,7 @@ def pack_blocks(
 
     if flat_blocks:
         return jnp.concatenate(tuple(flat_blocks), axis=0)
-    return jnp.zeros((degeneracystructure.total_dim,), dtype=dtype)
+    return jnp.zeros((0,), dtype=dtype)
 
 
 def _packed_sector_values(

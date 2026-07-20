@@ -3,6 +3,7 @@ from dataclasses import dataclass
 import jax.numpy as jnp
 
 from tensor0 import (
+    ComplexSpace,
     FermionParity,
     HomSpace,
     SU2Irrep,
@@ -97,6 +98,9 @@ def assert_tensormap_blocks_allclose(left, right):
 
 
 def dense_roundtrip_cases():
+    trivial_left = ComplexSpace(2)
+    trivial_right = ComplexSpace(3)
+    trivial_input = ComplexSpace(4)
     u1_left = space(U1Irrep, {0: 2, 1: 1})
     u1_right = space(U1Irrep, {0: 1, 1: 2})
     u1_mid = space(U1Irrep, {0: 1, -1: 2})
@@ -109,6 +113,11 @@ def dense_roundtrip_cases():
     half_with_charge = space(U1SU2Irrep, {(0, 1): 1})
 
     return (
+        DenseCase(
+            "trivial-multileg",
+            hom((trivial_left, trivial_right), (trivial_input,)),
+            (2, 3, 4),
+        ),
         DenseCase(
             "u1-two-leg",
             hom((u1_left,), (u1_right,)),
@@ -148,6 +157,8 @@ def dense_roundtrip_cases():
 
 
 def tensor_map_cases():
+    trivial_left = ComplexSpace(2)
+    trivial_right = ComplexSpace(3)
     u1 = space(U1Irrep, {0: 2, 1: 3})
     u1_left = space(U1Irrep, {0: 2, 1: 3})
     u1_right = space(U1Irrep, {0: 5, 1: 7})
@@ -156,6 +167,7 @@ def tensor_map_cases():
     product = space(product_type, {(0, 0): 2, (1, 1): 3})
 
     return (
+        TensorMapCase("trivial", hom((trivial_left,), (trivial_right,))),
         TensorMapCase("u1-endomorphism", hom((u1,), (u1,))),
         TensorMapCase("u1-strided", hom((u1_left, u1_right), (u1_left, u1_right))),
         TensorMapCase("su2-half", hom((half,), (half,))),
@@ -164,6 +176,9 @@ def tensor_map_cases():
 
 
 def tensor_map_matmul_cases():
+    trivial_left = ComplexSpace(2)
+    trivial_mid = ComplexSpace(3)
+    trivial_right = ComplexSpace(4)
     u1_left = space(U1Irrep, {0: 2, 1: 3})
     u1_mid = space(U1Irrep, {0: 5, 1: 7})
     u1_right = space(U1Irrep, {0: 11, 1: 13})
@@ -174,6 +189,12 @@ def tensor_map_matmul_cases():
     product_right = space(product_type, {(0, 0): 11, (1, 1): 13})
 
     return (
+        TensorMapMatmulCase(
+            "trivial",
+            hom((trivial_left,), (trivial_mid,)),
+            hom((trivial_mid,), (trivial_right,)),
+            hom((trivial_left,), (trivial_right,)),
+        ),
         TensorMapMatmulCase(
             "u1",
             hom((u1_left,), (u1_mid,)),
@@ -190,6 +211,8 @@ def tensor_map_matmul_cases():
 
 
 def factorization_cases():
+    trivial_left = ComplexSpace(2)
+    trivial_right = ComplexSpace(3)
     u1_left = space(U1Irrep, {0: 2, 1: 4})
     u1_right = space(U1Irrep, {0: 3, 1: 2})
 
@@ -207,6 +230,7 @@ def factorization_cases():
     u1_c = space(U1Irrep, {0: 4, 1: 9})
 
     return (
+        HomCase("trivial-rectangular", hom((trivial_left,), (trivial_right,))),
         HomCase("u1-rectangular", hom((u1_left,), (u1_right,))),
         HomCase(
             "fermion-parity",
@@ -219,6 +243,11 @@ def factorization_cases():
 
 
 def transform_cases():
+    trivial_left = ComplexSpace(2)
+    trivial_right = ComplexSpace(3, dual=True)
+    trivial_input = ComplexSpace(4)
+    trivial_space = hom((trivial_left, trivial_right), (trivial_input,))
+
     u1_left = space(U1Irrep, {0: 2, 1: 1})
     u1_right = space(U1Irrep, {0: 1, 1: 2})
     u1_out = space(U1Irrep, {1: 1})
@@ -234,6 +263,13 @@ def transform_cases():
     )
 
     return (
+        TransformCase(
+            "trivial",
+            trivial_space,
+            ((1,), (0, 2)),
+            hom((trivial_right,), (trivial_left.dual(), trivial_input)),
+            (1, 0, 2),
+        ),
         TransformCase(
             "u1",
             u1_space,

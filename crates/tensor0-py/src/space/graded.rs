@@ -3,8 +3,8 @@ use pyo3::prelude::*;
 use pyo3::types::PyAny;
 use tensor0_core::sector::{
     FermionNumber, FermionParity, FermionParitySU2Irrep, FermionParityU1Irrep,
-    FermionParityU1SU2Irrep, GroupSpec, SU2Irrep, Sector, SectorSpec as CoreSectorSpec, U1Irrep,
-    U1SU2Irrep, Z2Irrep, Z3Irrep, Z4Irrep,
+    FermionParityU1SU2Irrep, GroupSpec, SU2Irrep, Sector, SectorSpec as CoreSectorSpec, Trivial,
+    U1Irrep, U1SU2Irrep, Z2Irrep, Z3Irrep, Z4Irrep,
 };
 use tensor0_core::space::{infimum_space as core_infimum_space, ElementarySpaceSpec, GradedSpace};
 
@@ -21,6 +21,7 @@ pub(crate) struct PyElementarySpace {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum GradedSpaceInner {
+    Trivial(GradedSpace<Trivial>),
     U1Irrep(GradedSpace<U1Irrep>),
     SU2Irrep(GradedSpace<SU2Irrep>),
     FermionParity(GradedSpace<FermionParity>),
@@ -102,6 +103,7 @@ impl PyElementarySpace {
 impl GradedSpaceInner {
     pub(super) fn sector_spec(&self) -> CoreSectorSpec {
         match self {
+            GradedSpaceInner::Trivial(_) => Trivial::sector_spec(),
             GradedSpaceInner::U1Irrep(_) => U1Irrep::sector_spec(),
             GradedSpaceInner::SU2Irrep(_) => SU2Irrep::sector_spec(),
             GradedSpaceInner::FermionParity(_) => FermionParity::sector_spec(),
@@ -118,6 +120,7 @@ impl GradedSpaceInner {
 
     pub(super) fn sectors_py(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         match self {
+            GradedSpaceInner::Trivial(space) => sectors_py(py, space),
             GradedSpaceInner::U1Irrep(space) => sectors_py(py, space),
             GradedSpaceInner::SU2Irrep(space) => sectors_py(py, space),
             GradedSpaceInner::FermionParity(space) => sectors_py(py, space),
@@ -134,6 +137,7 @@ impl GradedSpaceInner {
 
     pub(super) fn is_dual(&self) -> bool {
         match self {
+            GradedSpaceInner::Trivial(space) => space.is_dual(),
             GradedSpaceInner::U1Irrep(space) => space.is_dual(),
             GradedSpaceInner::SU2Irrep(space) => space.is_dual(),
             GradedSpaceInner::FermionParity(space) => space.is_dual(),
@@ -150,6 +154,7 @@ impl GradedSpaceInner {
 
     pub(super) fn dual(&self) -> GradedSpaceInner {
         match self {
+            GradedSpaceInner::Trivial(space) => GradedSpaceInner::Trivial(space.dual()),
             GradedSpaceInner::U1Irrep(space) => GradedSpaceInner::U1Irrep(space.dual()),
             GradedSpaceInner::SU2Irrep(space) => GradedSpaceInner::SU2Irrep(space.dual()),
             GradedSpaceInner::FermionParity(space) => GradedSpaceInner::FermionParity(space.dual()),
@@ -174,6 +179,7 @@ impl GradedSpaceInner {
 
     pub(super) fn flip(&self) -> GradedSpaceInner {
         match self {
+            GradedSpaceInner::Trivial(space) => GradedSpaceInner::Trivial(space.flip()),
             GradedSpaceInner::U1Irrep(space) => GradedSpaceInner::U1Irrep(space.flip()),
             GradedSpaceInner::SU2Irrep(space) => GradedSpaceInner::SU2Irrep(space.flip()),
             GradedSpaceInner::FermionParity(space) => GradedSpaceInner::FermionParity(space.flip()),
@@ -198,6 +204,11 @@ impl GradedSpaceInner {
 
     fn infimum(left: &GradedSpaceInner, right: &GradedSpaceInner) -> PyResult<GradedSpaceInner> {
         match (left, right) {
+            (GradedSpaceInner::Trivial(left), GradedSpaceInner::Trivial(right)) => {
+                core_infimum_space(left, right)
+                    .map(GradedSpaceInner::Trivial)
+                    .map_err(core_err)
+            }
             (GradedSpaceInner::U1Irrep(left), GradedSpaceInner::U1Irrep(right)) => {
                 core_infimum_space(left, right)
                     .map(GradedSpaceInner::U1Irrep)
@@ -265,6 +276,7 @@ impl GradedSpaceInner {
 
     pub(super) fn to_spec(&self) -> ElementarySpaceSpec {
         match self {
+            GradedSpaceInner::Trivial(space) => space.to_spec(),
             GradedSpaceInner::U1Irrep(space) => space.to_spec(),
             GradedSpaceInner::SU2Irrep(space) => space.to_spec(),
             GradedSpaceInner::FermionParity(space) => space.to_spec(),
@@ -307,6 +319,9 @@ fn graded_space_from_spec(
     is_dual: bool,
 ) -> PyResult<GradedSpaceInner> {
     match spec {
+        CoreSectorSpec::Trivial => {
+            build_graded_space_variant::<Trivial>(sectors, is_dual, GradedSpaceInner::Trivial)
+        }
         CoreSectorSpec::Irrep {
             group: GroupSpec::U1,
         } => build_graded_space_variant::<U1Irrep>(sectors, is_dual, GradedSpaceInner::U1Irrep),

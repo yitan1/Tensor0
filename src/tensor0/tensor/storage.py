@@ -43,6 +43,9 @@ def _validate_vector_storage_data(data: object, expected_total_dim: int) -> None
             f"actual shape {actual_shape}",
         )
 
+    if isinstance(data, Array):
+        return
+
     try:
         empty_slice = cast(_Sliceable, data)[0:0]
     except Exception as exc:

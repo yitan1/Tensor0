@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from math import prod
+
 import jax.numpy as jnp
 from jax import Array, random
 from jax.typing import DTypeLike
@@ -149,6 +151,15 @@ def _identity_block_morphism(
     dtype: DTypeLike | None,
 ) -> TensorMap:
     target = hom(codomain, domain)
+    if target.codomain.sector_spec == _native.Trivial:
+        total_dim = storage_dim(target)
+        row_dim = prod(_native.product_dims(codomain))
+        col_dim = prod(_native.product_dims(domain))
+        return TensorMap(
+            target,
+            jnp.eye(row_dim, col_dim, dtype=dtype).reshape((total_dim,)),
+        )
+
     blocks = (
         (coupled, jnp.eye(block.row_dim, block.col_dim, dtype=dtype))
         for coupled, block in get_blockstructure(target).items()

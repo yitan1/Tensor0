@@ -1,15 +1,21 @@
+import jax.numpy as jnp
 import pytest
 
 import tensor0
 import tensor0.structure.layout as layout_module
 from tensor0 import (
+    ComplexSpace,
     SU2Irrep,
+    TensorMap,
     U1Irrep,
     U1SU2Irrep,
     Z2Irrep,
     _native,
+    from_dense,
     hom,
     space,
+    storage_dim,
+    to_dense,
 )
 from tensor0.structure import get_degeneracystructure, get_sectorstructure
 
@@ -122,10 +128,14 @@ def test_native_sectorstructure_blocksector_index_supports_product_sector_keys()
 def test_get_blockstructure_maps_blocksectors_to_degeneracy_blocks():
     v = space(U1Irrep, {1: 3, 0: 2})
     h = hom((v,), (v,))
+    equivalent = hom((v,), (v,))
     degeneracystructure = get_degeneracystructure(h)
 
     blockstructure = tensor0.structure.get_blockstructure(h)
 
+    assert degeneracystructure is get_degeneracystructure(equivalent)
+    assert blockstructure is tensor0.structure.get_blockstructure(h)
+    assert blockstructure is tensor0.structure.get_blockstructure(equivalent)
     assert tuple(blockstructure) == ((0,), (1,))
     assert block_span(blockstructure[0]) == block_span(
         degeneracystructure.blockstructure[0],
@@ -189,3 +199,23 @@ def test_sectorstructure_cache_separates_typed_empty_sector_families():
         assert u1_structure is not su2_structure
     finally:
         layout_module._clear_layout_caches_for_tests()
+
+
+def test_trivial_layout_and_dense_roundtrip_are_contiguous():
+    left = ComplexSpace(2)
+    middle = ComplexSpace(3)
+    right = ComplexSpace(4)
+    target = hom((left, middle), (right,))
+    dense = jnp.arange(24, dtype=jnp.float32).reshape(2, 3, 4)
+
+    tensor = from_dense(target, dense)
+    sectorstructure = get_sectorstructure(target)
+    degeneracystructure = get_degeneracystructure(target)
+
+    assert sectorstructure.blocksectors == ((),)
+    assert sectorstructure.fusiontree_pair_count == 1
+    assert degeneracystructure.total_dim == 24
+    assert storage_dim(target) == 24
+    assert tensor.block(()).shape == (6, 4)
+    assert tensor.subblock(sectorstructure.fusiontree_pairs[0]).shape == (2, 3, 4)
+    assert jnp.array_equal(to_dense(tensor), dense)

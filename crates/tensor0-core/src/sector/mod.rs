@@ -10,6 +10,7 @@ mod product_ordering;
 mod spec;
 mod su2;
 mod traits;
+mod trivial;
 mod u1;
 pub(crate) mod wigner_symbols;
 mod zn;
@@ -25,6 +26,7 @@ pub use traits::{
     BraidingStyle, EncodedSectorValue, FusionStyle, Sector, SectorCardinality, SectorTuple,
     SectorValues, SortKey,
 };
+pub use trivial::Trivial;
 pub use u1::U1Irrep;
 pub use zn::{Z2Irrep, Z3Irrep, Z4Irrep, ZNIrrep};
 

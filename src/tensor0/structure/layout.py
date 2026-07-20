@@ -11,16 +11,21 @@ from .sector_dict import SectorDict
 # Sector structures depend only on visible sector labels; degeneracy structures also
 # depend on degeneracy dimensions.
 _CacheValue = TypeVar("_CacheValue")
+_CacheKey = TypeVar("_CacheKey")
 _Key = TypeVar("_Key")
 _Value = TypeVar("_Value")
 _LAYOUT_CACHE_MAXSIZE = 10_000
 _sectorstructure_cache: OrderedDict[
-    tuple[object, ...],
+    object,
     _native.SectorStructure,
 ] = OrderedDict()
 _degeneracystructure_cache: OrderedDict[
-    tuple[object, ...],
+    _native.HomSpace,
     _native.DegeneracyStructure,
+] = OrderedDict()
+_blockstructure_cache: OrderedDict[
+    _native.HomSpace,
+    _IndexedMapping[tuple[int, ...], _native.BlockStructure],
 ] = OrderedDict()
 _sector_slice_cache: OrderedDict[
     tuple[object, ...],
@@ -82,8 +87,7 @@ def get_degeneracystructure(space: _native.HomSpace) -> _native.DegeneracyStruct
     if not isinstance(space, _native.HomSpace):
         raise TypeError("get_degeneracystructure() requires a HomSpace")
 
-    key = _degeneracystructure_key(space)
-    cached = _cache_get(_degeneracystructure_cache, key)
+    cached = _cache_get(_degeneracystructure_cache, space)
     if cached is not None:
         return cached
 
@@ -92,7 +96,7 @@ def get_degeneracystructure(space: _native.HomSpace) -> _native.DegeneracyStruct
         space,
         sectorstructure,
     )
-    return _cache_set(_degeneracystructure_cache, key, degeneracystructure)
+    return _cache_set(_degeneracystructure_cache, space, degeneracystructure)
 
 
 def get_blockstructure(
@@ -101,12 +105,20 @@ def get_blockstructure(
     if not isinstance(space, _native.HomSpace):
         raise TypeError("get_blockstructure() requires a HomSpace")
 
+    cached = _cache_get(_blockstructure_cache, space)
+    if cached is not None:
+        return cached
+
     sectorstructure = _get_sectorstructure(space)
     degeneracystructure = get_degeneracystructure(space)
-    return _IndexedMapping(
-        sectorstructure.blocksectors,
-        degeneracystructure.blockstructure,
-        sectorstructure.blocksector_index,
+    return _cache_set(
+        _blockstructure_cache,
+        space,
+        _IndexedMapping(
+            sectorstructure.blocksectors,
+            degeneracystructure.blockstructure,
+            sectorstructure.blocksector_index,
+        ),
     )
 
 
@@ -131,6 +143,7 @@ def _sector_slices_for_space(
 def _clear_layout_caches_for_tests() -> None:
     _sectorstructure_cache.clear()
     _degeneracystructure_cache.clear()
+    _blockstructure_cache.clear()
     _sector_slice_cache.clear()
 
 
@@ -145,8 +158,8 @@ def _get_sectorstructure(space: _native.HomSpace) -> _native.SectorStructure:
 
 
 def _cache_get(
-    cache: OrderedDict[tuple[object, ...], _CacheValue],
-    key: tuple[object, ...],
+    cache: OrderedDict[_CacheKey, _CacheValue],
+    key: _CacheKey,
 ) -> _CacheValue | None:
     cached = cache.get(key)
     if cached is not None:
@@ -155,8 +168,8 @@ def _cache_get(
 
 
 def _cache_set(
-    cache: OrderedDict[tuple[object, ...], _CacheValue],
-    key: tuple[object, ...],
+    cache: OrderedDict[_CacheKey, _CacheValue],
+    key: _CacheKey,
     value: _CacheValue,
 ) -> _CacheValue:
     cache[key] = value
@@ -166,24 +179,6 @@ def _cache_set(
     return value
 
 
-def _sectorstructure_key(space: _native.HomSpace) -> tuple[object, ...]:
-    """Return the exact key shared by sector-layout and transform caches."""
-    return (
-        "hom-sectorstructure",
-        space.codomain.sector_spec.static_key,
-        tuple(_factor_sectorstructure_key(factor) for factor in space.codomain),
-        tuple(_factor_sectorstructure_key(factor) for factor in space.domain),
-    )
-
-
-def _factor_sectorstructure_key(factor: _native.ElementarySpace) -> tuple[object, ...]:
-    return (
-        "space-sectorstructure",
-        factor.sector_spec.static_key,
-        tuple(tuple(sector) for sector, _dim in factor.sectors),
-        factor.is_dual,
-    )
-
-
-def _degeneracystructure_key(space: _native.HomSpace) -> tuple[object, ...]:
-    return ("hom-degeneracystructure", space.static_key)
+def _sectorstructure_key(space: _native.HomSpace) -> object:
+    """Return the native key shared by sector-layout and transform caches."""
+    return space._sector_key

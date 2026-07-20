@@ -6,11 +6,12 @@ import jax.numpy as jnp
 
 from ... import _native
 from ...structure.layout import get_degeneracystructure, get_sectorstructure
-from ...structure.spaces import hom
+from ...structure.spaces import hom, sector_spec
 from ...tensor._blocks import (
     add_to_subblock as _add_to_subblock,
     get_subblock as _get_subblock,
 )
+from ...tensor.dense import _trivial_dense_array
 from ...tensor.linalg import _compose
 from ...tensor.tensor_map import TensorMap
 from ..transforms import _treepermuter, permute, twist
@@ -252,12 +253,28 @@ def tensorcontract(
     )
 
     right_canonical_space = right_space.permute(*right_permutation)
+
+    if sector_spec(left_space) == _native.Trivial:
+        left_canonical_space = left_space.permute(*left_permutation)
+        canonical_result_space = hom(
+            left_canonical_space.codomain,
+            right_canonical_space.domain,
+        )
+        destination_space = canonical_result_space.permute(*output_permutation)
+        return _trivial_tensorcontract_validated(
+            left,
+            right,
+            destination_space,
+            (left_axes, right_axes),
+            output_permutation,
+            conjugate_flags,
+        )
+
     right_twist_indices = tuple(
         axis
         for axis in range(len(right_axes))
         if right_canonical_space[axis].is_dual
     )
-
     left_value = left.adjoint() if conjugate_flags[0] else left
     right_value = right.adjoint() if conjugate_flags[1] else right
     left_canonical = permute(left_value, left_permutation)
@@ -265,6 +282,36 @@ def tensorcontract(
     right_canonical = twist(right_canonical, right_twist_indices)
     canonical_result = _compose(left_canonical, right_canonical)
     return permute(canonical_result, output_permutation)
+
+
+def _trivial_tensorcontract_validated(
+    left: TensorMap,
+    right: TensorMap,
+    destination_space: _native.HomSpace,
+    axes: tuple[tuple[int, ...], tuple[int, ...]],
+    output_permutation: tuple[tuple[int, ...], tuple[int, ...]],
+    conjugate: tuple[bool, bool],
+) -> TensorMap:
+    left_value = _trivial_dense_array(left)
+    right_value = _trivial_dense_array(right)
+    if conjugate[0]:
+        if left_value.size == 0:
+            left_value = jnp.zeros(left_value.shape)
+        left_value = jnp.conj(left_value)
+    if conjugate[1]:
+        if right_value.size == 0:
+            right_value = jnp.zeros(right_value.shape)
+        right_value = jnp.conj(right_value)
+
+    value = jnp.tensordot(left_value, right_value, axes=axes)
+    flat_permutation = output_permutation[0] + output_permutation[1]
+    if flat_permutation != tuple(range(value.ndim)):
+        value = jnp.transpose(value, flat_permutation)
+    result_dtype = jnp.result_type(left_value, right_value)
+    return TensorMap(
+        destination_space,
+        jnp.asarray(value, dtype=result_dtype).reshape(-1),
+    )
 
 
 def tensortrace(
@@ -317,27 +364,40 @@ def tensortrace(
         mapped_output_axes[0] + mapped_trace_axes[0],
         mapped_output_axes[1] + mapped_trace_axes[1],
     )
-    source_value = tensor.adjoint() if conjugate else tensor
     if not trace_axes[0]:
+        source_value = tensor.adjoint() if conjugate else tensor
         return permute(source_value, canonical_permutation)
+
+    is_trivial = sector_spec(source_space) == _native.Trivial
+    source_value = tensor.adjoint() if conjugate and not is_trivial else tensor
 
     canonical_space = source_space.permute(*canonical_permutation)
     num_open_out = len(mapped_output_axes[0])
     num_open_in = len(mapped_output_axes[1])
 
-    sector_spec = source_space.codomain.sector_spec
+    source_sector_spec = source_space.codomain.sector_spec
     destination_codomain = _native.make_product_space(
-        sector_spec,
+        source_sector_spec,
         canonical_space.codomain.spaces[:num_open_out],
     )
     destination_domain = _native.make_product_space(
-        sector_spec,
+        source_sector_spec,
         canonical_space.domain.spaces[:num_open_in],
     )
     destination_space = _native.make_hom_products(
         destination_codomain,
         destination_domain,
     )
+
+    if is_trivial:
+        return _trivial_tensortrace_validated(
+            tensor,
+            destination_space,
+            canonical_permutation,
+            num_open_out,
+            len(trace_axes[0]),
+            conjugate,
+        )
 
     basis_transformer = _treepermuter(
         source_space,
@@ -445,6 +505,39 @@ def tensortrace(
         )
 
     return TensorMap(destination_space, destination_data)
+
+
+def _trivial_tensortrace_validated(
+    tensor: TensorMap,
+    destination_space: _native.HomSpace,
+    canonical_permutation: TraceOutput,
+    num_open_out: int,
+    trace_count: int,
+    conjugate: bool,
+) -> TensorMap:
+    value = _trivial_dense_array(tensor)
+    if conjugate:
+        if value.size == 0:
+            value = jnp.zeros(value.shape)
+        value = jnp.transpose(
+            jnp.conj(value),
+            tensor.domainind + tensor.codomainind,
+        )
+    result_dtype = value.dtype
+    value = jnp.transpose(
+        value,
+        canonical_permutation[0] + canonical_permutation[1],
+    )
+    for trace_index in reversed(range(trace_count)):
+        value = jnp.trace(
+            value,
+            axis1=num_open_out + trace_index,
+            axis2=value.ndim - 1,
+        )
+    return TensorMap(
+        destination_space,
+        jnp.asarray(value, dtype=result_dtype).reshape(-1),
+    )
 
 
 def _trace_result_dtype(

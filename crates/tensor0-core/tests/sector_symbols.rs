@@ -1,5 +1,5 @@
 use tensor0_core::sector::{
-    FermionNumber, FermionParity, SU2Irrep, Sector, U1Irrep, U1SU2Irrep, Z2Irrep, Z4Irrep,
+    FermionNumber, FermionParity, SU2Irrep, Sector, Trivial, U1Irrep, U1SU2Irrep, Z2Irrep, Z4Irrep,
 };
 
 fn su2(spin2: i64) -> SU2Irrep {
@@ -99,6 +99,21 @@ fn su2_fusion_tensor(
 
 #[test]
 fn abelian_and_fermion_symbols_match_tensorkit_conventions() {
+    assert_n(Trivial, Trivial, Trivial, 1);
+    assert_f(Trivial, Trivial, Trivial, Trivial, Trivial, Trivial, 1.0);
+    assert_close(
+        Trivial::a_symbol(&Trivial, &Trivial, &Trivial).unwrap(),
+        1.0,
+    );
+    assert_close(
+        Trivial::b_symbol(&Trivial, &Trivial, &Trivial).unwrap(),
+        1.0,
+    );
+    assert_frobenius_schur_phase(Trivial, 1.0);
+    assert_r(Trivial, Trivial, Trivial, 1.0);
+    assert_close(Trivial.twist(), 1.0);
+    assert_fusion_tensor(Trivial, Trivial, Trivial, &[1, 1, 1, 1], &[1.0]);
+
     let q1 = u1(1);
     let q2 = u1(2);
     let q3 = u1(3);

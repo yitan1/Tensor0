@@ -1,29 +1,45 @@
+import sys
 from dataclasses import FrozenInstanceError
 
-import tensor0
-import tensor0.tensor as tensor_api
-import tensor0.tensor.tensor_map as tensor_map_module
+import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
 
+import tensor0
+import tensor0.structure.spaces as spaces_module
+import tensor0.tensor as tensor_api
+import tensor0.tensor._blocks as blocks_module
+import tensor0.tensor.constructors as constructors_module
+import tensor0.tensor.dense as dense_module
+import tensor0.tensor.tensor_map as tensor_map_module
 from tensor0 import (
+    ComplexSpace,
+    DiagonalTensorMap,
     FermionNumber,
     FermionParity,
     FermionParityU1Irrep,
     SU2Irrep,
     TensorMap,
+    Trivial,
     U1Irrep,
     VectorStorage,
     Z2Irrep,
     Z3Irrep,
     Z4Irrep,
     _native,
+    from_blocks,
     from_dense,
     hom,
+    identity,
     space,
     to_dense,
 )
-from tensor0.structure import get_degeneracystructure, get_sectorstructure
+from tensor0.structure import (
+    get_degeneracystructure,
+    get_sectorstructure,
+    storage_dim,
+)
 from tests.cases import (
     InaccessibleVectorData,
     assert_allclose,
@@ -674,3 +690,240 @@ def test_public_dense_path_has_no_debug_element_cap():
 
     assert dense.shape == (65, 65)
     assert_allclose(rebuilt.storage.data, tensor.storage.data)
+
+
+def test_trivial_zero_factor_has_empty_storage_and_preserves_dense_zero_axis():
+    target = hom((ComplexSpace(2), ComplexSpace(0)), (ComplexSpace(3),))
+    dense = jnp.zeros((2, 0, 3), dtype=jnp.float32)
+    tensor = from_dense(target, dense)
+    sectorstructure = get_sectorstructure(target)
+
+    assert tensor.storage.data.shape == (0,)
+    assert sectorstructure.blocksectors == ()
+    assert sectorstructure.fusiontree_pairs == ()
+    assert to_dense(tensor).shape == (2, 0, 3)
+    assert jnp.array_equal(to_dense(tensor), dense)
+
+@pytest.mark.parametrize(
+    ("tol", "error"),
+    [
+        (True, TypeError),
+        (jnp.asarray(True), TypeError),
+        (-1.0, ValueError),
+        (float("inf"), ValueError),
+        (float("nan"), ValueError),
+        (1.0 + 2.0j, TypeError),
+        ("0.1", TypeError),
+    ],
+    ids=[
+        "bool",
+        "array-bool",
+        "negative",
+        "infinite",
+        "nan",
+        "non-real",
+        "string",
+    ],
+)
+def test_dense_tolerance_validation_is_shared_by_generic_and_trivial(tol, error):
+    trivial = hom((ComplexSpace(2),), (ComplexSpace(2),))
+    u1 = space(U1Irrep, {0: 2})
+    generic = hom((u1,), (u1,))
+    dense = jnp.eye(2, dtype=jnp.float32)
+
+    for target in (trivial, generic):
+        with pytest.raises(error, match="tol"):
+            from_dense(target, dense, tol=tol)
+
+
+@pytest.mark.parametrize(
+    "dense",
+    [
+        jnp.asarray([[True, False], [False, True]]),
+        jnp.arange(4, dtype=jnp.int32).reshape(2, 2),
+    ],
+    ids=["bool", "integer"],
+)
+def test_trivial_from_dense_preserves_storage_dtype_promotion(dense):
+    target = hom((ComplexSpace(2),), (ComplexSpace(2),))
+
+    tensor = from_dense(target, dense)
+
+    assert tensor.storage.data.dtype == jnp.result_type(dense, 0.0)
+    assert jnp.array_equal(to_dense(tensor), dense)
+
+
+def test_trivial_core_paths_bypass_generic_layout_metadata(
+    monkeypatch,
+):
+    target = hom((ComplexSpace(2), ComplexSpace(3)), (ComplexSpace(4),))
+    dense = jnp.arange(24, dtype=jnp.float32).reshape(2, 3, 4)
+    pair = get_sectorstructure(target).fusiontree_pairs[0]
+
+    def explode(_space):
+        raise AssertionError("Trivial numerical execution must not request layout")
+
+    monkeypatch.setattr(dense_module, "get_sectorstructure", explode)
+    monkeypatch.setattr(dense_module, "get_degeneracystructure", explode)
+    monkeypatch.setattr(spaces_module, "get_degeneracystructure", explode)
+    monkeypatch.setattr(tensor_map_module, "get_degeneracystructure", explode)
+    monkeypatch.setattr(blocks_module, "get_blockstructure", explode)
+    monkeypatch.setattr(constructors_module, "get_blockstructure", explode)
+
+    with monkeypatch.context() as context:
+        context.setattr(tensor_map_module, "get_sectorstructure", explode)
+
+        tensor = from_dense(target, dense)
+        matrix_tensor = from_dense(target, dense.reshape(6, 4))
+        block_tensor = from_blocks(target, {(): dense.reshape(6, 4)})
+        direct = TensorMap(target, tensor.storage.data)
+        zero = tensor_map_module.zeros(target)
+        one = tensor_map_module.ones(target)
+        diagonal = DiagonalTensorMap(ComplexSpace(3), jnp.arange(3))
+        identity_tensor = identity(ComplexSpace(3), dtype=jnp.float32)
+
+        assert jnp.array_equal(to_dense(tensor), dense)
+        assert jnp.array_equal(matrix_tensor.storage.data, tensor.storage.data)
+        assert jnp.array_equal(block_tensor.storage.data, tensor.storage.data)
+        assert tensor.hasblock(())
+        assert jnp.array_equal(tensor.block(()), dense.reshape(6, 4))
+        assert direct.storage.data is tensor.storage.data
+        assert jnp.array_equal(zero.storage.data, jnp.zeros((24,)))
+        assert jnp.array_equal(one.storage.data, jnp.ones((24,)))
+        assert diagonal.dim == 9
+        assert jnp.array_equal(to_dense(identity_tensor), jnp.eye(3))
+
+    assert jnp.array_equal(tensor.subblock(pair), dense)
+    view_pair, view_subblock = tensor.subblocks()[0]
+    assert view_pair == pair
+    assert jnp.array_equal(view_subblock, dense)
+
+
+def test_trivial_from_blocks_preserves_complete_block_validation():
+    target = hom((ComplexSpace(2),), (ComplexSpace(3),))
+    block = jnp.arange(6, dtype=jnp.float32).reshape(2, 3)
+    invalid_cases = (
+        ({}, "missing data for block sector"),
+        ({(): jnp.zeros((1, 1))}, "has shape.*expected"),
+        ({(): block, (0,): jnp.ones((1, 1))}, "unexpected block sector"),
+    )
+
+    for blocks, match in invalid_cases:
+        with pytest.raises(ValueError, match=match):
+            from_blocks(target, blocks)
+
+    zero_target = hom((ComplexSpace(2), ComplexSpace(0)), (ComplexSpace(3),))
+    empty = from_blocks(zero_target, {(): jnp.zeros((7, 0, 2))})
+    assert empty.storage.data.shape == (0,)
+
+    with pytest.raises(ValueError, match="unexpected block sector"):
+        from_blocks(zero_target, {(): jnp.ones((1, 1))})
+
+
+def test_trivial_zero_space_keeps_empty_block_errors_without_layout_metadata(
+    monkeypatch,
+):
+    target = hom((ComplexSpace(2), ComplexSpace(0)), (ComplexSpace(3),))
+
+    def explode(_space):
+        raise AssertionError("Trivial storage validation must not request layout")
+
+    monkeypatch.setattr(spaces_module, "get_degeneracystructure", explode)
+    monkeypatch.setattr(tensor_map_module, "get_degeneracystructure", explode)
+    tensor = TensorMap(target, jnp.zeros((0,), dtype=jnp.float32))
+    subblocks = tensor.subblocks()
+
+    assert tensor.blocks() == ()
+    assert len(subblocks) == 0
+    with pytest.raises(KeyError):
+        tensor.block(())
+
+
+@pytest.mark.parametrize("key", [0, (0,), (1, 2)])
+def test_trivial_block_rejects_nonempty_sector_keys_with_width_error(key):
+    nonzero = TensorMap(
+        hom((ComplexSpace(2),), (ComplexSpace(2),)),
+        jnp.zeros((4,), dtype=jnp.float32),
+    )
+    zero = TensorMap(
+        hom((ComplexSpace(0),), (ComplexSpace(2),)),
+        jnp.zeros((0,), dtype=jnp.float32),
+    )
+
+    for tensor in (nonzero, zero):
+        with pytest.raises(ValueError, match="expected sector value width 0"):
+            tensor.block(key)
+
+
+@pytest.mark.parametrize("storage_kind", ["slice-only", "numpy"])
+def test_trivial_dense_arrays_convert_non_jax_storage_to_jax_arrays(storage_kind):
+    expected = jnp.arange(24, dtype=jnp.float32)
+
+    class SliceOnlyData:
+        shape = expected.shape
+
+        def __getitem__(self, key):
+            return expected[key]
+
+    target = hom((ComplexSpace(2), ComplexSpace(3)), (ComplexSpace(4),))
+    storage = (
+        SliceOnlyData()
+        if storage_kind == "slice-only"
+        else np.arange(24, dtype=np.float32)
+    )
+    tensor = TensorMap(target, storage)
+    pair = get_sectorstructure(target).fusiontree_pairs[0]
+    block = tensor.block(())
+    blocks = tensor.blocks()
+    dense = to_dense(tensor)
+    subblock = tensor.subblock(pair)
+
+    assert isinstance(block, jax.Array)
+    assert isinstance(blocks[0][1], jax.Array)
+    assert isinstance(dense, jax.Array)
+    assert isinstance(subblock, jax.Array)
+    assert jnp.array_equal(block, expected.reshape(6, 4))
+    assert jnp.array_equal(blocks[0][1], expected.reshape(6, 4))
+    assert jnp.array_equal(dense, expected.reshape(2, 3, 4))
+    assert jnp.array_equal(subblock, expected.reshape(2, 3, 4))
+
+
+def test_trivial_storage_dimension_uses_platform_usize_overflow_contract():
+    class SliceableFakeStorage:
+        def __init__(self, length):
+            self.shape = (length,)
+
+        def __getitem__(self, key):
+            if isinstance(key, slice) and key.start == 0 and key.stop == 0:
+                return jnp.zeros((0,), dtype=jnp.float32)
+            raise AssertionError("fake storage must not be materialized")
+
+    overflowing = hom(
+        (ComplexSpace(sys.maxsize), ComplexSpace(3)),
+        (),
+    )
+    with pytest.raises(ValueError, match="^degeneracy dimension overflowed$"):
+        storage_dim(overflowing)
+    with pytest.raises(ValueError, match="^degeneracy dimension overflowed$"):
+        TensorMap(overflowing, SliceableFakeStorage(0))
+
+    boundary = hom((ComplexSpace(sys.maxsize),), ())
+    boundary_tensor = TensorMap(
+        boundary,
+        SliceableFakeStorage(sys.maxsize),
+    )
+    assert storage_dim(boundary) == sys.maxsize
+    assert boundary_tensor.dim == sys.maxsize
+
+    zero = hom(
+        (ComplexSpace(sys.maxsize), ComplexSpace(3), ComplexSpace(0)),
+        (),
+    )
+    zero_tensor = TensorMap(zero, SliceableFakeStorage(0))
+    assert storage_dim(zero) == 0
+    assert zero_tensor.dim == 0
+
+    rank_zero = hom((), (), sector_type=Trivial)
+    rank_zero_tensor = TensorMap(rank_zero, SliceableFakeStorage(1))
+    assert storage_dim(rank_zero) == 1
+    assert rank_zero_tensor.dim == 1

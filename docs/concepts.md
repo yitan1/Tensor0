@@ -6,7 +6,8 @@ contains the reduced block data.
 
 ## Sector Families
 
-Sector families label symmetry charges. Tensor0 currently exposes built-in
+Sector families label symmetry charges. `Trivial` represents no symmetry and
+has the single empty-tuple sector label `()`. Tensor0 also exposes built-in
 families such as `U1Irrep`, `SU2Irrep`, `Z2Irrep`, `Z3Irrep`, `Z4Irrep`,
 `FermionParity`, and selected product-sector aliases.
 
@@ -14,12 +15,18 @@ families such as `U1Irrep`, `SU2Irrep`, `Z2Irrep`, `Z3Irrep`, `Z4Irrep`,
 
 `space(...)` builds an elementary graded space from sector labels to degeneracy
 dimensions. `hom(codomain, domain)` builds the typed linear-map space used by
-`TensorMap`.
+`TensorMap`. For ordinary no-symmetry spaces, `Vect(dim)` is the canonical
+constructor and `ComplexSpace(dim)` is a compatibility spelling.
 
 ## TensorMap Storage
 
 `TensorMap` stores a `HomSpace` and a one-dimensional JAX array. The array
 length must match the degeneracy structure derived from the `HomSpace`.
+
+For `Trivial`, packed storage is the ordinary dense array flattened in
+codomain-then-domain row-major order. `to_dense()` exposes an immutable reshape
+of that storage. Other sector families retain symmetry-aware reduced blocks
+and reconstruct dense arrays from their fusion metadata.
 
 ## Blocks and Transforms
 

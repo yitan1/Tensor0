@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+import sys
 from typing import Any
 
 from .. import _native
+from .layout import get_degeneracystructure
 from .sector_type import SectorType, _normalize_sector_key
 
 SectorDims = Mapping[Any, int]
@@ -13,6 +15,8 @@ SectorDimItem = tuple[SectorValue, int]
 SectorDimItems = tuple[SectorDimItem, ...]
 ProductSpaceInput = Iterable[_native.ElementarySpace] | _native.ProductSpace
 _DimSpace = _native.ElementarySpace | _native.ProductSpace
+_SectorSpace = _native.ElementarySpace | _native.ProductSpace | _native.HomSpace
+_USIZE_MAX = 2 * sys.maxsize + 1
 
 
 @dataclass(frozen=True)
@@ -21,14 +25,29 @@ class _VectBuilder:
 
     def __call__(
         self,
-        sector_dims: SectorDims,
+        sector_dims: SectorDims | int,
         *,
         dual: bool = False,
     ) -> _native.ElementarySpace:
-        return space(self.sector_type, sector_dims, dual=dual)
+        if isinstance(sector_dims, Mapping):
+            return space(self.sector_type, sector_dims, dual=dual)
+        if self.sector_type != _native.Trivial:
+            raise TypeError(
+                "mapping-free Vect construction requires the Trivial sector type",
+            )
+        return Vect(sector_dims, dual=dual)
 
 
 class _VectFactory:
+    def __call__(
+        self,
+        dim: int = 0,
+        *,
+        dual: bool = False,
+    ) -> _native.ElementarySpace:
+        """Construct an ordinary vector space with no symmetry."""
+        return space(_native.Trivial, {(): dim}, dual=dual)
+
     def __getitem__(self, sector_type: SectorType) -> _VectBuilder:
         if not isinstance(sector_type, SectorType):
             raise TypeError("Vect[...] requires a SectorType")
@@ -36,6 +55,15 @@ class _VectFactory:
 
 
 Vect = _VectFactory()
+
+
+def ComplexSpace(
+    dim: int = 0,
+    *,
+    dual: bool = False,
+) -> _native.ElementarySpace:
+    """Compatibility constructor equivalent to ``Vect(dim, dual=dual)``."""
+    return Vect(dim, dual=dual)
 
 
 def space(
@@ -82,6 +110,17 @@ def dim(value: _DimSpace) -> int:
     return _native.dim(value)
 
 
+def sector_spec(value: _SectorSpace) -> SectorType:
+    """Return the sector family carried by a typed space."""
+    if isinstance(value, _native.HomSpace):
+        return value.codomain.sector_spec
+    if isinstance(value, (_native.ElementarySpace, _native.ProductSpace)):
+        return value.sector_spec
+    raise TypeError(
+        "sector_spec() requires an ElementarySpace, ProductSpace, or HomSpace",
+    )
+
+
 def reduced_dim(value: _native.ElementarySpace) -> int:
     """Return the sum of degeneracy dimensions of an elementary space."""
     if not isinstance(value, _native.ElementarySpace):
@@ -93,7 +132,21 @@ def storage_dim(value: _native.HomSpace) -> int:
     """Return the packed storage dimension of a morphism space."""
     if not isinstance(value, _native.HomSpace):
         raise TypeError("storage_dim() requires a HomSpace")
-    return _native.storage_dim(value)
+    if sector_spec(value) != _native.Trivial:
+        return get_degeneracystructure(value).total_dim
+
+    dims = tuple(_native.product_dims(value.codomain)) + tuple(
+        _native.product_dims(value.domain),
+    )
+    if 0 in dims:
+        return 0
+
+    result = 1
+    for dimension in dims:
+        if result > _USIZE_MAX // dimension:
+            raise ValueError("degeneracy dimension overflowed")
+        result *= dimension
+    return result
 
 
 def fuse(value: _native.ProductSpace) -> _native.ElementarySpace:

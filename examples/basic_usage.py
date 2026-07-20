@@ -8,6 +8,7 @@ from tensor0 import (
     SU2Irrep,
     TensorMap,
     U1Irrep,
+    Vect,
     eigh_full,
     eigh_trunc,
     from_blocks,
@@ -43,6 +44,18 @@ def _data_for(hom_space, *, scale=0.1):
 def _assert_allclose(actual, expected):
     assert actual.shape == expected.shape
     assert bool(jnp.allclose(actual, expected, rtol=1e-5, atol=1e-6))
+
+
+def ordinary_dense_example():
+    target = hom(
+        (Vect(2), Vect(3)),
+        (Vect(4),),
+    )
+    dense = jnp.arange(24, dtype=jnp.float32).reshape(2, 3, 4)
+    tensor = from_dense(target, dense)
+
+    assert tensor.block(()).shape == (6, 4)
+    _assert_allclose(to_dense(tensor), dense)
 
 
 def layout_and_storage_example():
@@ -231,6 +244,7 @@ def jax_example():
 
 
 def main():
+    ordinary_dense_example()
     tensor = layout_and_storage_example()
     dense_roundtrip_example(tensor)
     composition_and_svd_example()

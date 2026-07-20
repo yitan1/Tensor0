@@ -8,6 +8,7 @@ from .layout import get_blockstructure, get_degeneracystructure, get_sectorstruc
 from .sector_dict import SectorDict
 from .sector_type import SectorType
 from .spaces import (
+    ComplexSpace,
     Vect,
     dim,
     direct_sum,
@@ -18,6 +19,7 @@ from .spaces import (
     is_isomorphic,
     is_monomorphic,
     reduced_dim,
+    sector_spec,
     space,
     storage_dim,
     supremum,
@@ -27,6 +29,7 @@ from .spaces import (
 
 __all__ = [
     "BlockStructure",
+    "ComplexSpace",
     "DegeneracyStructure",
     "SectorDict",
     "SectorStructure",
@@ -45,6 +48,7 @@ __all__ = [
     "is_isomorphic",
     "is_monomorphic",
     "reduced_dim",
+    "sector_spec",
     "space",
     "storage_dim",
     "supremum",

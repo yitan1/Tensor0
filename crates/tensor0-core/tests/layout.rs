@@ -8,7 +8,7 @@ use tensor0_core::layout::{
 };
 use tensor0_core::sector::{
     BraidingStyle, EncodedSectorValue, FusionStyle, SU2Irrep, Sector, SectorCardinality,
-    SectorSpec, SortKey, U1Irrep, U1SU2Irrep,
+    SectorSpec, SortKey, Trivial, U1Irrep, U1SU2Irrep,
 };
 use tensor0_core::space::{GradedSpace, HomSpace, ProductSpace};
 
@@ -136,6 +136,39 @@ fn layout_structures_satisfy_core_contracts() {
         HomSpace::new(product(), product())
     };
     assert_space_layout_contract(&product_alias);
+}
+
+#[test]
+fn trivial_layout_uses_one_block_or_no_block_for_zero_dimensions() {
+    let scalar = HomSpace::<Trivial>::new(empty_product_of(), empty_product_of());
+    let scalar_sectors = build_sector_structure(&scalar).unwrap();
+    let scalar_degeneracies = build_degeneracy_structure(&scalar).unwrap();
+
+    assert_eq!(blocksectors_vec(&scalar_sectors), vec![Trivial]);
+    assert_eq!(scalar_sectors.fusiontree_pair_count(), 1);
+    assert_eq!(scalar_degeneracies.total_dim, 1);
+
+    let left = GradedSpace::new(vec![(Trivial, 2)], false).unwrap();
+    let right = GradedSpace::new(vec![(Trivial, 3)], false).unwrap();
+    let dense = HomSpace::new(
+        ProductSpace::new(vec![left]),
+        ProductSpace::new(vec![right]),
+    );
+    let dense_sectors = build_sector_structure(&dense).unwrap();
+    let dense_degeneracies = build_degeneracy_structure(&dense).unwrap();
+
+    assert_eq!(blocksectors_vec(&dense_sectors), vec![Trivial]);
+    assert_eq!(dense_sectors.fusiontree_pair_count(), 1);
+    assert_eq!(dense_degeneracies.total_dim, 6);
+
+    let zero = GradedSpace::new(vec![(Trivial, 0)], false).unwrap();
+    let zero_hom = HomSpace::new(ProductSpace::new(vec![zero]), empty_product_of());
+    let zero_sectors = build_sector_structure(&zero_hom).unwrap();
+    let zero_degeneracies = build_degeneracy_structure(&zero_hom).unwrap();
+
+    assert_eq!(zero_sectors.blocksector_count(), 0);
+    assert_eq!(zero_sectors.fusiontree_pair_count(), 0);
+    assert_eq!(zero_degeneracies.total_dim, 0);
 }
 
 #[test]

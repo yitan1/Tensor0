@@ -12,6 +12,7 @@ from ._native import (
     HomSpace,
     ProductSpace,
     SU2Irrep,
+    Trivial,
     U1Irrep,
     U1SU2Irrep,
     Z2Irrep,
@@ -47,6 +48,7 @@ from .factorizations import (
     trunctol,
 )
 from .structure import (
+    ComplexSpace,
     SectorDict,
     SectorType,
     Vect,
@@ -59,6 +61,7 @@ from .structure import (
     is_isomorphic,
     is_monomorphic,
     reduced_dim,
+    sector_spec,
     space,
     storage_dim,
     supremum,
@@ -123,6 +126,7 @@ from .operations.transforms import (
 __version__ = "0.0.0"
 
 __all__ = [
+    "ComplexSpace",
     "DiagonalTensorMap",
     "ElementarySpace",
     "FermionNumber",
@@ -138,6 +142,7 @@ __all__ = [
     "SectorVector",
     "SU2Irrep",
     "TensorMap",
+    "Trivial",
     "U1Irrep",
     "U1SU2Irrep",
     "Vect",
@@ -206,6 +211,7 @@ __all__ = [
     "right_solve",
     "scalar",
     "scale",
+    "sector_spec",
     "space",
     "storage_dim",
     "supremum",

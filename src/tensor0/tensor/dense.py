@@ -1,21 +1,27 @@
 from __future__ import annotations
 
 from math import prod
+from numbers import Real
 
 import jax.numpy as jnp
+from jax import Array
 
 from .. import _native
 from ..structure.layout import get_degeneracystructure, get_sectorstructure
+from ..structure.spaces import sector_spec
 from ._blocks import (
     add_to_subblock as _add_to_subblock,
     get_subblock as _get_subblock,
 )
+from ._tolerances import nonnegative_tolerance
 from .tensor_map import TensorMap
 
 
 def to_dense(tensor: TensorMap) -> jnp.ndarray:
     if not isinstance(tensor, TensorMap):
         raise TypeError("to_dense() requires a TensorMap")
+    if sector_spec(tensor.space) == _native.Trivial:
+        return _trivial_dense_array(tensor)
 
     dense_shape = _dense_shape(tensor.space)
     storage = jnp.asarray(tensor.storage.data)
@@ -46,6 +52,12 @@ def from_dense(
         raise TypeError("from_dense() requires a HomSpace")
 
     dense = _normalize_dense_input(space, data)
+    tolerance = _normalize_dense_tolerance(dense.dtype, tol)
+    if sector_spec(space) == _native.Trivial:
+        storage_dtype = jnp.result_type(dense, 0.0)
+        storage = jnp.reshape(jnp.asarray(dense, dtype=storage_dtype), (-1,))
+        return TensorMap(space, storage)
+
     sectorstructure = get_sectorstructure(space)
     degeneracystructure = get_degeneracystructure(space)
     storage = jnp.zeros(
@@ -65,10 +77,17 @@ def from_dense(
         storage = _add_to_subblock(storage, subblock, reduced)
 
     result = TensorMap(space, storage)
-    tolerance = _default_tol(dense.dtype) if tol is None else tol
     if not bool(jnp.allclose(to_dense(result), dense, rtol=tolerance, atol=tolerance)):
         raise ValueError("dense data does not match the target symmetry structure")
     return result
+
+
+def _trivial_dense_array(tensor: TensorMap) -> Array:
+    data = tensor.storage.data
+    shape = tensor.dims
+    if isinstance(data, Array):
+        return jnp.reshape(data, shape)
+    return jnp.asarray(data[0 : prod(shape)]).reshape(shape)
 
 
 def _dense_shape(space: _native.HomSpace) -> tuple[int, ...]:
@@ -149,4 +168,25 @@ def _default_tol(dtype: jnp.dtype) -> float:
     real_dtype = jnp.zeros((), dtype=dtype).real.dtype
     if not jnp.issubdtype(real_dtype, jnp.floating):
         real_dtype = jnp.result_type(real_dtype, 0.0)
-    return float(jnp.sqrt(jnp.finfo(real_dtype).eps))
+    return float(jnp.finfo(real_dtype).eps**0.5)
+
+
+def _normalize_dense_tolerance(dtype: jnp.dtype, tol: float | None) -> float:
+    if tol is None:
+        return _default_tol(dtype)
+    if isinstance(tol, Real) and not isinstance(tol, bool):
+        return nonnegative_tolerance(tol, "tol")
+
+    tol_shape = getattr(tol, "shape", None)
+    tol_dtype = getattr(tol, "dtype", None)
+    if (
+        tol_shape is None
+        or tuple(tol_shape) != ()
+        or tol_dtype is None
+        or not (
+            jnp.issubdtype(tol_dtype, jnp.integer)
+            or jnp.issubdtype(tol_dtype, jnp.floating)
+        )
+    ):
+        raise TypeError("tol must be a finite non-negative real scalar")
+    return nonnegative_tolerance(tol, "tol")

@@ -4,7 +4,8 @@ use pyo3::types::{PyAny, PyAnyMethods, PyTuple};
 use tensor0_core::dense::product_axes as core_product_axes;
 use tensor0_core::sector::{
     FermionNumber, FermionParity, FermionParitySU2Irrep, FermionParityU1Irrep,
-    FermionParityU1SU2Irrep, SU2Irrep, Sector, U1Irrep, U1SU2Irrep, Z2Irrep, Z3Irrep, Z4Irrep,
+    FermionParityU1SU2Irrep, SU2Irrep, Sector, Trivial, U1Irrep, U1SU2Irrep, Z2Irrep, Z3Irrep,
+    Z4Irrep,
 };
 use tensor0_core::space::ProductSpace;
 
@@ -14,6 +15,7 @@ use crate::space::{ProductSpaceInner, PyProductSpace};
 macro_rules! dispatch_product {
     ($product:expr, $handler:ident($($arg:expr),* $(,)?)) => {{
         match $product {
+            ProductSpaceInner::Trivial(product) => $handler::<Trivial>(product, $($arg),*),
             ProductSpaceInner::U1Irrep(product) => $handler::<U1Irrep>(product, $($arg),*),
             ProductSpaceInner::SU2Irrep(product) => $handler::<SU2Irrep>(product, $($arg),*),
             ProductSpaceInner::FermionParity(product) => {

@@ -13,6 +13,7 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CORE_BENCHMARK_SCRIPT = REPO_ROOT / "benchmarks" / "core.py"
 CONTRACTION_BENCHMARK_SCRIPT = REPO_ROOT / "benchmarks" / "contractions.py"
+TRIVIAL_BENCHMARK_SCRIPT = REPO_ROOT / "benchmarks" / "trivial.py"
 RUNNER_MODULE = REPO_ROOT / "benchmarks" / "_runner.py"
 
 EXPECTED_QUICK_SCENARIOS = {
@@ -50,6 +51,40 @@ EXPECTED_FULL_ONLY_SCENARIOS = {
 EXPECTED_EXPLICIT_ONLY_SCENARIOS = {
     "internal.strided_indices.rank2_noncontiguous",
     "internal.strided_indices.rank3_noncontiguous",
+}
+
+EXPECTED_TRIVIAL_SCENARIOS = {
+    "dense.trivial.from_dense.rank2.float64.small.eager",
+    "dense.trivial.to_dense.rank4.float64.small.eager",
+    "dense.trivial.to_dense.rank4.float64.small.jit_compile_and_run",
+    "dense.trivial.to_dense.rank4.float64.small.jit_cached_run",
+    "permute.trivial.rank4.float64.small.eager",
+    "permute.trivial.rank4.float64.small.jit_compile_and_run",
+    "permute.trivial.rank4.float64.small.jit_cached_run",
+    "trace.trivial.partial.rank4.float64.small.eager",
+    "trace.trivial.partial.rank4.float64.small.jit_compile_and_run",
+    "trace.trivial.partial.rank4.float64.small.jit_cached_run",
+    "contract.trivial.partial.float64.small.eager",
+    "contract.trivial.partial.float64.small.jit_compile_and_run",
+    "contract.trivial.partial.float64.small.jit_cached_run",
+    "composition.trivial.float64.small.eager",
+    "composition.trivial.float64.small.jit_compile_and_run",
+    "composition.trivial.float64.small.jit_cached_run",
+    "network.trivial.three_tensor.float64.small.eager",
+    "network.trivial.three_tensor.float64.small.jit_compile_and_run",
+    "network.trivial.three_tensor.float64.small.jit_cached_run",
+    "dense.trivial.from_dense.rank2.complex128.medium.eager",
+    "dense.trivial.to_dense.rank4.complex128.medium.eager",
+    "permute.trivial.rank4.complex128.medium.eager",
+    "trace.trivial.partial.rank4.complex128.medium.eager",
+    "contract.trivial.partial.complex128.medium.eager",
+    "composition.trivial.complex128.medium.eager",
+    "network.trivial.three_tensor.complex128.medium.eager",
+    "protect.u1.from_dense.float64.small.eager",
+    "protect.su2.permute.float64.small.eager",
+    "protect.u1.contract.float64.small.eager",
+    "protect.su2.trace.float64.small.eager",
+    "protect.u1.composition.float64.small.eager",
 }
 
 RESULT_FIELDS = {
@@ -112,6 +147,16 @@ def _run_core_benchmark(*args: str) -> subprocess.CompletedProcess[str]:
 def _run_contraction_benchmark(*args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, str(CONTRACTION_BENCHMARK_SCRIPT), *args],
+        cwd=REPO_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _run_trivial_benchmark(*args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, str(TRIVIAL_BENCHMARK_SCRIPT), *args],
         cwd=REPO_ROOT,
         check=True,
         capture_output=True,
@@ -302,6 +347,44 @@ def test_runner_runs_per_iteration_setup_outside_timed_region(monkeypatch):
     assert result.times_ms == [1.0]
 
 
+def test_runner_synchronizes_tensormap_storage_before_timer_stops(monkeypatch):
+    runner = _load_runner()
+    events: list[str] = []
+    ticks = iter((1_000_000, 2_000_000))
+
+    class Data:
+        def block_until_ready(self) -> None:
+            events.append("ready")
+
+    class Storage:
+        data = Data()
+
+    class Tensor:
+        storage = Storage()
+
+    def clock() -> int:
+        events.append("clock")
+        return next(ticks)
+
+    monkeypatch.setattr(runner.time, "perf_counter_ns", clock)
+    item = runner.scenario(
+        "synchronization-boundary",
+        "test",
+        "synchronization boundary",
+        "quick",
+        "none",
+        "tiny",
+        "eager",
+        "none",
+        lambda: lambda: {"tensor": Tensor()},
+    )
+
+    result = runner.measure_scenario(item, warmup=0, repeat=1)
+
+    assert events == ["clock", "ready", "clock"]
+    assert result.times_ms == [1.0]
+
+
 def test_runner_rejects_invalid_scenario_registries():
     runner = _load_runner()
 
@@ -442,3 +525,84 @@ def test_contraction_benchmark_keeps_dependency_surface_small():
         "tensor0",
     }
     assert {"_runner", "jax", "tensor0"} <= imported_roots
+
+
+def test_trivial_benchmark_lists_stable_scenarios():
+    completed = _run_trivial_benchmark("--list-scenarios")
+
+    scenario_ids = completed.stdout.splitlines()
+
+    assert len(scenario_ids) == len(set(scenario_ids))
+    assert set(scenario_ids) == EXPECTED_TRIVIAL_SCENARIOS
+
+
+def test_trivial_benchmark_selected_quick_json_runs(tmp_path):
+    json_output = tmp_path / "trivial.json"
+    completed = _run_trivial_benchmark(
+        "--quick",
+        "--scenario",
+        "dense.trivial.from_dense.rank2.float64.small.eager",
+        "--scenario",
+        "composition.trivial.float64.small.eager",
+        "--warmup",
+        "0",
+        "--repeat",
+        "1",
+        "--json",
+        "--json-output",
+        str(json_output),
+    )
+
+    payload = json.loads(completed.stdout)
+
+    assert json.loads(json_output.read_text(encoding="utf-8")) == payload
+    assert payload["config"] == {
+        "profile": "quick",
+        "warmup": 0,
+        "repeat": 1,
+        "scenario_count": 2,
+    }
+    assert {result["id"] for result in payload["results"]} == {
+        "dense.trivial.from_dense.rank2.float64.small.eager",
+        "composition.trivial.float64.small.eager",
+    }
+    for result in payload["results"]:
+        assert RESULT_FIELDS <= result.keys()
+        assert len(result["times_ms"]) == 1
+        assert result["min_ms"] >= 0.0
+        assert result["median_ms"] >= 0.0
+        assert result["iqr_ms"] >= 0.0
+        assert result["max_ms"] >= 0.0
+
+    environment = payload["environment"]
+    assert environment["benchmark_script_sha256"]
+    assert environment["jax_devices"]
+    source_state = environment["public_repository"]
+    assert source_state["revision"]
+    assert isinstance(source_state["dirty"], bool)
+    assert source_state["binary_diff_sha256"]
+    assert isinstance(source_state["untracked_files"], list)
+    assert all(
+        {"path", "sha256"} == entry.keys()
+        for entry in source_state["untracked_files"]
+    )
+
+
+def test_trivial_benchmark_keeps_dependency_surface_small():
+    imported_roots = _imported_roots(TRIVIAL_BENCHMARK_SCRIPT)
+
+    assert imported_roots <= {
+        "_runner",
+        "__future__",
+        "collections",
+        "hashlib",
+        "json",
+        "os",
+        "pathlib",
+        "platform",
+        "subprocess",
+        "typing",
+        "jax",
+        "tensor0",
+    }
+    assert {"_runner", "hashlib", "jax", "tensor0"} <= imported_roots

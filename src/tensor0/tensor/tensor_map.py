@@ -22,6 +22,8 @@ from ..structure.spaces import (
     _as_hom_space,
     _normalize_sector_key,
     hom,
+    sector_spec,
+    storage_dim,
 )
 from ._blocks import (
     get_subblock as _get_subblock,
@@ -50,10 +52,8 @@ class TensorMap:
         if not isinstance(vector_storage, VectorStorage):
             vector_storage = VectorStorage(vector_storage)
 
-        degeneracystructure = get_degeneracystructure(space)
-        _validate_vector_storage_data(
-            vector_storage.data, degeneracystructure.total_dim
-        )
+        expected_total_dim = storage_dim(space)
+        _validate_vector_storage_data(vector_storage.data, expected_total_dim)
 
         object.__setattr__(self, "space", space)
         object.__setattr__(self, "storage", vector_storage)
@@ -135,7 +135,7 @@ class TensorMap:
 
     @property
     def dim(self) -> int:
-        return get_degeneracystructure(self.space).total_dim
+        return storage_dim(self.space)
 
     @property
     def dims(self) -> tuple[int, ...]:
@@ -166,6 +166,10 @@ class TensorMap:
         return get_sectorstructure(self.space).fusiontree_pairs
 
     def hasblock(self, coupled: object) -> bool:
+        if sector_spec(self.space) == _native.Trivial:
+            key = _normalize_sector_key(coupled)
+            self.space.codomain.sector_spec.quantum_dim(key)
+            return self.storage.data.shape[0] != 0
         return get_sectorstructure(self.space).blocksector_index(coupled) is not None
 
     @classmethod
@@ -207,6 +211,19 @@ class TensorMap:
 
     def block(self, coupled: int | tuple[int, ...]) -> Array:
         key = _normalize_sector_key(coupled)
+        if sector_spec(self.space) == _native.Trivial:
+            if key != ():
+                self.space.codomain.sector_spec.quantum_dim(key)
+                raise KeyError(key)
+            from .dense import _trivial_dense_array
+
+            value = _trivial_dense_array(self)
+            if value.size == 0:
+                raise KeyError(key)
+            row_dim = math.prod(value.shape[: self.numout])
+            col_dim = math.prod(value.shape[self.numout :])
+            return value.reshape((row_dim, col_dim))
+
         try:
             block = get_blockstructure(self.space)[key]
         except KeyError:
@@ -216,6 +233,16 @@ class TensorMap:
         )
 
     def blocks(self) -> tuple[tuple[tuple[int, ...], Array], ...]:
+        if sector_spec(self.space) == _native.Trivial:
+            from .dense import _trivial_dense_array
+
+            value = _trivial_dense_array(self)
+            if value.size == 0:
+                return ()
+            row_dim = math.prod(value.shape[: self.numout])
+            col_dim = math.prod(value.shape[self.numout :])
+            return (((), value.reshape((row_dim, col_dim))),)
+
         return tuple(
             (
                 coupled,
@@ -252,6 +279,16 @@ class TensorMap:
         return self._subblock_at(_resolve_subblock_index(self.space, key))
 
     def _subblock_at(self, index: int) -> Array:
+        if sector_spec(self.space) == _native.Trivial:
+            if index != 0:
+                raise KeyError(index)
+            from .dense import _trivial_dense_array
+
+            value = _trivial_dense_array(self)
+            if value.size == 0:
+                raise KeyError(index)
+            return value
+
         subblock = get_degeneracystructure(self.space).subblock_at(index)
         if subblock is None:
             raise KeyError(index)
@@ -260,10 +297,13 @@ class TensorMap:
     def subblocks(
         self,
     ) -> _SubblocksView:
+        sectorstructure = get_sectorstructure(self.space)
         return _SubblocksView(
             self,
-            get_sectorstructure(self.space),
-            get_degeneracystructure(self.space),
+            sectorstructure,
+            None
+            if sector_spec(self.space) == _native.Trivial
+            else get_degeneracystructure(self.space),
         )
 
     def __getitem__(self, key: _FusionTreePair | _VisibleSectorTuple) -> Array:
@@ -547,7 +587,7 @@ class TensorMap:
 class _SubblocksView:
     tensor: TensorMap
     _sectorstructure: _native.SectorStructure
-    _degeneracystructure: _native.DegeneracyStructure
+    _degeneracystructure: _native.DegeneracyStructure | None
 
     def __len__(self) -> int:
         return self._sectorstructure.fusiontree_pair_count
@@ -575,6 +615,13 @@ class _SubblocksView:
             raise IndexError("subblock index out of range")
 
         pair = self._sectorstructure.fusiontree_pair_at(index)
+        if self._degeneracystructure is None:
+            if pair is None:
+                raise RuntimeError("sector and degeneracy structures are inconsistent")
+            from .dense import _trivial_dense_array
+
+            return pair, _trivial_dense_array(self.tensor)
+
         subblock = self._degeneracystructure.subblock_at(index)
         if pair is None or subblock is None:
             raise RuntimeError("sector and degeneracy structures are inconsistent")
@@ -612,19 +659,17 @@ def _resolve_subblock_index(
 
 def zeros(space: _native.HomSpace, dtype: DTypeLike | None = None) -> TensorMap:
     space = _as_hom_space(space, "zeros")
-    degeneracystructure = get_degeneracystructure(space)
     return TensorMap(
         space,
-        jnp.zeros((degeneracystructure.total_dim,), dtype=dtype),
+        jnp.zeros((storage_dim(space),), dtype=dtype),
     )
 
 
 def ones(space: _native.HomSpace, dtype: DTypeLike | None = None) -> TensorMap:
     space = _as_hom_space(space, "ones")
-    degeneracystructure = get_degeneracystructure(space)
     return TensorMap(
         space,
-        jnp.ones((degeneracystructure.total_dim,), dtype=dtype),
+        jnp.ones((storage_dim(space),), dtype=dtype),
     )
 
 

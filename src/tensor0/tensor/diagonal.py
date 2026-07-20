@@ -10,8 +10,8 @@ import jax.numpy as jnp
 from jax.typing import DTypeLike
 
 from .. import _native
-from ..structure.layout import get_degeneracystructure, get_sectorstructure
-from ..structure.spaces import dim as space_dim, hom, reduced_dim
+from ..structure.layout import get_sectorstructure
+from ..structure.spaces import dim as space_dim, hom, reduced_dim, storage_dim
 from ._tolerances import default_pseudoinverse_rtol, nonnegative_tolerance
 from .sector_vector import SectorVector
 from .storage import VectorStorage, _validate_vector_storage_data
@@ -113,7 +113,7 @@ class DiagonalTensorMap:
 
     @property
     def dim(self) -> int:
-        return get_degeneracystructure(self.space).total_dim
+        return storage_dim(self.space)
 
     @property
     def dims(self) -> tuple[int, ...]:

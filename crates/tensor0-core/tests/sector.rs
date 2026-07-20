@@ -2,7 +2,7 @@ use tensor0_core::error::Tensor0Error;
 use tensor0_core::sector::{
     BraidingStyle, EncodedSectorValue, FermionNumber, FermionParity, FermionParitySU2Irrep,
     FermionParityU1Irrep, FermionParityU1SU2Irrep, FusionStyle, SU2Irrep, Sector,
-    SectorCardinality, SectorSpec, U1Irrep, U1SU2Irrep, Z4Irrep, ZNIrrep,
+    SectorCardinality, SectorSpec, Trivial, U1Irrep, U1SU2Irrep, Z4Irrep, ZNIrrep,
 };
 
 fn ev(xs: &[i64]) -> EncodedSectorValue {
@@ -52,6 +52,14 @@ fn u1_case() -> SectorCase<U1Irrep> {
         samples: vec![u1(-3), u1(-1), u1(0), u1(1), u1(2)],
         fusion_cases: vec![(u1(1), u1(-3))],
         first_values: vec![u1(0), u1(1), u1(-1), u1(2), u1(-2)],
+    }
+}
+
+fn trivial_case() -> SectorCase<Trivial> {
+    SectorCase {
+        samples: vec![Trivial],
+        fusion_cases: vec![(Trivial, Trivial)],
+        first_values: vec![Trivial],
     }
 }
 
@@ -184,6 +192,7 @@ fn assert_metadata<I: Sector>(
 
 #[test]
 fn primitive_sectors_satisfy_core_contracts() {
+    assert_core_sector_contracts(trivial_case());
     assert_core_sector_contracts(u1_case());
     assert_core_sector_contracts(su2_case());
     assert_core_sector_contracts(fermion_parity_case());
@@ -200,6 +209,13 @@ fn product_sectors_satisfy_core_contracts() {
 
 #[test]
 fn primitive_sector_types_expose_expected_metadata() {
+    assert_metadata::<Trivial>(
+        SectorSpec::trivial(),
+        0,
+        FusionStyle::UniqueFusion,
+        BraidingStyle::Bosonic,
+        SectorCardinality::Finite(1),
+    );
     assert_metadata::<U1Irrep>(
         SectorSpec::u1(),
         1,
@@ -319,6 +335,13 @@ fn product_aliases_have_expected_metadata() {
 
 #[test]
 fn invalid_decode_and_invalid_const_generic_return_clear_errors() {
+    assert!(matches!(
+        Trivial::decode_value(&[0]).unwrap_err(),
+        Tensor0Error::BadSectorWidth {
+            expected: 0,
+            actual: 1
+        },
+    ));
     assert!(matches!(
         U1Irrep::decode_value(&[1, 2]).unwrap_err(),
         Tensor0Error::BadSectorWidth {

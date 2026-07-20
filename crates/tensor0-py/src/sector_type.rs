@@ -48,6 +48,7 @@ fn add_sector_constant(
 }
 
 pub(crate) fn add_sector_constants(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
+    add_sector_constant(py, module, "Trivial", CoreSectorSpec::trivial())?;
     add_sector_constant(py, module, "U1Irrep", CoreSectorSpec::u1())?;
     add_sector_constant(py, module, "SU2Irrep", CoreSectorSpec::su2())?;
     add_sector_constant(
