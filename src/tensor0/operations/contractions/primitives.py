@@ -194,7 +194,7 @@ def tensorcontract(
     conjugate_flags = _normalize_conjugate(conjugate)
     _validate_coverage((left_axes, right_axes), output_refs, ranks)
 
-    if left.space.codomain.sector_spec != right.space.codomain.sector_spec:
+    if left.space.sector_spec != right.space.sector_spec:
         raise ValueError("left and right must use the same sector family")
 
     left_space = (
@@ -375,7 +375,7 @@ def tensortrace(
     num_open_out = len(mapped_output_axes[0])
     num_open_in = len(mapped_output_axes[1])
 
-    source_sector_spec = source_space.codomain.sector_spec
+    source_sector_spec = source_space.sector_spec
     destination_codomain = _native.make_product_space(
         source_sector_spec,
         canonical_space.codomain.spaces[:num_open_out],

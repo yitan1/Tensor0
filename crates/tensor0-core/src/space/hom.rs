@@ -1,11 +1,11 @@
 use crate::error::{Result, Tensor0Error};
-use crate::sector::Sector;
+use crate::sector::{Sector, SectorSpec};
 
 use super::graded::GradedSpace;
 use super::product::ProductSpace;
 use super::spec::HomSpaceSpec;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct HomSpace<I: Sector> {
     codomain: ProductSpace<I>,
     domain: ProductSpace<I>,
@@ -38,6 +38,10 @@ impl<I: Sector> HomSpace<I> {
         &self.domain
     }
 
+    pub fn sector_spec(&self) -> SectorSpec {
+        I::sector_spec()
+    }
+
     pub fn dual(&self) -> Self {
         HomSpace::new(self.domain.clone(), self.codomain.clone())
     }
@@ -52,6 +56,13 @@ impl<I: Sector> HomSpace<I> {
 
     pub fn numind(&self) -> usize {
         self.numout() + self.numin()
+    }
+
+    pub fn dims(&self) -> Vec<usize> {
+        let mut dims = Vec::with_capacity(self.numind());
+        dims.extend(self.codomain.factors().iter().map(GradedSpace::dim));
+        dims.extend(self.domain.factors().iter().map(GradedSpace::dim));
+        dims
     }
 
     pub fn visible_leg(&self, index: usize) -> Result<GradedSpace<I>> {
@@ -159,24 +170,64 @@ impl<I: Sector> HomSpace<I> {
             seen[index] = true;
         }
 
-        let mut codomain = self.codomain.factors().to_vec();
-        let mut domain = self.domain.factors().to_vec();
-        for &index in indices {
-            if index < self.numout() {
-                codomain[index] = codomain[index].flip();
-            } else {
-                let domain_index = index - self.numout();
-                domain[domain_index] = domain[domain_index].flip();
-            }
-        }
+        let codomain = self
+            .codomain
+            .factors()
+            .iter()
+            .enumerate()
+            .map(|(index, factor)| {
+                if seen[index] {
+                    factor.flip()
+                } else {
+                    factor.clone()
+                }
+            })
+            .collect();
+        let domain = self
+            .domain
+            .factors()
+            .iter()
+            .enumerate()
+            .map(|(index, factor)| {
+                if seen[self.numout() + index] {
+                    factor.flip()
+                } else {
+                    factor.clone()
+                }
+            })
+            .collect();
         Ok(HomSpace::from_factor_spaces(codomain, domain))
     }
 
     pub fn permute(&self, p_codomain: &[usize], p_domain: &[usize]) -> Result<Self> {
         validate_visible_permutation(self.numind(), p_codomain, p_domain)?;
-        let visible = self.visible_legs();
-        let (codomain, domain) = select_visible_spaces(&visible, p_codomain, p_domain);
-        Ok(HomSpace::new(codomain, domain))
+        let codomain = p_codomain
+            .iter()
+            .map(|&index| self.permuted_factor(index, false))
+            .collect();
+        let domain = p_domain
+            .iter()
+            .map(|&index| self.permuted_factor(index, true))
+            .collect();
+        Ok(HomSpace::from_factor_spaces(codomain, domain))
+    }
+
+    fn permuted_factor(&self, visible_index: usize, to_domain: bool) -> GradedSpace<I> {
+        if visible_index < self.numout() {
+            let factor = &self.codomain.factors()[visible_index];
+            if to_domain {
+                factor.dual()
+            } else {
+                factor.clone()
+            }
+        } else {
+            let factor = &self.domain.factors()[visible_index - self.numout()];
+            if to_domain {
+                factor.clone()
+            } else {
+                factor.dual()
+            }
+        }
     }
 
     fn validate_unit_insertion_boundary(&self, position: usize) -> Result<()> {
@@ -214,23 +265,6 @@ fn validate_visible_permutation(
         seen[*index] = true;
     }
     Ok(())
-}
-
-fn select_visible_spaces<I: Sector>(
-    visible: &[GradedSpace<I>],
-    p_codomain: &[usize],
-    p_domain: &[usize],
-) -> (ProductSpace<I>, ProductSpace<I>) {
-    let codomain = p_codomain
-        .iter()
-        .map(|index| visible[*index].clone())
-        .collect::<Vec<_>>();
-    let domain = p_domain
-        .iter()
-        .map(|index| visible[*index].dual())
-        .collect::<Vec<_>>();
-
-    (ProductSpace::new(codomain), ProductSpace::new(domain))
 }
 
 fn hom_spec<I: Sector>(codomain: &ProductSpace<I>, domain: &ProductSpace<I>) -> HomSpaceSpec {

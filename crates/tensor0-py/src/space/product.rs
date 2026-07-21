@@ -7,7 +7,7 @@ use tensor0_core::sector::{
     U1Irrep, U1SU2Irrep, Z2Irrep, Z3Irrep, Z4Irrep,
 };
 use tensor0_core::space::{
-    fuse_product_space as core_fuse_product_space, GradedSpace, ProductSpace, ProductSpaceSpec,
+    fuse_product_space as core_fuse_product_space, GradedSpace, ProductSpace,
 };
 
 use crate::pyconv::{core_err, py_hash};
@@ -22,7 +22,7 @@ pub(crate) struct PyProductSpace {
     pub(super) inner: ProductSpaceInner,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum ProductSpaceInner {
     Trivial(ProductSpace<Trivial>),
     U1Irrep(ProductSpace<U1Irrep>),
@@ -132,7 +132,7 @@ impl PyProductSpace {
     }
 
     fn __hash__(&self) -> isize {
-        py_hash("ProductSpace", &self.inner.to_spec())
+        py_hash("ProductSpace", &self.inner)
     }
 }
 
@@ -308,23 +308,6 @@ impl ProductSpaceInner {
             ProductSpaceInner::FermionParityU1SU2Irrep(product) => {
                 factor_at(product, index, GradedSpaceInner::FermionParityU1SU2Irrep)
             }
-        }
-    }
-
-    pub(super) fn to_spec(&self) -> ProductSpaceSpec {
-        match self {
-            ProductSpaceInner::Trivial(product) => product.to_spec(),
-            ProductSpaceInner::U1Irrep(product) => product.to_spec(),
-            ProductSpaceInner::SU2Irrep(product) => product.to_spec(),
-            ProductSpaceInner::FermionParity(product) => product.to_spec(),
-            ProductSpaceInner::Z2Irrep(product) => product.to_spec(),
-            ProductSpaceInner::Z3Irrep(product) => product.to_spec(),
-            ProductSpaceInner::Z4Irrep(product) => product.to_spec(),
-            ProductSpaceInner::U1IrrepFermionParity(product) => product.to_spec(),
-            ProductSpaceInner::FermionParityU1Irrep(product) => product.to_spec(),
-            ProductSpaceInner::U1SU2Irrep(product) => product.to_spec(),
-            ProductSpaceInner::FermionParitySU2Irrep(product) => product.to_spec(),
-            ProductSpaceInner::FermionParityU1SU2Irrep(product) => product.to_spec(),
         }
     }
 

@@ -460,6 +460,27 @@ def test_hom_space_is_native_and_exposes_visible_legs():
         h[2]
 
 
+@pytest.mark.parametrize(
+    "sector_type",
+    [Trivial, U1Irrep, U1SU2Irrep],
+)
+def test_equal_native_spaces_share_hash_for_representative_sector_families(
+    sector_type,
+):
+    unit = spaces.unit_space(sector_type)
+    equal_unit = spaces.unit_space(sector_type)
+    left = hom((unit,), ())
+    right = hom((equal_unit,), ())
+
+    for value, equal_value in (
+        (unit, equal_unit),
+        (left.codomain, right.codomain),
+        (left, right),
+    ):
+        assert value == equal_value
+        assert hash(value) == hash(equal_value)
+
+
 def test_native_productspace_is_sequence_like_and_fuse_matches_tensorkit_compact_bond_inputs():
     v = space(U1Irrep, {0: 2, 1: 3})
     w = space(U1Irrep, {0: 5, -1: 7})
@@ -602,6 +623,8 @@ def test_sector_spec_queries_every_typed_space_level():
     assert sector_spec(elementary) == Trivial
     assert sector_spec(product) == Trivial
     assert sector_spec(morphism) == Trivial
+    assert morphism.sector_spec == Trivial
+    assert morphism.dims == (2,)
 
     with pytest.raises(
         TypeError,

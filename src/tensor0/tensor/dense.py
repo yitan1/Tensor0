@@ -8,7 +8,6 @@ from jax import Array
 
 from .. import _native
 from ..structure.layout import get_degeneracystructure, get_sectorstructure
-from ..structure.spaces import sector_spec
 from ._blocks import (
     add_to_subblock as _add_to_subblock,
     get_subblock as _get_subblock,
@@ -20,7 +19,7 @@ from .tensor_map import TensorMap
 def to_dense(tensor: TensorMap) -> jnp.ndarray:
     if not isinstance(tensor, TensorMap):
         raise TypeError("to_dense() requires a TensorMap")
-    if sector_spec(tensor.space) == _native.Trivial:
+    if tensor.space.sector_spec == _native.Trivial:
         return _trivial_dense_array(tensor)
 
     dense_shape = _dense_shape(tensor.space)
@@ -53,7 +52,7 @@ def from_dense(
 
     dense = _normalize_dense_input(space, data)
     tolerance = _normalize_dense_tolerance(dense.dtype, tol)
-    if sector_spec(space) == _native.Trivial:
+    if space.sector_spec == _native.Trivial:
         storage_dtype = jnp.result_type(dense, 0.0)
         storage = jnp.reshape(jnp.asarray(dense, dtype=storage_dtype), (-1,))
         return TensorMap(space, storage)
@@ -73,7 +72,7 @@ def from_dense(
         coeff = _pair_coeff(row_tree, col_tree, dense)
         dense_slice = dense[_dense_slices(axes)]
         reduced = _project_interleaved(dense_slice, coeff, axes)
-        reduced = reduced / space.codomain.sector_spec.quantum_dim(row_tree.coupled)
+        reduced = reduced / space.sector_spec.quantum_dim(row_tree.coupled)
         storage = _add_to_subblock(storage, subblock, reduced)
 
     result = TensorMap(space, storage)
@@ -110,9 +109,8 @@ def _normalize_dense_input(space: _native.HomSpace, data: object) -> jnp.ndarray
 
 
 def _product_dims(space: _native.HomSpace) -> tuple[tuple[int, ...], tuple[int, ...]]:
-    return tuple(_native.product_dims(space.codomain)), tuple(
-        _native.product_dims(space.domain),
-    )
+    dims = space.dims
+    return dims[: space.numout], dims[space.numout :]
 
 
 def _tree_pair_axes(

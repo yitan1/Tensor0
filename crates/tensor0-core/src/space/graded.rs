@@ -1,27 +1,28 @@
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use crate::error::{Result, Tensor0Error};
 use crate::sector::Sector;
 
 use super::spec::{ElementarySpaceSpec, SectorDimSpec};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct GradedSpace<I: Sector> {
-    sector_dims: Vec<(I, usize)>,
+    sector_dims: Arc<[(I, usize)]>,
     is_dual: bool,
 }
 
 impl<I: Sector> GradedSpace<I> {
     pub fn zero(is_dual: bool) -> Self {
         GradedSpace {
-            sector_dims: vec![],
+            sector_dims: Vec::new().into(),
             is_dual,
         }
     }
 
     pub fn unit() -> Self {
         GradedSpace {
-            sector_dims: vec![(I::unit(), 1)],
+            sector_dims: vec![(I::unit(), 1)].into(),
             is_dual: false,
         }
     }
@@ -29,7 +30,7 @@ impl<I: Sector> GradedSpace<I> {
     /// Return whether this is the canonical unit space or its dual.
     pub fn is_unit(&self) -> bool {
         matches!(
-            self.sector_dims.as_slice(),
+            self.sector_dims.as_ref(),
             [(sector, 1)] if sector == &I::unit()
         )
     }
@@ -50,7 +51,7 @@ impl<I: Sector> GradedSpace<I> {
         }
 
         Ok(GradedSpace {
-            sector_dims,
+            sector_dims: sector_dims.into(),
             is_dual,
         })
     }
@@ -74,12 +75,12 @@ impl<I: Sector> GradedSpace<I> {
     }
 
     pub fn to_spec(&self) -> ElementarySpaceSpec {
-        elementary_spec(&self.sector_dims, self.is_dual)
+        elementary_spec(self.sector_dims.as_ref(), self.is_dual)
     }
 
     pub fn dual(&self) -> Self {
         GradedSpace {
-            sector_dims: self.sector_dims.clone(),
+            sector_dims: Arc::clone(&self.sector_dims),
             is_dual: !self.is_dual,
         }
     }
@@ -93,7 +94,7 @@ impl<I: Sector> GradedSpace<I> {
             .collect::<Vec<_>>();
         sector_dims.sort_by(|left, right| left.0.cmp(&right.0));
         GradedSpace {
-            sector_dims,
+            sector_dims: sector_dims.into(),
             is_dual: !self.is_dual,
         }
     }
@@ -145,12 +146,16 @@ impl<I: Sector> GradedSpace<I> {
     }
 
     pub fn dim(&self) -> usize {
-        self.sectors()
-            .into_iter()
+        self.sector_dims
+            .iter()
             .map(|(sector, dim)| {
-                sector
-                    .quantum_dim()
-                    .checked_mul(dim)
+                let quantum_dim = if self.is_dual {
+                    sector.dual().quantum_dim()
+                } else {
+                    sector.quantum_dim()
+                };
+                quantum_dim
+                    .checked_mul(*dim)
                     .expect("graded space dimension overflowed")
             })
             .try_fold(0usize, |total, dim| {

@@ -14,7 +14,6 @@ from ..structure.layout import (
     get_degeneracystructure,
     get_sectorstructure,
 )
-from ..structure.spaces import sector_spec
 from ..tensor._blocks import (
     add_to_subblock as _add_to_subblock,
     get_subblock as _get_subblock,
@@ -42,7 +41,7 @@ def permute(tensor: TensorMap, p: Permutation) -> TensorMap:
         return tensor
 
     dst_space = tensor.space.permute(p_codomain, p_domain)
-    if sector_spec(tensor.space) == _native.Trivial:
+    if tensor.space.sector_spec == _native.Trivial:
         return _apply_trivial_index_transform(
             tensor,
             dst_space,
@@ -74,7 +73,7 @@ def braid(tensor: TensorMap, p: Permutation, levels: tuple[int, ...]) -> TensorM
         return tensor
 
     dst_space = tensor.space.permute(p_codomain, p_domain)
-    if sector_spec(tensor.space) == _native.Trivial:
+    if tensor.space.sector_spec == _native.Trivial:
         return _apply_trivial_index_transform(
             tensor,
             dst_space,
@@ -108,7 +107,7 @@ def _transpose_normalized(
         return tensor
 
     dst_space = tensor.space.permute(p_codomain, p_domain)
-    if sector_spec(tensor.space) == _native.Trivial:
+    if tensor.space.sector_spec == _native.Trivial:
         _validate_cyclic_transpose_permutation(
             tensor.space,
             p_codomain,

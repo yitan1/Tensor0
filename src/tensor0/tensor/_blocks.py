@@ -12,7 +12,7 @@ import jax.numpy as jnp
 from jax.typing import DTypeLike
 
 from .. import _native
-from ..structure.layout import get_blockstructure
+from ..structure.layout import _blockstructure_items, _find_blockstructure
 from ..structure.sector_dict import SectorDict
 from ..structure.spaces import storage_dim
 
@@ -166,7 +166,7 @@ def pack_complete_blocks(
     dtype: DTypeLike | None,
 ) -> Array:
     block_arrays = SectorDict(blocks)
-    if space.codomain.sector_spec == _native.Trivial:
+    if space.sector_spec == _native.Trivial:
         total_dim = storage_dim(space)
         if total_dim == 0:
             for coupled, value in block_arrays.items():
@@ -178,9 +178,10 @@ def pack_complete_blocks(
         if coupled not in block_arrays:
             raise ValueError(f"missing data for block sector {coupled}")
 
+        dims = space.dims
         expected_shape = (
-            math.prod(_native.product_dims(space.codomain)),
-            math.prod(_native.product_dims(space.domain)),
+            math.prod(dims[: space.numout]),
+            math.prod(dims[space.numout :]),
         )
         value = jnp.asarray(block_arrays[coupled], dtype=dtype)
         actual_shape = tuple(value.shape)
@@ -197,10 +198,8 @@ def pack_complete_blocks(
                 raise ValueError(f"unexpected block sector {extra_coupled}")
         return value.reshape((total_dim,))
 
-    blockstructures = get_blockstructure(space)
-
     flat_blocks: list[Array] = []
-    for coupled, block in blockstructures.items():
+    for coupled, block in _blockstructure_items(space):
         if coupled not in block_arrays:
             raise ValueError(f"missing data for block sector {coupled}")
 
@@ -215,7 +214,7 @@ def pack_complete_blocks(
         flat_blocks.append(jnp.reshape(value, (-1,)))
 
     for coupled, value in block_arrays.items():
-        if coupled in blockstructures:
+        if _find_blockstructure(space, coupled, suppress_invalid=True) is not None:
             continue
         array = jnp.asarray(value, dtype=dtype)
         if array.size != 0:
@@ -233,14 +232,15 @@ def pack_blocks(
     dtype: DTypeLike | None,
 ) -> Array:
     block_arrays = SectorDict(blocks)
-    if space.codomain.sector_spec == _native.Trivial:
+    if space.sector_spec == _native.Trivial:
         total_dim = storage_dim(space)
         if total_dim == 0:
             return jnp.zeros((0,), dtype=dtype)
 
+        dims = space.dims
         expected_shape = (
-            math.prod(_native.product_dims(space.codomain)),
-            math.prod(_native.product_dims(space.domain)),
+            math.prod(dims[: space.numout]),
+            math.prod(dims[space.numout :]),
         )
         value = block_arrays.get(())
         if value is None:
@@ -255,10 +255,8 @@ def pack_blocks(
                 )
         return value.reshape((total_dim,))
 
-    blockstructures = get_blockstructure(space)
-
     flat_blocks: list[Array] = []
-    for coupled, block in blockstructures.items():
+    for coupled, block in _blockstructure_items(space):
         expected_shape = (block.row_dim, block.col_dim)
         value = block_arrays.get(coupled)
         if value is None:

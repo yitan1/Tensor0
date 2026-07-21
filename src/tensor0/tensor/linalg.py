@@ -8,7 +8,11 @@ from jax import Array
 import jax.numpy as jnp
 
 from .. import _native
-from ..structure.layout import get_blockstructure, get_sectorstructure
+from ..structure.layout import (
+    _blockstructure_items,
+    _find_blockstructure,
+    get_sectorstructure,
+)
 from ..structure.sector_dict import SectorDict
 from ..structure.spaces import (
     _as_product_space_input,
@@ -49,9 +53,8 @@ def diagm(
     value_blocks = SectorDict(
         (coupled, jnp.asarray(value, dtype=dtype)) for coupled, value in value_items
     )
-    blockstructures = get_blockstructure(result_space)
     block_arrays: list[tuple[tuple[int, ...], Array]] = []
-    for coupled, block in blockstructures.items():
+    for coupled, block in _blockstructure_items(result_space):
         sector_values = value_blocks.get(coupled)
         if sector_values is None:
             raise ValueError(f"missing data for diagonal block sector {coupled}")
@@ -68,7 +71,10 @@ def diagm(
         block_arrays.append((coupled, block_array))
 
     for coupled, sector_values in value_blocks.items():
-        if coupled in blockstructures:
+        if (
+            _find_blockstructure(result_space, coupled, suppress_invalid=True)
+            is not None
+        ):
             continue
         if sector_values.size != 0:
             raise ValueError(f"unexpected diagonal block sector {coupled}")

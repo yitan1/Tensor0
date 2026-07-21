@@ -6,7 +6,7 @@ use tensor0_core::sector::{
     FermionParityU1SU2Irrep, GroupSpec, SU2Irrep, Sector, SectorSpec as CoreSectorSpec, Trivial,
     U1Irrep, U1SU2Irrep, Z2Irrep, Z3Irrep, Z4Irrep,
 };
-use tensor0_core::space::{infimum_space as core_infimum_space, ElementarySpaceSpec, GradedSpace};
+use tensor0_core::space::{infimum_space as core_infimum_space, GradedSpace};
 
 use crate::pyconv::{core_err, parse_sector_dims, py_hash, sectors_py};
 use crate::sector_type::PySectorSpec;
@@ -19,7 +19,7 @@ pub(crate) struct PyElementarySpace {
     pub(super) inner: GradedSpaceInner,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(super) enum GradedSpaceInner {
     Trivial(GradedSpace<Trivial>),
     U1Irrep(GradedSpace<U1Irrep>),
@@ -96,7 +96,7 @@ impl PyElementarySpace {
     }
 
     fn __hash__(&self) -> isize {
-        py_hash("ElementarySpace", &self.inner.to_spec())
+        py_hash("ElementarySpace", &self.inner)
     }
 }
 
@@ -271,23 +271,6 @@ impl GradedSpaceInner {
             _ => Err(PyValueError::new_err(
                 "infimum spaces must have the same sector family",
             )),
-        }
-    }
-
-    pub(super) fn to_spec(&self) -> ElementarySpaceSpec {
-        match self {
-            GradedSpaceInner::Trivial(space) => space.to_spec(),
-            GradedSpaceInner::U1Irrep(space) => space.to_spec(),
-            GradedSpaceInner::SU2Irrep(space) => space.to_spec(),
-            GradedSpaceInner::FermionParity(space) => space.to_spec(),
-            GradedSpaceInner::Z2Irrep(space) => space.to_spec(),
-            GradedSpaceInner::Z3Irrep(space) => space.to_spec(),
-            GradedSpaceInner::Z4Irrep(space) => space.to_spec(),
-            GradedSpaceInner::U1IrrepFermionParity(space) => space.to_spec(),
-            GradedSpaceInner::FermionParityU1Irrep(space) => space.to_spec(),
-            GradedSpaceInner::U1SU2Irrep(space) => space.to_spec(),
-            GradedSpaceInner::FermionParitySU2Irrep(space) => space.to_spec(),
-            GradedSpaceInner::FermionParityU1SU2Irrep(space) => space.to_spec(),
         }
     }
 }

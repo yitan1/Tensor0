@@ -3,15 +3,17 @@ use std::sync::OnceLock;
 use pyo3::exceptions::{PyIndexError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::sync::PyOnceLock;
+use pyo3::types::PyTuple;
 use pyo3::IntoPyObject;
 use tensor0_core::sector::{
     FermionNumber, FermionParity, FermionParitySU2Irrep, FermionParityU1Irrep,
-    FermionParityU1SU2Irrep, SU2Irrep, SectorSpec as CoreSectorSpec, Trivial, U1Irrep, U1SU2Irrep,
-    Z2Irrep, Z3Irrep, Z4Irrep,
+    FermionParityU1SU2Irrep, SU2Irrep, Sector, SectorSpec as CoreSectorSpec, Trivial, U1Irrep,
+    U1SU2Irrep, Z2Irrep, Z3Irrep, Z4Irrep,
 };
-use tensor0_core::space::{HomSpace as CoreHomSpace, HomSpaceSpec, ProductSpaceSpec};
+use tensor0_core::space::{HomSpace as CoreHomSpace, ProductSpace};
 
 use crate::pyconv::{core_err, py_hash, sector_spec_static_key};
+use crate::sector_type::PySectorSpec;
 
 use super::graded::{GradedSpaceInner, PyElementarySpace};
 use super::product::{ProductSpaceInner, PyProductSpace};
@@ -39,40 +41,53 @@ struct PyHomSpaceSectorKey {
 }
 
 #[derive(PartialEq, Eq, Hash)]
-struct HomSpaceSectorKey {
-    sector_spec: CoreSectorSpec,
-    codomain: Vec<HomSpaceSectorFactorKey>,
-    domain: Vec<HomSpaceSectorFactorKey>,
+enum HomSpaceSectorKey {
+    Trivial(TypedHomSpaceSectorKey<Trivial>),
+    U1Irrep(TypedHomSpaceSectorKey<U1Irrep>),
+    SU2Irrep(TypedHomSpaceSectorKey<SU2Irrep>),
+    FermionParity(TypedHomSpaceSectorKey<FermionParity>),
+    Z2Irrep(TypedHomSpaceSectorKey<Z2Irrep>),
+    Z3Irrep(TypedHomSpaceSectorKey<Z3Irrep>),
+    Z4Irrep(TypedHomSpaceSectorKey<Z4Irrep>),
+    U1IrrepFermionParity(TypedHomSpaceSectorKey<FermionNumber>),
+    FermionParityU1Irrep(TypedHomSpaceSectorKey<FermionParityU1Irrep>),
+    U1SU2Irrep(TypedHomSpaceSectorKey<U1SU2Irrep>),
+    FermionParitySU2Irrep(TypedHomSpaceSectorKey<FermionParitySU2Irrep>),
+    FermionParityU1SU2Irrep(TypedHomSpaceSectorKey<FermionParityU1SU2Irrep>),
 }
 
 #[derive(PartialEq, Eq, Hash)]
-struct HomSpaceSectorFactorKey {
-    sectors: Vec<Vec<i64>>,
+struct TypedHomSpaceSectorKey<I: Sector> {
+    codomain: Vec<HomSpaceSectorFactorKey<I>>,
+    domain: Vec<HomSpaceSectorFactorKey<I>>,
+}
+
+#[derive(PartialEq, Eq, Hash)]
+struct HomSpaceSectorFactorKey<I: Sector> {
+    sectors: Vec<I>,
     is_dual: bool,
 }
 
-impl HomSpaceSectorKey {
-    fn from_spec(spec: HomSpaceSpec) -> Self {
-        let HomSpaceSpec { codomain, domain } = spec;
-        HomSpaceSectorKey {
-            sector_spec: codomain.sector_spec.clone(),
-            codomain: product_sector_key(codomain),
-            domain: product_sector_key(domain),
+impl<I: Sector> TypedHomSpaceSectorKey<I> {
+    fn from_hom(space: &CoreHomSpace<I>) -> Self {
+        TypedHomSpaceSectorKey {
+            codomain: product_sector_key(space.codomain()),
+            domain: product_sector_key(space.domain()),
         }
     }
 }
 
-fn product_sector_key(product: ProductSpaceSpec) -> Vec<HomSpaceSectorFactorKey> {
+fn product_sector_key<I: Sector>(product: &ProductSpace<I>) -> Vec<HomSpaceSectorFactorKey<I>> {
     product
-        .factors
-        .into_iter()
+        .factors()
+        .iter()
         .map(|factor| HomSpaceSectorFactorKey {
             sectors: factor
-                .sectors
+                .sectors()
                 .into_iter()
-                .map(|sector_dim| sector_dim.sector)
+                .map(|(sector, _dim)| sector)
                 .collect(),
-            is_dual: factor.is_dual,
+            is_dual: factor.is_dual(),
         })
         .collect()
 }
@@ -90,7 +105,7 @@ impl PyHomSpaceSectorKey {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum HomSpaceInner {
     Trivial(CoreHomSpace<Trivial>),
     U1Irrep(CoreHomSpace<U1Irrep>),
@@ -187,6 +202,25 @@ macro_rules! dispatch_homspace_method {
     };
 }
 
+macro_rules! dispatch_homspace_value {
+    ($hom:expr, $method:ident) => {
+        match $hom {
+            HomSpaceInner::Trivial(hom) => hom.$method(),
+            HomSpaceInner::U1Irrep(hom) => hom.$method(),
+            HomSpaceInner::SU2Irrep(hom) => hom.$method(),
+            HomSpaceInner::FermionParity(hom) => hom.$method(),
+            HomSpaceInner::Z2Irrep(hom) => hom.$method(),
+            HomSpaceInner::Z3Irrep(hom) => hom.$method(),
+            HomSpaceInner::Z4Irrep(hom) => hom.$method(),
+            HomSpaceInner::U1IrrepFermionParity(hom) => hom.$method(),
+            HomSpaceInner::FermionParityU1Irrep(hom) => hom.$method(),
+            HomSpaceInner::U1SU2Irrep(hom) => hom.$method(),
+            HomSpaceInner::FermionParitySU2Irrep(hom) => hom.$method(),
+            HomSpaceInner::FermionParityU1SU2Irrep(hom) => hom.$method(),
+        }
+    };
+}
+
 #[pyfunction]
 pub(crate) fn make_hom_products(
     codomain: PyRef<'_, PyProductSpace>,
@@ -229,6 +263,13 @@ impl PyHomSpace {
     }
 
     #[getter]
+    fn sector_spec(&self) -> PySectorSpec {
+        PySectorSpec {
+            inner: self.inner.sector_spec(),
+        }
+    }
+
+    #[getter]
     fn numout(&self) -> usize {
         self.inner.numout()
     }
@@ -244,13 +285,18 @@ impl PyHomSpace {
     }
 
     #[getter]
+    fn dims(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        Ok(PyTuple::new(py, self.inner.dims())?.into_any().unbind())
+    }
+
+    #[getter]
     fn visible_legs(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         spaces_tuple(py, self.inner.visible_legs())
     }
 
     #[getter]
     fn static_key(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        let sector_key = sector_spec_static_key(py, &self.inner.codomain_product().sector_spec())?;
+        let sector_key = sector_spec_static_key(py, &self.inner.sector_spec())?;
         let codomain_keys = space_static_keys_tuple(py, self.inner.codomain_spaces())?;
         let domain_keys = space_static_keys_tuple(py, self.inner.domain_spaces())?;
         let key = ("hom", sector_key, codomain_keys, domain_keys).into_pyobject(py)?;
@@ -259,12 +305,11 @@ impl PyHomSpace {
 
     #[getter]
     fn _sector_key(&self, py: Python<'_>) -> PyResult<Py<PyHomSpaceSectorKey>> {
+        if let Some(key) = self.sector_key.get(py) {
+            return Ok(key.clone_ref(py));
+        }
         self.sector_key
-            .get_or_try_init(py, || {
-                let inner = self.inner.sector_key();
-                let hash = py_hash("HomSpaceSectorKey", &inner);
-                Py::new(py, PyHomSpaceSectorKey { inner, hash })
-            })
+            .get_or_try_init(py, || build_sector_key(py, &self.inner))
             .map(|key| key.clone_ref(py))
     }
 
@@ -316,9 +361,7 @@ impl PyHomSpace {
     }
 
     fn __hash__(&self) -> isize {
-        *self
-            .hash
-            .get_or_init(|| py_hash("HomSpace", &self.inner.to_spec()))
+        *self.hash.get_or_init(|| py_hash("HomSpace", &self.inner))
     }
 }
 
@@ -327,9 +370,62 @@ fn nonnegative_unit_index(index: isize, context: &str) -> PyResult<usize> {
         .map_err(|_| PyValueError::new_err(format!("{context} must be non-negative")))
 }
 
+#[cold]
+#[inline(never)]
+fn build_sector_key(py: Python<'_>, space: &HomSpaceInner) -> PyResult<Py<PyHomSpaceSectorKey>> {
+    let inner = space.sector_key();
+    let hash = py_hash("HomSpaceSectorKey", &inner);
+    Py::new(py, PyHomSpaceSectorKey { inner, hash })
+}
+
 impl HomSpaceInner {
+    fn sector_spec(&self) -> CoreSectorSpec {
+        dispatch_homspace_value!(self, sector_spec)
+    }
+
+    fn dims(&self) -> Vec<usize> {
+        dispatch_homspace_value!(self, dims)
+    }
+
     fn sector_key(&self) -> HomSpaceSectorKey {
-        HomSpaceSectorKey::from_spec(self.to_spec())
+        match self {
+            HomSpaceInner::Trivial(hom) => {
+                HomSpaceSectorKey::Trivial(TypedHomSpaceSectorKey::from_hom(hom))
+            }
+            HomSpaceInner::U1Irrep(hom) => {
+                HomSpaceSectorKey::U1Irrep(TypedHomSpaceSectorKey::from_hom(hom))
+            }
+            HomSpaceInner::SU2Irrep(hom) => {
+                HomSpaceSectorKey::SU2Irrep(TypedHomSpaceSectorKey::from_hom(hom))
+            }
+            HomSpaceInner::FermionParity(hom) => {
+                HomSpaceSectorKey::FermionParity(TypedHomSpaceSectorKey::from_hom(hom))
+            }
+            HomSpaceInner::Z2Irrep(hom) => {
+                HomSpaceSectorKey::Z2Irrep(TypedHomSpaceSectorKey::from_hom(hom))
+            }
+            HomSpaceInner::Z3Irrep(hom) => {
+                HomSpaceSectorKey::Z3Irrep(TypedHomSpaceSectorKey::from_hom(hom))
+            }
+            HomSpaceInner::Z4Irrep(hom) => {
+                HomSpaceSectorKey::Z4Irrep(TypedHomSpaceSectorKey::from_hom(hom))
+            }
+            HomSpaceInner::U1IrrepFermionParity(hom) => {
+                HomSpaceSectorKey::U1IrrepFermionParity(TypedHomSpaceSectorKey::from_hom(hom))
+            }
+            HomSpaceInner::FermionParityU1Irrep(hom) => {
+                HomSpaceSectorKey::FermionParityU1Irrep(TypedHomSpaceSectorKey::from_hom(hom))
+            }
+            HomSpaceInner::U1SU2Irrep(hom) => {
+                HomSpaceSectorKey::U1SU2Irrep(TypedHomSpaceSectorKey::from_hom(hom))
+            }
+            HomSpaceInner::FermionParitySU2Irrep(hom) => {
+                HomSpaceSectorKey::FermionParitySU2Irrep(TypedHomSpaceSectorKey::from_hom(hom))
+            }
+            HomSpaceInner::FermionParityU1SU2Irrep(hom) => {
+                HomSpaceSectorKey::FermionParityU1SU2Irrep(TypedHomSpaceSectorKey::from_hom(hom))
+            }
+        }
     }
 
     fn from_products(
@@ -593,23 +689,6 @@ impl HomSpaceInner {
             HomSpaceInner::FermionParityU1SU2Irrep(hom) => {
                 ProductSpaceInner::FermionParityU1SU2Irrep(hom.domain().clone())
             }
-        }
-    }
-
-    fn to_spec(&self) -> HomSpaceSpec {
-        match self {
-            HomSpaceInner::Trivial(hom) => hom.to_spec(),
-            HomSpaceInner::U1Irrep(hom) => hom.to_spec(),
-            HomSpaceInner::SU2Irrep(hom) => hom.to_spec(),
-            HomSpaceInner::FermionParity(hom) => hom.to_spec(),
-            HomSpaceInner::Z2Irrep(hom) => hom.to_spec(),
-            HomSpaceInner::Z3Irrep(hom) => hom.to_spec(),
-            HomSpaceInner::Z4Irrep(hom) => hom.to_spec(),
-            HomSpaceInner::U1IrrepFermionParity(hom) => hom.to_spec(),
-            HomSpaceInner::FermionParityU1Irrep(hom) => hom.to_spec(),
-            HomSpaceInner::U1SU2Irrep(hom) => hom.to_spec(),
-            HomSpaceInner::FermionParitySU2Irrep(hom) => hom.to_spec(),
-            HomSpaceInner::FermionParityU1SU2Irrep(hom) => hom.to_spec(),
         }
     }
 }

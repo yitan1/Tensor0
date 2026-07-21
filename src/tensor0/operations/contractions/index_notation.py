@@ -433,7 +433,7 @@ def _validate_network(
     operands: tuple[_IndexedTensor, ...],
     output_labels: _LabelGroups,
 ) -> tuple[_LabelGroups, ...]:
-    sector_spec = operands[0].tensor.space.codomain.sector_spec
+    sector_spec = operands[0].tensor.space.sector_spec
     operand_label_groups: list[_LabelGroups] = []
     occurrences: dict[_Label, list[_Occurrence]] = defaultdict(list)
     for tensor_index, operand in enumerate(operands):
@@ -446,7 +446,7 @@ def _validate_network(
             operand.labels[operand.tensor.numout :],
         )
         operand_label_groups.append(labels)
-        if operand.tensor.space.codomain.sector_spec != sector_spec:
+        if operand.tensor.space.sector_spec != sector_spec:
             raise ValueError("all tensors must use the same sector family")
 
         for axis, label in enumerate(_flatten_labels(labels)):

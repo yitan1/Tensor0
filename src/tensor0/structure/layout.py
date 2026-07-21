@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Iterator, Mapping
 from collections import OrderedDict
 from dataclasses import dataclass
-from typing import Generic, TypeVar
+from typing import TypeVar
 
 from .. import _native
 from .sector_dict import SectorDict
@@ -12,8 +12,6 @@ from .sector_dict import SectorDict
 # depend on degeneracy dimensions.
 _CacheValue = TypeVar("_CacheValue")
 _CacheKey = TypeVar("_CacheKey")
-_Key = TypeVar("_Key")
-_Value = TypeVar("_Value")
 _LAYOUT_CACHE_MAXSIZE = 10_000
 _sectorstructure_cache: OrderedDict[
     object,
@@ -23,42 +21,35 @@ _degeneracystructure_cache: OrderedDict[
     _native.HomSpace,
     _native.DegeneracyStructure,
 ] = OrderedDict()
-_blockstructure_cache: OrderedDict[
-    _native.HomSpace,
-    _IndexedMapping[tuple[int, ...], _native.BlockStructure],
-] = OrderedDict()
 _sector_slice_cache: OrderedDict[
     tuple[object, ...],
     SectorDict[slice],
 ] = OrderedDict()
 
 
-@dataclass(frozen=True, init=False)
-class _IndexedMapping(Mapping[_Key, _Value], Generic[_Key, _Value]):
-    _keys: tuple[_Key, ...]
-    _values: tuple[_Value, ...]
-    _index_of: Callable[[object], int | None]
+@dataclass(slots=True, init=False)
+class _IndexedMapping(Mapping[tuple[int, ...], _native.BlockStructure]):
+    _keys: tuple[tuple[int, ...], ...]
+    _values: tuple[_native.BlockStructure, ...]
+    _sectorstructure: _native.SectorStructure
 
     def __init__(
         self,
-        keys: tuple[_Key, ...],
-        values: tuple[_Value, ...],
-        index_of: Callable[[object], int | None],
+        keys: tuple[tuple[int, ...], ...],
+        values: tuple[_native.BlockStructure, ...],
+        sectorstructure: _native.SectorStructure,
     ) -> None:
-        if len(keys) != len(values):
-            raise ValueError("IndexedMapping requires keys and values with the same length")
+        self._keys = keys
+        self._values = values
+        self._sectorstructure = sectorstructure
 
-        object.__setattr__(self, "_keys", keys)
-        object.__setattr__(self, "_values", values)
-        object.__setattr__(self, "_index_of", index_of)
-
-    def __getitem__(self, key: object) -> _Value:
-        index = self._index_of(key)
-        if index is None or index < 0 or index >= len(self._values):
+    def __getitem__(self, key: object) -> _native.BlockStructure:
+        index = self._sectorstructure.blocksector_index(key)
+        if index is None:
             raise KeyError(key)
         return self._values[index]
 
-    def __iter__(self) -> Iterator[_Key]:
+    def __iter__(self) -> Iterator[tuple[int, ...]]:
         return iter(self._keys)
 
     def __len__(self) -> int:
@@ -66,14 +57,16 @@ class _IndexedMapping(Mapping[_Key, _Value], Generic[_Key, _Value]):
 
     def __contains__(self, key: object) -> bool:
         try:
-            return self._index_of(key) is not None
+            return self._sectorstructure.blocksector_index(key) is not None
         except (TypeError, ValueError):
             return False
 
-    def items(self) -> Iterator[tuple[_Key, _Value]]:  # type: ignore[override]
+    def items(  # type: ignore[override]
+        self,
+    ) -> Iterator[tuple[tuple[int, ...], _native.BlockStructure]]:
         return zip(self._keys, self._values, strict=True)
 
-    def values(self) -> Iterator[_Value]:  # type: ignore[override]
+    def values(self) -> Iterator[_native.BlockStructure]:  # type: ignore[override]
         return iter(self._values)
 
 
@@ -101,25 +94,45 @@ def get_degeneracystructure(space: _native.HomSpace) -> _native.DegeneracyStruct
 
 def get_blockstructure(
     space: _native.HomSpace,
-) -> _IndexedMapping[tuple[int, ...], _native.BlockStructure]:
+) -> _IndexedMapping:
     if not isinstance(space, _native.HomSpace):
         raise TypeError("get_blockstructure() requires a HomSpace")
 
-    cached = _cache_get(_blockstructure_cache, space)
-    if cached is not None:
-        return cached
-
-    sectorstructure = _get_sectorstructure(space)
-    degeneracystructure = get_degeneracystructure(space)
-    return _cache_set(
-        _blockstructure_cache,
-        space,
-        _IndexedMapping(
-            sectorstructure.blocksectors,
-            degeneracystructure.blockstructure,
-            sectorstructure.blocksector_index,
-        ),
+    sectorstructure, degeneracystructure = _blockstructure_components(space)
+    return _IndexedMapping(
+        sectorstructure.blocksectors,
+        degeneracystructure.blockstructure,
+        sectorstructure,
     )
+
+
+def _blockstructure_items(
+    space: _native.HomSpace,
+) -> Iterator[tuple[tuple[int, ...], _native.BlockStructure]]:
+    sectorstructure, degeneracystructure = _blockstructure_components(space)
+    return zip(
+        sectorstructure.blocksectors,
+        degeneracystructure.blockstructure,
+        strict=True,
+    )
+
+
+def _find_blockstructure(
+    space: _native.HomSpace,
+    key: object,
+    *,
+    suppress_invalid: bool = False,
+) -> _native.BlockStructure | None:
+    sectorstructure, degeneracystructure = _blockstructure_components(space)
+    try:
+        index = sectorstructure.blocksector_index(key)
+    except (TypeError, ValueError):
+        if suppress_invalid:
+            return None
+        raise
+    if index is None:
+        return None
+    return degeneracystructure.blockstructure[index]
 
 
 def _sector_slices_for_space(
@@ -143,7 +156,6 @@ def _sector_slices_for_space(
 def _clear_layout_caches_for_tests() -> None:
     _sectorstructure_cache.clear()
     _degeneracystructure_cache.clear()
-    _blockstructure_cache.clear()
     _sector_slice_cache.clear()
 
 
@@ -155,6 +167,12 @@ def _get_sectorstructure(space: _native.HomSpace) -> _native.SectorStructure:
 
     sectorstructure = _native.build_sectorstructure(space)
     return _cache_set(_sectorstructure_cache, key, sectorstructure)
+
+
+def _blockstructure_components(
+    space: _native.HomSpace,
+) -> tuple[_native.SectorStructure, _native.DegeneracyStructure]:
+    return _get_sectorstructure(space), get_degeneracystructure(space)
 
 
 def _cache_get(

@@ -13,7 +13,7 @@ pub(crate) struct ProductSectorTuple<I: Sector> {
     pub is_dual: Vec<bool>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ProductSpace<I: Sector> {
     factors: Vec<GradedSpace<I>>,
 }

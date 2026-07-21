@@ -7,7 +7,7 @@ from jax import Array, random
 from jax.typing import DTypeLike
 
 from .. import _native
-from ..structure.layout import get_blockstructure
+from ..structure.layout import _blockstructure_items
 from ..structure.spaces import (
     _as_hom_space,
     _as_product_space_input,
@@ -151,7 +151,7 @@ def _identity_block_morphism(
     dtype: DTypeLike | None,
 ) -> TensorMap:
     target = hom(codomain, domain)
-    if target.codomain.sector_spec == _native.Trivial:
+    if target.sector_spec == _native.Trivial:
         total_dim = storage_dim(target)
         row_dim = prod(_native.product_dims(codomain))
         col_dim = prod(_native.product_dims(domain))
@@ -162,6 +162,6 @@ def _identity_block_morphism(
 
     blocks = (
         (coupled, jnp.eye(block.row_dim, block.col_dim, dtype=dtype))
-        for coupled, block in get_blockstructure(target).items()
+        for coupled, block in _blockstructure_items(target)
     )
     return from_blocks(target, blocks, dtype=dtype)

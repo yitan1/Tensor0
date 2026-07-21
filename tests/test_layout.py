@@ -13,8 +13,10 @@ from tensor0 import (
     _native,
     from_dense,
     hom,
+    identity,
     space,
     storage_dim,
+    svd_compact,
     to_dense,
 )
 from tensor0.structure import get_degeneracystructure, get_sectorstructure
@@ -132,29 +134,35 @@ def test_get_blockstructure_maps_blocksectors_to_degeneracy_blocks():
     degeneracystructure = get_degeneracystructure(h)
 
     blockstructure = tensor0.structure.get_blockstructure(h)
+    repeated = tensor0.structure.get_blockstructure(h)
+    equivalent_blockstructure = tensor0.structure.get_blockstructure(equivalent)
 
     assert degeneracystructure is get_degeneracystructure(equivalent)
-    assert blockstructure is tensor0.structure.get_blockstructure(h)
-    assert blockstructure is tensor0.structure.get_blockstructure(equivalent)
+    assert not hasattr(layout_module, "_blockstructure_cache")
+    expected_items = (
+        ((0,), block_span(degeneracystructure.blockstructure[0])),
+        ((1,), block_span(degeneracystructure.blockstructure[1])),
+    )
+    for candidate in (blockstructure, repeated, equivalent_blockstructure):
+        assert tuple(
+            (sector, block_span(block)) for sector, block in candidate.items()
+        ) == expected_items
+
     assert tuple(blockstructure) == ((0,), (1,))
+    assert tuple(block_span(block) for block in blockstructure.values()) == tuple(
+        block_span(block) for block in degeneracystructure.blockstructure
+    )
+    assert blockstructure.get(2) is None  # pyright: ignore[reportArgumentType]
+    with pytest.raises(KeyError, match=r"\(2,\)"):
+        blockstructure[(2,)]
+    with pytest.raises(ValueError, match="width"):
+        blockstructure[(0, 1)]
+
     assert block_span(blockstructure[0]) == block_span(
         degeneracystructure.blockstructure[0],
     )
     assert block_span(blockstructure[(1,)]) == block_span(
         degeneracystructure.blockstructure[1],
-    )
-    assert blockstructure.get(2) is None  # pyright: ignore[reportArgumentType]
-
-    items = blockstructure.items()
-    values = blockstructure.values()
-    item_tuple = tuple(items)
-    value_tuple = tuple(values)
-    assert tuple((sector, block_span(block)) for sector, block in item_tuple) == (
-        ((0,), block_span(degeneracystructure.blockstructure[0])),
-        ((1,), block_span(degeneracystructure.blockstructure[1])),
-    )
-    assert tuple(block_span(block) for block in value_tuple) == tuple(
-        block_span(block) for block in degeneracystructure.blockstructure
     )
 
 
@@ -164,6 +172,29 @@ def test_get_structure_functions_reject_non_hom_space_inputs():
 
     with pytest.raises(TypeError, match="^get_degeneracystructure\\(\\) requires a HomSpace$"):
         get_degeneracystructure(object())  # pyright: ignore[reportArgumentType]
+
+
+def test_internal_block_paths_do_not_construct_public_mapping_wrapper(monkeypatch):
+    factor = space(U1Irrep, {0: 2, 1: 3})
+    target = hom((factor,), (factor,))
+    tensor = TensorMap(
+        target,
+        jnp.arange(storage_dim(target), dtype=jnp.float32),
+    )
+    blocks = tensor.blocks()
+
+    def reject_wrapper(*_args, **_kwargs):
+        raise AssertionError("internal path constructed _IndexedMapping")
+
+    layout_module._clear_layout_caches_for_tests()
+    monkeypatch.setattr(layout_module, "_IndexedMapping", reject_wrapper)
+
+    assert tensor.block(0).shape == (2, 2)
+    assert len(tensor.blocks()) == 2
+    assert TensorMap.from_blocks(target, blocks).space == target
+    assert identity(factor).space == target
+    assert svd_compact(tensor)[0].space.codomain == target.codomain
+    assert (tensor @ tensor).space == target
 
 
 def test_sectorstructure_key_tracks_visible_layout_not_degeneracy():

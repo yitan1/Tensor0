@@ -760,15 +760,16 @@ def test_trivial_core_paths_bypass_generic_layout_metadata(
     dense = jnp.arange(24, dtype=jnp.float32).reshape(2, 3, 4)
     pair = get_sectorstructure(target).fusiontree_pairs[0]
 
-    def explode(_space):
+    def explode(*_args, **_kwargs):
         raise AssertionError("Trivial numerical execution must not request layout")
 
     monkeypatch.setattr(dense_module, "get_sectorstructure", explode)
     monkeypatch.setattr(dense_module, "get_degeneracystructure", explode)
     monkeypatch.setattr(spaces_module, "get_degeneracystructure", explode)
     monkeypatch.setattr(tensor_map_module, "get_degeneracystructure", explode)
-    monkeypatch.setattr(blocks_module, "get_blockstructure", explode)
-    monkeypatch.setattr(constructors_module, "get_blockstructure", explode)
+    monkeypatch.setattr(blocks_module, "_blockstructure_items", explode)
+    monkeypatch.setattr(blocks_module, "_find_blockstructure", explode)
+    monkeypatch.setattr(constructors_module, "_blockstructure_items", explode)
 
     with monkeypatch.context() as context:
         context.setattr(tensor_map_module, "get_sectorstructure", explode)

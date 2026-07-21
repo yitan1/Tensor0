@@ -112,9 +112,10 @@ def dim(value: _DimSpace) -> int:
 
 def sector_spec(value: _SectorSpace) -> SectorType:
     """Return the sector family carried by a typed space."""
-    if isinstance(value, _native.HomSpace):
-        return value.codomain.sector_spec
-    if isinstance(value, (_native.ElementarySpace, _native.ProductSpace)):
+    if isinstance(
+        value,
+        (_native.ElementarySpace, _native.ProductSpace, _native.HomSpace),
+    ):
         return value.sector_spec
     raise TypeError(
         "sector_spec() requires an ElementarySpace, ProductSpace, or HomSpace",
@@ -132,12 +133,10 @@ def storage_dim(value: _native.HomSpace) -> int:
     """Return the packed storage dimension of a morphism space."""
     if not isinstance(value, _native.HomSpace):
         raise TypeError("storage_dim() requires a HomSpace")
-    if sector_spec(value) != _native.Trivial:
+    if value.sector_spec != _native.Trivial:
         return get_degeneracystructure(value).total_dim
 
-    dims = tuple(_native.product_dims(value.codomain)) + tuple(
-        _native.product_dims(value.domain),
-    )
+    dims = value.dims
     if 0 in dims:
         return 0
 

@@ -12,7 +12,8 @@ from jax.typing import DTypeLike
 
 from .. import _native
 from ..structure.layout import (
-    get_blockstructure,
+    _blockstructure_items,
+    _find_blockstructure,
     get_degeneracystructure,
     get_sectorstructure,
 )
@@ -22,7 +23,6 @@ from ..structure.spaces import (
     _as_hom_space,
     _normalize_sector_key,
     hom,
-    sector_spec,
     storage_dim,
 )
 from ._blocks import (
@@ -139,9 +139,7 @@ class TensorMap:
 
     @property
     def dims(self) -> tuple[int, ...]:
-        return tuple(_native.product_dims(self.space.codomain)) + tuple(
-            _native.product_dims(self.space.domain),
-        )
+        return self.space.dims
 
     @property
     def shape(self) -> tuple[int, ...]:
@@ -166,9 +164,9 @@ class TensorMap:
         return get_sectorstructure(self.space).fusiontree_pairs
 
     def hasblock(self, coupled: object) -> bool:
-        if sector_spec(self.space) == _native.Trivial:
+        if self.space.sector_spec == _native.Trivial:
             key = _normalize_sector_key(coupled)
-            self.space.codomain.sector_spec.quantum_dim(key)
+            self.space.sector_spec.quantum_dim(key)
             return self.storage.data.shape[0] != 0
         return get_sectorstructure(self.space).blocksector_index(coupled) is not None
 
@@ -211,9 +209,9 @@ class TensorMap:
 
     def block(self, coupled: int | tuple[int, ...]) -> Array:
         key = _normalize_sector_key(coupled)
-        if sector_spec(self.space) == _native.Trivial:
+        if self.space.sector_spec == _native.Trivial:
             if key != ():
-                self.space.codomain.sector_spec.quantum_dim(key)
+                self.space.sector_spec.quantum_dim(key)
                 raise KeyError(key)
             from .dense import _trivial_dense_array
 
@@ -224,16 +222,15 @@ class TensorMap:
             col_dim = math.prod(value.shape[self.numout :])
             return value.reshape((row_dim, col_dim))
 
-        try:
-            block = get_blockstructure(self.space)[key]
-        except KeyError:
+        block = _find_blockstructure(self.space, key)
+        if block is None:
             raise KeyError(key) from None
         return self.storage.data[block.start : block.stop].reshape(
             (block.row_dim, block.col_dim),
         )
 
     def blocks(self) -> tuple[tuple[tuple[int, ...], Array], ...]:
-        if sector_spec(self.space) == _native.Trivial:
+        if self.space.sector_spec == _native.Trivial:
             from .dense import _trivial_dense_array
 
             value = _trivial_dense_array(self)
@@ -250,7 +247,7 @@ class TensorMap:
                     (block.row_dim, block.col_dim),
                 ),
             )
-            for coupled, block in get_blockstructure(self.space).items()
+            for coupled, block in _blockstructure_items(self.space)
         )
 
     @overload
@@ -279,7 +276,7 @@ class TensorMap:
         return self._subblock_at(_resolve_subblock_index(self.space, key))
 
     def _subblock_at(self, index: int) -> Array:
-        if sector_spec(self.space) == _native.Trivial:
+        if self.space.sector_spec == _native.Trivial:
             if index != 0:
                 raise KeyError(index)
             from .dense import _trivial_dense_array
@@ -302,7 +299,7 @@ class TensorMap:
             self,
             sectorstructure,
             None
-            if sector_spec(self.space) == _native.Trivial
+            if self.space.sector_spec == _native.Trivial
             else get_degeneracystructure(self.space),
         )
 
@@ -428,10 +425,14 @@ class TensorMap:
         total = jnp.asarray(
             0, dtype=jnp.result_type(self.storage.data, other.storage.data)
         )
-        sector_type = self.space.codomain.sector_spec
-        for coupled, left in self.blocks():
+        sector_type = self.space.sector_spec
+        for (coupled, left), (_other_coupled, right) in zip(
+            self.blocks(),
+            other.blocks(),
+            strict=True,
+        ):
             weight = sector_type.quantum_dim(coupled)
-            total = total + weight * jnp.vdot(left, other.block(coupled))
+            total = total + weight * jnp.vdot(left, right)
         return total
 
     def dot(self, other: TensorMap) -> Array:
@@ -452,7 +453,7 @@ class TensorMap:
             0,
             dtype=jnp.abs(jnp.asarray(self.storage.data).reshape(-1)[:0]).dtype,
         )
-        sector_type = self.space.codomain.sector_spec
+        sector_type = self.space.sector_spec
         for coupled, block in self.blocks():
             weight = sector_type.quantum_dim(coupled)
             total = total + weight * jnp.sum(jnp.abs(block) ** p_value)
@@ -506,7 +507,7 @@ class TensorMap:
             )
 
         total = jnp.asarray(0, dtype=self.storage.data.dtype)
-        sector_type = self.space.codomain.sector_spec
+        sector_type = self.space.sector_spec
         for coupled, block in self.blocks():
             weight = sector_type.quantum_dim(coupled)
             total = total + weight * jnp.trace(block)
