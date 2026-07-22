@@ -117,6 +117,16 @@ impl<I: Sector> GradedSpace<I> {
             .collect()
     }
 
+    pub(crate) fn visible_sectors(&self) -> impl ExactSizeIterator<Item = I> + '_ {
+        self.sector_dims.iter().map(|(sector, _)| {
+            if self.is_dual {
+                sector.dual()
+            } else {
+                sector.clone()
+            }
+        })
+    }
+
     pub fn sector_dim(&self, sector: &I) -> usize {
         let key = if self.is_dual {
             sector.dual()

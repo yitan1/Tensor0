@@ -77,14 +77,16 @@ impl<const N: usize> Sector for ZNIrrep<N> {
         Ok(SectorCardinality::Finite(modulus::<N>()? as u128))
     }
 
-    fn fusion_outputs(&self, rhs: &Self) -> Vec<Self> {
+    fn fusion_outputs(&self, rhs: &Self) -> impl Iterator<Item = Self> {
         let n = modulus::<N>().expect("ZNIrrep fusion requires N > 0") as i128;
         let value = (self.value as i128 + rhs.value as i128).rem_euclid(n) as i64;
-        vec![ZNIrrep::new(value).expect("ZNIrrep fusion output requires N > 0")]
+        std::iter::once(ZNIrrep::new(value).expect("ZNIrrep fusion output requires N > 0"))
     }
 
     fn n_symbol(a: &Self, b: &Self, c: &Self) -> usize {
-        usize::from(a.fusion_outputs(b).iter().any(|out| out == c))
+        let n = modulus::<N>().expect("ZNIrrep fusion requires N > 0") as i128;
+        let value = (a.value as i128 + b.value as i128).rem_euclid(n) as i64;
+        usize::from(value == c.value)
     }
 
     fn r_symbol(a: &Self, b: &Self, c: &Self) -> f64 {

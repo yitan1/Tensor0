@@ -53,8 +53,8 @@ impl Sector for Trivial {
         Ok(SectorCardinality::Finite(1))
     }
 
-    fn fusion_outputs(&self, _rhs: &Self) -> Vec<Self> {
-        vec![Trivial]
+    fn fusion_outputs(&self, _rhs: &Self) -> impl Iterator<Item = Self> {
+        std::iter::once(Trivial)
     }
 
     fn n_symbol(_a: &Self, _b: &Self, _c: &Self) -> usize {

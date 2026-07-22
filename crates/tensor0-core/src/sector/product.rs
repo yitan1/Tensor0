@@ -79,12 +79,10 @@ impl<T: SectorTuple> Sector for ProductSector<T> {
         T::cardinality()
     }
 
-    fn fusion_outputs(&self, rhs: &Self) -> Vec<Self> {
+    fn fusion_outputs(&self, rhs: &Self) -> impl Iterator<Item = Self> {
         self.sectors
             .fusion_outputs(&rhs.sectors)
-            .into_iter()
             .map(ProductSector::new)
-            .collect()
     }
 
     fn n_symbol(a: &Self, b: &Self, c: &Self) -> usize {
@@ -197,7 +195,7 @@ macro_rules! impl_sector_tuple {
                 combine_cardinality(&[$($name::cardinality()?),+])
             }
 
-            fn fusion_outputs(&self, rhs: &Self) -> Vec<Self> {
+            fn fusion_outputs(&self, rhs: &Self) -> impl Iterator<Item = Self> {
                 let mut encoded_outputs = vec![EncodedSectorValue::new()];
                 $(
                     let component_outputs = self.$index
@@ -215,11 +213,13 @@ macro_rules! impl_sector_tuple {
                     .expect("product fusion outputs must decode to the same product sector");
                 outputs.sort();
                 outputs.dedup();
-                outputs
+                outputs.into_iter()
             }
 
             fn n_symbol(a: &Self, b: &Self, c: &Self) -> usize {
-                usize::from(a.fusion_outputs(b).iter().any(|out| out == c))
+                let mut fuses = true;
+                $(fuses &= $name::n_symbol(&a.$index, &b.$index, &c.$index) != 0;)+
+                usize::from(fuses)
             }
 
             fn f_symbol(a: &Self, b: &Self, c: &Self, d: &Self, e: &Self, f: &Self) -> Result<f64> {

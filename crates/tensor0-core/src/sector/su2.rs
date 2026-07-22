@@ -77,17 +77,16 @@ impl Sector for SU2Irrep {
         Ok(SectorCardinality::Infinite)
     }
 
-    fn fusion_outputs(&self, rhs: &Self) -> Vec<Self> {
+    fn fusion_outputs(&self, rhs: &Self) -> impl Iterator<Item = Self> {
         let min = (self.spin2 - rhs.spin2).abs();
         let max = self.spin2 + rhs.spin2;
-        (min..=max)
-            .step_by(2)
-            .map(|spin2| SU2Irrep { spin2 })
-            .collect()
+        (min..=max).step_by(2).map(|spin2| SU2Irrep { spin2 })
     }
 
     fn n_symbol(a: &Self, b: &Self, c: &Self) -> usize {
-        usize::from(a.fusion_outputs(b).iter().any(|out| out == c))
+        let min = (a.spin2 - b.spin2).abs();
+        let max = a.spin2 + b.spin2;
+        usize::from(c.spin2 >= min && c.spin2 <= max && (c.spin2 - min) % 2 == 0)
     }
 
     fn f_symbol(a: &Self, b: &Self, c: &Self, d: &Self, e: &Self, f: &Self) -> Result<f64> {

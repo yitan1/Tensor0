@@ -131,7 +131,7 @@ pub fn join<I: Sector>(prefix: &FusionTree<I>, suffix: &FusionTree<I>) -> Result
 }
 
 pub(crate) fn multi_fmove<I: Sector>(tree: &FusionTree<I>) -> Result<Vec<(FusionTree<I>, f64)>> {
-    let arity = tree.uncoupled.len();
+    let arity = tree.uncoupled().len();
     match arity {
         0 => Err(Tensor0Error::Message(
             "multi_Fmove requires at least one uncoupled sector".to_string(),
@@ -142,19 +142,19 @@ pub(crate) fn multi_fmove<I: Sector>(tree: &FusionTree<I>) -> Result<Vec<(Fusion
         )]),
         2 => Ok(vec![(
             FusionTree::new(
-                vec![tree.uncoupled[1].clone()],
-                tree.uncoupled[1].clone(),
-                vec![tree.is_dual[1]],
+                vec![tree.uncoupled()[1].clone()],
+                tree.uncoupled()[1].clone(),
+                vec![tree.is_dual()[1]],
                 vec![],
                 vec![],
             )?,
             1.0,
         )]),
         _ => {
-            let a = tree.uncoupled[0].clone();
+            let a = tree.uncoupled()[0].clone();
             let dual_a = a.dual();
-            let tail_uncoupled = tree.uncoupled[1..].to_vec();
-            let tail_is_dual = tree.is_dual[1..].to_vec();
+            let tail_uncoupled = tree.uncoupled()[1..].to_vec();
+            let tail_is_dual = tree.is_dual()[1..].to_vec();
             let mut trees = vec![FusionTree::new(
                 tail_uncoupled,
                 I::unit(),
@@ -167,7 +167,7 @@ pub(crate) fn multi_fmove<I: Sector>(tree: &FusionTree<I>) -> Result<Vec<(Fusion
             for k in 2..arity {
                 let mut next_trees = Vec::new();
                 let (_, d) = vertex_channels(tree, k + 1);
-                let c = &tree.uncoupled[k];
+                let c = &tree.uncoupled()[k];
                 for candidate in trees {
                     let (b, _) = vertex_channels(&candidate, k);
                     for e_prime in b.fusion_outputs(c) {
@@ -177,9 +177,9 @@ pub(crate) fn multi_fmove<I: Sector>(tree: &FusionTree<I>) -> Result<Vec<(Fusion
 
                         let mut next = candidate.clone();
                         if k == arity - 1 {
-                            next.coupled = e_prime;
+                            *next.coupled_mut() = e_prime;
                         } else {
-                            next.innerlines[k - 2] = e_prime;
+                            next.innerlines_mut()[k - 2] = e_prime;
                         }
                         next_trees.push(next);
                     }
@@ -206,13 +206,13 @@ pub(crate) fn multi_fmove_inv<I: Sector>(
     tree: &FusionTree<I>,
     is_dual_a: bool,
 ) -> Result<Vec<(FusionTree<I>, f64)>> {
-    if I::n_symbol(a, &tree.coupled, c) == 0 {
+    if I::n_symbol(a, tree.coupled(), c) == 0 {
         return Err(Tensor0Error::Message(
             "cannot fuse sectors for inverse multi_Fmove".to_string(),
         ));
     }
 
-    let arity = tree.uncoupled.len();
+    let arity = tree.uncoupled().len();
     match arity {
         0 => Ok(vec![(
             FusionTree::new(vec![a.clone()], c.clone(), vec![is_dual_a], vec![], vec![])?,
@@ -220,9 +220,9 @@ pub(crate) fn multi_fmove_inv<I: Sector>(
         )]),
         1 => Ok(vec![(
             FusionTree::new(
-                vec![a.clone(), tree.uncoupled[0].clone()],
+                vec![a.clone(), tree.uncoupled()[0].clone()],
                 c.clone(),
-                vec![is_dual_a, tree.is_dual[0]],
+                vec![is_dual_a, tree.is_dual()[0]],
                 vec![],
                 vec![0],
             )?,
@@ -231,10 +231,10 @@ pub(crate) fn multi_fmove_inv<I: Sector>(
         _ => {
             let mut uncoupled = Vec::with_capacity(arity + 1);
             uncoupled.push(a.clone());
-            uncoupled.extend_from_slice(&tree.uncoupled);
+            uncoupled.extend_from_slice(tree.uncoupled());
             let mut is_dual = Vec::with_capacity(arity + 1);
             is_dual.push(is_dual_a);
-            is_dual.extend_from_slice(&tree.is_dual);
+            is_dual.extend_from_slice(tree.is_dual());
             let mut trees = vec![FusionTree::new(
                 uncoupled,
                 c.clone(),
@@ -245,9 +245,9 @@ pub(crate) fn multi_fmove_inv<I: Sector>(
 
             // Generate candidate trees by fusing the new sector into the tree.
             for k in (2..=arity).rev() {
-                let c_sector = &tree.uncoupled[k - 1];
+                let c_sector = &tree.uncoupled()[k - 1];
                 let (b, _) = vertex_channels(tree, k);
-                let outputs = a.fusion_outputs(b);
+                let outputs = a.fusion_outputs(b).collect::<Vec<_>>();
                 let mut next_trees = Vec::new();
 
                 for candidate in trees {
@@ -258,7 +258,7 @@ pub(crate) fn multi_fmove_inv<I: Sector>(
                         }
 
                         let mut next = candidate.clone();
-                        next.innerlines[k - 2] = e.clone();
+                        next.innerlines_mut()[k - 2] = e.clone();
                         next_trees.push(next);
                     }
                 }
@@ -280,18 +280,19 @@ pub(crate) fn multi_fmove_inv<I: Sector>(
 }
 
 fn multi_associator<I: Sector>(long: &FusionTree<I>, short: &FusionTree<I>) -> Result<f64> {
-    let arity = long.uncoupled.len();
-    if short.uncoupled.len() + 1 != arity {
+    let arity = long.uncoupled().len();
+    if short.uncoupled().len() + 1 != arity {
         return Ok(0.0);
     }
-    if long.uncoupled[1..] != short.uncoupled[..] || long.is_dual[1..] != short.is_dual[..] {
+    if long.uncoupled()[1..] != short.uncoupled()[..] || long.is_dual()[1..] != short.is_dual()[..]
+    {
         return Ok(0.0);
     }
 
-    let a = &long.uncoupled[0];
+    let a = &long.uncoupled()[0];
     let mut coeff = 1.0;
     for k in 2..arity {
-        let c = &long.uncoupled[k];
+        let c = &long.uncoupled()[k];
         let (_, d) = vertex_channels(long, k + 1);
         let (b, e_prime) = vertex_channels(short, k);
         let (_, e) = vertex_channels(long, k);
@@ -302,14 +303,14 @@ fn multi_associator<I: Sector>(long: &FusionTree<I>, short: &FusionTree<I>) -> R
 
 fn vertex_channels<I: Sector>(tree: &FusionTree<I>, k: usize) -> (&I, &I) {
     let left = if k == 2 {
-        &tree.uncoupled[0]
+        &tree.uncoupled()[0]
     } else {
-        &tree.innerlines[k - 3]
+        &tree.innerlines()[k - 3]
     };
-    let output = if k == tree.uncoupled.len() {
-        &tree.coupled
+    let output = if k == tree.uncoupled().len() {
+        tree.coupled()
     } else {
-        &tree.innerlines[k - 2]
+        &tree.innerlines()[k - 2]
     };
     (left, output)
 }

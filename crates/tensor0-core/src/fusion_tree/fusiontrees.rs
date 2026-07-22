@@ -1,4 +1,6 @@
 use std::collections::{BTreeSet, HashMap};
+use std::fmt;
+use std::sync::Arc;
 
 use ndarray::{ArrayD, Axis, IxDyn};
 
@@ -9,12 +11,30 @@ use crate::space::HomSpace;
 use super::auxiliary::tensordot;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct FusionTreeData<I: Sector> {
+    uncoupled: Vec<I>,
+    coupled: I,
+    is_dual: Vec<bool>,
+    innerlines: Vec<I>,
+    vertices: Vec<usize>,
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct FusionTree<I: Sector> {
-    pub(crate) uncoupled: Vec<I>,
-    pub(crate) coupled: I,
-    pub(crate) is_dual: Vec<bool>,
-    pub(crate) innerlines: Vec<I>,
-    pub(crate) vertices: Vec<usize>,
+    data: Arc<FusionTreeData<I>>,
+}
+
+impl<I: Sector + fmt::Debug> fmt::Debug for FusionTree<I> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("FusionTree")
+            .field("uncoupled", &self.data.uncoupled)
+            .field("coupled", &self.data.coupled)
+            .field("is_dual", &self.data.is_dual)
+            .field("innerlines", &self.data.innerlines)
+            .field("vertices", &self.data.vertices)
+            .finish()
+    }
 }
 
 impl<I: Sector> FusionTree<I> {
@@ -26,16 +46,19 @@ impl<I: Sector> FusionTree<I> {
         vertices: Vec<usize>,
     ) -> Result<Self> {
         let tree = FusionTree {
-            uncoupled,
-            coupled,
-            is_dual,
-            innerlines,
-            vertices,
+            data: Arc::new(FusionTreeData {
+                uncoupled,
+                coupled,
+                is_dual,
+                innerlines,
+                vertices,
+            }),
         };
 
         validate_tree_shape(&tree)?;
 
-        if I::fusion_style() != FusionStyle::GenericFusion && tree.vertices.iter().any(|&v| v != 0)
+        if I::fusion_style() != FusionStyle::GenericFusion
+            && tree.vertices().iter().any(|&v| v != 0)
         {
             return Err(Tensor0Error::Message(
                 "multiplicity-free fusion tree vertices must be canonical zero".to_string(),
@@ -46,23 +69,39 @@ impl<I: Sector> FusionTree<I> {
     }
 
     pub fn uncoupled(&self) -> &[I] {
-        &self.uncoupled
+        &self.data.uncoupled
     }
 
     pub fn coupled(&self) -> &I {
-        &self.coupled
+        &self.data.coupled
     }
 
     pub fn is_dual(&self) -> &[bool] {
-        &self.is_dual
+        &self.data.is_dual
     }
 
     pub fn innerlines(&self) -> &[I] {
-        &self.innerlines
+        &self.data.innerlines
     }
 
     pub fn vertices(&self) -> &[usize] {
-        &self.vertices
+        &self.data.vertices
+    }
+
+    pub(crate) fn coupled_mut(&mut self) -> &mut I {
+        &mut Arc::make_mut(&mut self.data).coupled
+    }
+
+    pub(crate) fn is_dual_mut(&mut self) -> &mut [bool] {
+        &mut Arc::make_mut(&mut self.data).is_dual
+    }
+
+    pub(crate) fn innerlines_mut(&mut self) -> &mut [I] {
+        &mut Arc::make_mut(&mut self.data).innerlines
+    }
+
+    fn into_data(self) -> FusionTreeData<I> {
+        Arc::unwrap_or_clone(self.data)
     }
 }
 
@@ -153,9 +192,12 @@ pub(crate) fn enumerate_fusion_trees<I: Sector>(
                 }
 
                 for rest in enumerate_fusion_trees(front_uncoupled, front_is_dual, &innerline)? {
-                    let mut innerlines = rest.innerlines;
+                    let FusionTreeData {
+                        mut innerlines,
+                        mut vertices,
+                        ..
+                    } = rest.into_data();
                     innerlines.push(innerline.clone());
-                    let mut vertices = rest.vertices;
                     vertices.push(0);
 
                     trees.push(FusionTree::new(
@@ -211,19 +253,19 @@ impl<I: Sector> FusionTreeBlock<I> {
     }
 
     pub(crate) fn row_uncoupled(&self) -> &[I] {
-        &self.trees[0].row.uncoupled
+        self.trees[0].row.uncoupled()
     }
 
     pub(crate) fn row_is_dual(&self) -> &[bool] {
-        &self.trees[0].row.is_dual
+        self.trees[0].row.is_dual()
     }
 
     pub(crate) fn col_uncoupled(&self) -> &[I] {
-        &self.trees[0].col.uncoupled
+        self.trees[0].col.uncoupled()
     }
 
     pub(crate) fn col_is_dual(&self) -> &[bool] {
-        &self.trees[0].col.is_dual
+        self.trees[0].col.is_dual()
     }
 
     pub(crate) fn trees(&self) -> &[FusionTreePair<I>] {
@@ -235,11 +277,11 @@ impl<I: Sector> FusionTreeBlock<I> {
     }
 
     pub(crate) fn numout(&self) -> usize {
-        self.trees[0].row.uncoupled.len()
+        self.trees[0].row.uncoupled().len()
     }
 
     pub(crate) fn numin(&self) -> usize {
-        self.trees[0].col.uncoupled.len()
+        self.trees[0].col.uncoupled().len()
     }
 
     pub(crate) fn numind(&self) -> usize {
@@ -279,9 +321,7 @@ pub(crate) fn fusion_blocks<I: Sector>(space: &HomSpace<I>) -> Result<Vec<Fusion
 }
 
 pub fn fusiontree_tensor<I: Sector>(tree: &FusionTree<I>) -> Result<ArrayD<f64>> {
-    validate_tree_shape(tree)?;
-
-    match tree.uncoupled.len() {
+    match tree.uncoupled().len() {
         0 => fusiontree0_tensor(tree),
         1 => fusiontree1_tensor(tree),
         2 => fusiontree2_tensor(tree),
@@ -293,7 +333,7 @@ pub fn fusiontree_pair_tensor<I: Sector>(
     row: &FusionTree<I>,
     col: &FusionTree<I>,
 ) -> Result<ArrayD<f64>> {
-    if row.coupled != col.coupled {
+    if row.coupled() != col.coupled() {
         return Err(Tensor0Error::Message(
             "fusion tree pair requires matching coupled sectors".to_string(),
         ));
@@ -301,7 +341,7 @@ pub fn fusiontree_pair_tensor<I: Sector>(
 
     let row_tensor = fusiontree_tensor(row)?;
     let col_tensor = fusiontree_tensor(col)?;
-    let coupled_dim = row.coupled.quantum_dim();
+    let coupled_dim = row.coupled().quantum_dim();
     let row_outer = row_tensor.len() / coupled_dim;
     let col_outer = col_tensor.len() / coupled_dim;
 
@@ -319,9 +359,9 @@ pub fn fusiontree_pair_tensor<I: Sector>(
         .as_standard_layout()
         .to_owned();
     let output_shape = row
-        .uncoupled
+        .uncoupled()
         .iter()
-        .chain(col.uncoupled.iter())
+        .chain(col.uncoupled().iter())
         .map(Sector::quantum_dim)
         .collect::<Vec<_>>();
 
@@ -331,7 +371,7 @@ pub fn fusiontree_pair_tensor<I: Sector>(
 }
 
 fn fusiontree0_tensor<I: Sector>(tree: &FusionTree<I>) -> Result<ArrayD<f64>> {
-    if tree.coupled != I::unit() {
+    if tree.coupled() != &I::unit() {
         return Err(Tensor0Error::Message(
             "empty fusion tree requires the unit coupled sector".to_string(),
         ));
@@ -340,14 +380,14 @@ fn fusiontree0_tensor<I: Sector>(tree: &FusionTree<I>) -> Result<ArrayD<f64>> {
 }
 
 fn fusiontree1_tensor<I: Sector>(tree: &FusionTree<I>) -> Result<ArrayD<f64>> {
-    let sector = &tree.uncoupled[0];
-    if sector != &tree.coupled {
+    let sector = &tree.uncoupled()[0];
+    if sector != tree.coupled() {
         return Err(Tensor0Error::Message(
             "one-leg fusion tree requires uncoupled and coupled sectors to match".to_string(),
         ));
     }
 
-    if tree.is_dual[0] {
+    if tree.is_dual()[0] {
         return z_isomorphism_matrix(sector);
     }
 
@@ -360,9 +400,9 @@ fn fusiontree1_tensor<I: Sector>(tree: &FusionTree<I>) -> Result<ArrayD<f64>> {
 }
 
 fn fusiontree2_tensor<I: Sector>(tree: &FusionTree<I>) -> Result<ArrayD<f64>> {
-    let tensor = I::fusion_tensor(&tree.uncoupled[0], &tree.uncoupled[1], &tree.coupled)?;
+    let tensor = I::fusion_tensor(&tree.uncoupled()[0], &tree.uncoupled()[1], tree.coupled())?;
     let vertex = if I::fusion_style() == FusionStyle::GenericFusion {
-        let vertex = tree.vertices[0];
+        let vertex = tree.vertices()[0];
         if vertex >= tensor.shape()[3] {
             return Err(Tensor0Error::Message(
                 "fusion tree vertex index out of range".to_string(),
@@ -373,12 +413,12 @@ fn fusiontree2_tensor<I: Sector>(tree: &FusionTree<I>) -> Result<ArrayD<f64>> {
         0
     };
     let mut tensor = tensor.index_axis(Axis(3), vertex).to_owned().into_dyn();
-    if tree.is_dual[0] {
-        let z = z_isomorphism_matrix(&tree.uncoupled[0])?;
+    if tree.is_dual()[0] {
+        let z = z_isomorphism_matrix(&tree.uncoupled()[0])?;
         tensor = tensordot(&z, &tensor, &[1], &[0])?;
     }
-    if tree.is_dual[1] {
-        let z = z_isomorphism_matrix(&tree.uncoupled[1])?;
+    if tree.is_dual()[1] {
+        let z = z_isomorphism_matrix(&tree.uncoupled()[1])?;
         tensor = tensordot(&z, &tensor, &[1], &[1])?;
         tensor = tensor
             .permuted_axes(IxDyn(&[1, 0, 2]))
@@ -389,30 +429,30 @@ fn fusiontree2_tensor<I: Sector>(tree: &FusionTree<I>) -> Result<ArrayD<f64>> {
 }
 
 fn fusiontree_n_tensor<I: Sector>(tree: &FusionTree<I>) -> Result<ArrayD<f64>> {
-    let first_innerline = tree.innerlines[0].clone();
-    let first_tree = FusionTree {
-        uncoupled: tree.uncoupled[..2].to_vec(),
-        coupled: first_innerline.clone(),
-        is_dual: tree.is_dual[..2].to_vec(),
-        innerlines: vec![],
-        vertices: vec![tree.vertices[0]],
-    };
+    let first_innerline = tree.innerlines()[0].clone();
+    let first_tree = FusionTree::new(
+        tree.uncoupled()[..2].to_vec(),
+        first_innerline.clone(),
+        tree.is_dual()[..2].to_vec(),
+        vec![],
+        vec![tree.vertices()[0]],
+    )?;
 
-    let mut tail_uncoupled = Vec::with_capacity(tree.uncoupled.len() - 1);
+    let mut tail_uncoupled = Vec::with_capacity(tree.uncoupled().len() - 1);
     tail_uncoupled.push(first_innerline);
-    tail_uncoupled.extend_from_slice(&tree.uncoupled[2..]);
+    tail_uncoupled.extend_from_slice(&tree.uncoupled()[2..]);
 
-    let mut tail_is_dual = Vec::with_capacity(tree.is_dual.len() - 1);
+    let mut tail_is_dual = Vec::with_capacity(tree.is_dual().len() - 1);
     tail_is_dual.push(false);
-    tail_is_dual.extend_from_slice(&tree.is_dual[2..]);
+    tail_is_dual.extend_from_slice(&tree.is_dual()[2..]);
 
-    let tail_tree = FusionTree {
-        uncoupled: tail_uncoupled,
-        coupled: tree.coupled.clone(),
-        is_dual: tail_is_dual,
-        innerlines: tree.innerlines[1..].to_vec(),
-        vertices: tree.vertices[1..].to_vec(),
-    };
+    let tail_tree = FusionTree::new(
+        tail_uncoupled,
+        tree.coupled().clone(),
+        tail_is_dual,
+        tree.innerlines()[1..].to_vec(),
+        tree.vertices()[1..].to_vec(),
+    )?;
 
     let first = fusiontree_tensor(&first_tree)?;
     let tail = fusiontree_tensor(&tail_tree)?;
@@ -431,22 +471,22 @@ fn z_isomorphism_matrix<I: Sector>(sector: &I) -> Result<ArrayD<f64>> {
 }
 
 fn validate_tree_shape<I: Sector>(tree: &FusionTree<I>) -> Result<()> {
-    let arity = tree.uncoupled.len();
-    if tree.is_dual.len() != arity {
+    let arity = tree.uncoupled().len();
+    if tree.is_dual().len() != arity {
         return Err(Tensor0Error::Message(
             "fusion tree dual flag arity mismatch".to_string(),
         ));
     }
 
     let expected_innerlines = arity.saturating_sub(2);
-    if tree.innerlines.len() != expected_innerlines {
+    if tree.innerlines().len() != expected_innerlines {
         return Err(Tensor0Error::Message(
             "fusion tree innerline arity mismatch".to_string(),
         ));
     }
 
     let expected_vertices = if arity < 2 { 0 } else { arity - 1 };
-    if tree.vertices.len() != expected_vertices {
+    if tree.vertices().len() != expected_vertices {
         return Err(Tensor0Error::Message(
             "fusion tree vertex arity mismatch".to_string(),
         ));
@@ -476,13 +516,7 @@ mod tests {
 
         assert_eq!(
             trees,
-            vec![FusionTree {
-                uncoupled,
-                coupled: u1(0),
-                is_dual: vec![false, false],
-                innerlines: vec![],
-                vertices: vec![0],
-            }]
+            vec![FusionTree::new(uncoupled, u1(0), vec![false, false], vec![], vec![0],).unwrap()]
         );
     }
 
@@ -496,11 +530,11 @@ mod tests {
 
         let innerlines = trees
             .iter()
-            .map(|tree| tree.innerlines.clone())
+            .map(|tree| tree.innerlines().to_vec())
             .collect::<Vec<_>>();
         assert_eq!(innerlines, vec![vec![su2(0), su2(1)], vec![su2(2), su2(1)]]);
-        assert!(trees.iter().all(|tree| tree.coupled == su2(0)));
-        assert!(trees.iter().all(|tree| tree.vertices == vec![0, 0, 0]));
+        assert!(trees.iter().all(|tree| tree.coupled() == &su2(0)));
+        assert!(trees.iter().all(|tree| tree.vertices() == vec![0, 0, 0]));
     }
 
     #[test]
@@ -516,11 +550,16 @@ mod tests {
         let first_pairs = &block.trees()[..4];
         assert!(first_pairs
             .iter()
-            .all(|pair| pair.row.coupled == su2(0) && pair.col.coupled == su2(0)));
+            .all(|pair| pair.row.coupled() == &su2(0) && pair.col.coupled() == &su2(0)));
 
         let innerline_pairs = first_pairs
             .iter()
-            .map(|pair| (pair.row.innerlines.clone(), pair.col.innerlines.clone()))
+            .map(|pair| {
+                (
+                    pair.row.innerlines().to_vec(),
+                    pair.col.innerlines().to_vec(),
+                )
+            })
             .collect::<Vec<_>>();
         assert_eq!(
             innerline_pairs,

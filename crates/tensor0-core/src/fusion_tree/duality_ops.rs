@@ -24,7 +24,7 @@ pub(crate) fn repartition_pair<I: Sector>(
     src: &FusionTreePair<I>,
     target_numout: usize,
 ) -> Result<(FusionTreePair<I>, f64)> {
-    let numind = src.row.uncoupled.len() + src.col.uncoupled.len();
+    let numind = src.row.uncoupled().len() + src.col.uncoupled().len();
     if target_numout > numind {
         return Err(Tensor0Error::Message(
             "cannot repartition beyond fusion tree pair arity".to_string(),
@@ -34,13 +34,13 @@ pub(crate) fn repartition_pair<I: Sector>(
     let mut dst = src.clone();
     let mut coeff = 1.0;
 
-    while dst.row.uncoupled.len() < target_numout {
+    while dst.row.uncoupled().len() < target_numout {
         let (next_dst, step) = bendleft_pair(&dst)?;
         coeff *= step;
         dst = next_dst;
     }
 
-    while dst.row.uncoupled.len() > target_numout {
+    while dst.row.uncoupled().len() > target_numout {
         let (next_dst, step) = bendright_pair(&dst)?;
         coeff *= step;
         dst = next_dst;
@@ -92,8 +92,8 @@ pub(crate) fn transpose_pair<I: Sector>(
     let permutation = linearize_permutation(
         p_codomain,
         p_domain,
-        src.row.uncoupled.len(),
-        src.col.uncoupled.len(),
+        src.row.uncoupled().len(),
+        src.col.uncoupled().len(),
     )?;
 
     let (mut dst, mut coeff) = repartition_pair(src, p_codomain.len())?;
@@ -171,7 +171,7 @@ pub(crate) fn transpose_block<I: Sector>(
 }
 
 fn cycleclockwise_pair<I: Sector>(src: &FusionTreePair<I>) -> Result<(FusionTreePair<I>, f64)> {
-    if !src.row.uncoupled.is_empty() {
+    if !src.row.uncoupled().is_empty() {
         let (intermediate, fold_coeff) = foldright_pair(src)?;
         let (dst, bend_coeff) = bendleft_pair(&intermediate)?;
         Ok((dst, bend_coeff * fold_coeff))
@@ -197,7 +197,7 @@ fn cycleclockwise_block<I: Sector>(
 }
 
 fn cycleanticlockwise_pair<I: Sector>(src: &FusionTreePair<I>) -> Result<(FusionTreePair<I>, f64)> {
-    if !src.col.uncoupled.is_empty() {
+    if !src.col.uncoupled().is_empty() {
         let (intermediate, fold_coeff) = foldleft_pair(src)?;
         let (dst, bend_coeff) = bendright_pair(&intermediate)?;
         Ok((dst, bend_coeff * fold_coeff))
@@ -231,10 +231,10 @@ fn foldright_pair<I: Sector>(pair: &FusionTreePair<I>) -> Result<(FusionTreePair
 
     let row = &pair.row;
     let col = &pair.col;
-    debug_assert!(!row.uncoupled.is_empty());
-    let a = row.uncoupled[0].clone();
+    debug_assert!(!row.uncoupled().is_empty());
+    let a = row.uncoupled()[0].clone();
     let frobenius_schur = I::frobenius_schur_phase(&a)?;
-    let is_dual_a = row.is_dual[0];
+    let is_dual_a = row.is_dual()[0];
 
     let mut row_terms = multi_fmove(row)?;
     if row_terms.len() != 1 {
@@ -243,8 +243,8 @@ fn foldright_pair<I: Sector>(pair: &FusionTreePair<I>) -> Result<(FusionTreePair
         ));
     }
     let (row_prime, row_coeff) = row_terms.remove(0);
-    let b = row_prime.coupled.clone();
-    let c = row.coupled.clone();
+    let b = row_prime.coupled().clone();
+    let c = row.coupled().clone();
     let a_symbol = I::a_symbol(&a, &b, &c)?;
     let mut col_terms = multi_fmove_inv(&a.dual(), &b, col, !is_dual_a)?;
     if col_terms.len() != 1 {
@@ -325,8 +325,8 @@ fn foldright_block<I: Sector>(
         };
 
         for (row_prime, row_coeff) in row_terms.iter() {
-            let b = row_prime.coupled.clone();
-            let c = row.coupled.clone();
+            let b = row_prime.coupled().clone();
+            let c = row.coupled().clone();
             let a_key = (b.clone(), c.clone());
             let a_symbol = match a_symbol_cache.entry(a_key) {
                 Entry::Occupied(entry) => *entry.get(),
@@ -373,7 +373,7 @@ fn bendright_pair<I: Sector>(pair: &FusionTreePair<I>) -> Result<(FusionTreePair
     let (target_pair, a, b, c) = bendright_target(pair)?;
     let row = &pair.row;
     let mut scale = ((c.quantum_dim() as f64) / (a.quantum_dim() as f64)).sqrt();
-    if row.is_dual[row.is_dual.len() - 1] {
+    if row.is_dual()[row.is_dual().len() - 1] {
         // GenericFusion/complex symbols must restore TensorKit's conjugation here.
         scale *= I::frobenius_schur_phase(&b.dual())?;
     }
@@ -384,27 +384,27 @@ fn bendright_pair<I: Sector>(pair: &FusionTreePair<I>) -> Result<(FusionTreePair
 fn bendright_target<I: Sector>(pair: &FusionTreePair<I>) -> Result<(FusionTreePair<I>, I, I, I)> {
     let row = &pair.row;
     let col = &pair.col;
-    let row_arity = row.uncoupled.len();
-    let col_arity = col.uncoupled.len();
+    let row_arity = row.uncoupled().len();
+    let col_arity = col.uncoupled().len();
 
     let a = match row_arity {
         0 => unreachable!("bendright pair has at least one outgoing leg"),
         1 => I::unit(),
-        2 => row.uncoupled[0].clone(),
-        _ => row.innerlines[row_arity - 3].clone(),
+        2 => row.uncoupled()[0].clone(),
+        _ => row.innerlines()[row_arity - 3].clone(),
     };
-    let b = row.uncoupled[row_arity - 1].clone();
-    let c = row.coupled.clone();
+    let b = row.uncoupled()[row_arity - 1].clone();
+    let c = row.coupled().clone();
 
-    let row_uncoupled = row.uncoupled[..row_arity - 1].to_vec();
-    let row_is_dual = row.is_dual[..row_arity - 1].to_vec();
+    let row_uncoupled = row.uncoupled()[..row_arity - 1].to_vec();
+    let row_is_dual = row.is_dual()[..row_arity - 1].to_vec();
     let row_innerlines = if row_arity > 2 {
-        row.innerlines[..row.innerlines.len() - 1].to_vec()
+        row.innerlines()[..row.innerlines().len() - 1].to_vec()
     } else {
         vec![]
     };
     let row_vertices = if row_arity > 1 {
-        row.vertices[..row.vertices.len() - 1].to_vec()
+        row.vertices()[..row.vertices().len() - 1].to_vec()
     } else {
         vec![]
     };
@@ -416,12 +416,12 @@ fn bendright_target<I: Sector>(pair: &FusionTreePair<I>) -> Result<(FusionTreePa
         row_vertices,
     )?;
 
-    let mut col_uncoupled = col.uncoupled.clone();
+    let mut col_uncoupled = col.uncoupled().to_vec();
     col_uncoupled.push(b.dual());
-    let mut col_is_dual = col.is_dual.clone();
-    col_is_dual.push(!row.is_dual[row_arity - 1]);
+    let mut col_is_dual = col.is_dual().to_vec();
+    col_is_dual.push(!row.is_dual()[row_arity - 1]);
     let mut col_innerlines = if col_arity > 1 {
-        col.innerlines.clone()
+        col.innerlines().to_vec()
     } else {
         vec![]
     };
@@ -429,7 +429,7 @@ fn bendright_target<I: Sector>(pair: &FusionTreePair<I>) -> Result<(FusionTreePa
         col_innerlines.push(c.clone());
     }
     let mut col_vertices = if col_arity > 0 {
-        col.vertices.clone()
+        col.vertices().to_vec()
     } else {
         vec![]
     };
@@ -571,8 +571,8 @@ fn foldleft_block<I: Sector>(
         };
 
         for (col_prime, col_coeff) in col_terms.iter() {
-            let b = col_prime.coupled.clone();
-            let c = col.coupled.clone();
+            let b = col_prime.coupled().clone();
+            let c = col.coupled().clone();
             let a_key = (b.clone(), c.clone());
             let a_symbol = match a_symbol_cache.entry(a_key) {
                 Entry::Occupied(entry) => *entry.get(),

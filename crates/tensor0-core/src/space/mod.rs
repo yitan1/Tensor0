@@ -5,5 +5,6 @@ mod spec;
 
 pub use graded::{infimum_space, supremum_space, GradedSpace};
 pub use hom::HomSpace;
+pub(crate) use product::ProductSectorSupport;
 pub use product::{fuse_product_space, ProductSpace};
 pub use spec::{ElementarySpaceSpec, HomSpaceSpec, ProductSpaceSpec, SectorDimSpec};

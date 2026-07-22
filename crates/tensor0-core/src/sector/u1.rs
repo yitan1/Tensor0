@@ -69,17 +69,22 @@ impl Sector for U1Irrep {
         Ok(SectorCardinality::Infinite)
     }
 
-    fn fusion_outputs(&self, rhs: &Self) -> Vec<Self> {
-        vec![U1Irrep {
+    fn fusion_outputs(&self, rhs: &Self) -> impl Iterator<Item = Self> {
+        std::iter::once(U1Irrep {
             charge2: self
                 .charge2
                 .checked_add(rhs.charge2)
                 .expect("U1Irrep fusion twice-charge overflowed"),
-        }]
+        })
     }
 
     fn n_symbol(a: &Self, b: &Self, c: &Self) -> usize {
-        usize::from(a.fusion_outputs(b).iter().any(|out| out == c))
+        usize::from(
+            a.charge2
+                .checked_add(b.charge2)
+                .expect("U1Irrep fusion twice-charge overflowed")
+                == c.charge2,
+        )
     }
 
     fn r_symbol(a: &Self, b: &Self, c: &Self) -> f64 {

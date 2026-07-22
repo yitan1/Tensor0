@@ -22,8 +22,8 @@ pub(crate) fn braid_pair<I: Sector>(
     levels_codomain: &[usize],
     levels_domain: &[usize],
 ) -> Result<(FusionTreePair<I>, f64)> {
-    let n1 = src.row.uncoupled.len();
-    let n2 = src.col.uncoupled.len();
+    let n1 = src.row.uncoupled().len();
+    let n2 = src.col.uncoupled().len();
     debug_assert_eq!(levels_codomain.len(), n1);
     debug_assert_eq!(levels_domain.len(), n2);
     let permutation = linearize_permutation(p_codomain, p_domain, n1, n2)?;
@@ -100,26 +100,28 @@ fn flip_visible_index<I: Sector>(
     index: usize,
     inv: bool,
 ) -> Result<f64> {
-    let numout = pair.row.uncoupled.len();
+    let numout = pair.row.uncoupled().len();
     let factor = if index < numout {
-        let sector = &pair.row.uncoupled[index];
-        let was_dual = pair.row.is_dual[index];
-        pair.row.is_dual[index] = !was_dual;
-        if was_dual != inv {
+        let sector = &pair.row.uncoupled()[index];
+        let was_dual = pair.row.is_dual()[index];
+        let factor = if was_dual != inv {
             I::frobenius_schur_phase(sector)? * sector.twist()
         } else {
             1.0
-        }
+        };
+        pair.row.is_dual_mut()[index] = !was_dual;
+        factor
     } else {
         let col_index = index - numout;
-        let sector = &pair.col.uncoupled[col_index];
-        let was_dual = pair.col.is_dual[col_index];
-        pair.col.is_dual[col_index] = !was_dual;
-        if was_dual == inv {
+        let sector = &pair.col.uncoupled()[col_index];
+        let was_dual = pair.col.is_dual()[col_index];
+        let factor = if was_dual == inv {
             sector.twist()
         } else {
             I::frobenius_schur_phase(sector)?
-        }
+        };
+        pair.col.is_dual_mut()[col_index] = !was_dual;
+        factor
     };
     Ok(factor)
 }
@@ -129,7 +131,7 @@ fn braid_tree<I: Sector>(
     permutation: &[usize],
     levels: &[usize],
 ) -> Result<(FusionTree<I>, f64)> {
-    debug_assert_eq!(levels.len(), tree.uncoupled.len());
+    debug_assert_eq!(levels.len(), tree.uncoupled().len());
     if I::fusion_style() != FusionStyle::UniqueFusion {
         return Err(Tensor0Error::Message(
             "braid tree requires UniqueFusion".to_string(),
@@ -144,23 +146,26 @@ fn braid_tree<I: Sector>(
         for i in 0..permutation.len() {
             for j in 0..i {
                 if permutation[j] > permutation[i] {
-                    let a = &tree.uncoupled[permutation[j]];
-                    let b = &tree.uncoupled[permutation[i]];
-                    let outputs = a.fusion_outputs(b);
-                    coeff *= I::r_symbol(a, b, &outputs[0]);
+                    let a = &tree.uncoupled()[permutation[j]];
+                    let b = &tree.uncoupled()[permutation[i]];
+                    let output = a
+                        .fusion_outputs(b)
+                        .next()
+                        .expect("UniqueFusion sectors have one fusion output");
+                    coeff *= I::r_symbol(a, b, &output);
                 }
             }
         }
 
         let uncoupled = permutation
             .iter()
-            .map(|index| tree.uncoupled[*index].clone())
+            .map(|index| tree.uncoupled()[*index].clone())
             .collect::<Vec<_>>();
         let is_dual = permutation
             .iter()
-            .map(|index| tree.is_dual[*index])
+            .map(|index| tree.is_dual()[*index])
             .collect::<Vec<_>>();
-        let tree_prime = enumerate_fusion_trees(&uncoupled, &is_dual, &tree.coupled)?
+        let tree_prime = enumerate_fusion_trees(&uncoupled, &is_dual, tree.coupled())?
             .pop()
             .ok_or_else(|| {
                 Tensor0Error::Message(
@@ -190,7 +195,7 @@ fn artin_braid_tree<I: Sector>(
     i: usize,
     inv: bool,
 ) -> Result<(FusionTree<I>, f64)> {
-    let n = tree.uncoupled.len();
+    let n = tree.uncoupled().len();
     if i + 1 >= n {
         return Err(Tensor0Error::Message(
             "artin_braid index out of range".to_string(),
@@ -202,7 +207,7 @@ fn artin_braid_tree<I: Sector>(
         ));
     }
 
-    let (uncoupled_prime, is_dual_prime) = swapped_tree_labels(&tree.uncoupled, &tree.is_dual, i);
+    let (uncoupled_prime, is_dual_prime) = swapped_tree_labels(tree.uncoupled(), tree.is_dual(), i);
     let mut terms =
         artin_braid_multiplicity_free_terms(tree, i, inv, &uncoupled_prime, &is_dual_prime)?;
     if terms.len() != 1 {
@@ -305,8 +310,8 @@ fn artin_braid_multiplicity_free_terms<I: Sector>(
     uncoupled: &[I],
     is_dual: &[bool],
 ) -> Result<Vec<(FusionTree<I>, f64)>> {
-    let left = &tree.uncoupled[i];
-    let right = &tree.uncoupled[i + 1];
+    let left = &tree.uncoupled()[i];
+    let right = &tree.uncoupled()[i + 1];
     if left == &I::unit() || right == &I::unit() {
         return Ok(vec![(
             artin_braid_through_unit(tree, uncoupled, is_dual, i)?,
@@ -320,10 +325,10 @@ fn artin_braid_multiplicity_free_terms<I: Sector>(
     }
 
     if i == 0 {
-        let c = if tree.uncoupled.len() > 2 {
-            tree.innerlines[0].clone()
+        let c = if tree.uncoupled().len() > 2 {
+            tree.innerlines()[0].clone()
         } else {
-            tree.coupled.clone()
+            tree.coupled().clone()
         };
         let coeff = if inv {
             // GenericFusion/complex symbols must restore TensorKit's conjugation here.
@@ -334,10 +339,10 @@ fn artin_braid_multiplicity_free_terms<I: Sector>(
         return Ok(vec![(
             FusionTree::new(
                 uncoupled.to_vec(),
-                tree.coupled.clone(),
+                tree.coupled().clone(),
                 is_dual.to_vec(),
-                tree.innerlines.clone(),
-                tree.vertices.clone(),
+                tree.innerlines().to_vec(),
+                tree.vertices().to_vec(),
             )?,
             coeff,
         )]);
@@ -345,16 +350,15 @@ fn artin_braid_multiplicity_free_terms<I: Sector>(
 
     let inner_extended = artin_inner_extended(tree);
     let a = &inner_extended[i - 1];
-    let b = &tree.uncoupled[i];
+    let b = &tree.uncoupled()[i];
     let c = &inner_extended[i];
-    let d = &tree.uncoupled[i + 1];
+    let d = &tree.uncoupled()[i + 1];
     let e = &inner_extended[i + 1];
-    let outputs2 = e.fusion_outputs(&b.dual());
+    let outputs2 = e.fusion_outputs(&b.dual()).collect::<Vec<_>>();
 
     let mut terms = Vec::new();
     for c_prime in a
         .fusion_outputs(d)
-        .into_iter()
         .filter(|sector| outputs2.contains(sector))
     {
         let coeff = if inv {
@@ -369,15 +373,15 @@ fn artin_braid_multiplicity_free_terms<I: Sector>(
                 * I::r_symbol(a, d, &c_prime)
         };
 
-        let mut innerlines = tree.innerlines.clone();
+        let mut innerlines = tree.innerlines().to_vec();
         innerlines[i - 1] = c_prime;
         terms.push((
             FusionTree::new(
                 uncoupled.to_vec(),
-                tree.coupled.clone(),
+                tree.coupled().clone(),
                 is_dual.to_vec(),
                 innerlines,
-                tree.vertices.clone(),
+                tree.vertices().to_vec(),
             )?,
             coeff,
         ));
@@ -392,13 +396,13 @@ fn artin_braid_through_unit<I: Sector>(
     is_dual: &[bool],
     i: usize,
 ) -> Result<FusionTree<I>> {
-    let mut innerlines = tree.innerlines.clone();
-    let mut vertices = tree.vertices.clone();
+    let mut innerlines = tree.innerlines().to_vec();
+    let mut vertices = tree.vertices().to_vec();
 
     if i > 0 {
         let inner_extended = artin_inner_extended(tree);
 
-        let replacement = if tree.uncoupled[i] == I::unit() {
+        let replacement = if tree.uncoupled()[i] == I::unit() {
             inner_extended[i + 1].clone()
         } else {
             inner_extended[i - 1].clone()
@@ -409,7 +413,7 @@ fn artin_braid_through_unit<I: Sector>(
 
     FusionTree::new(
         uncoupled.to_vec(),
-        tree.coupled.clone(),
+        tree.coupled().clone(),
         is_dual.to_vec(),
         innerlines,
         vertices,
@@ -417,10 +421,10 @@ fn artin_braid_through_unit<I: Sector>(
 }
 
 fn artin_inner_extended<I: Sector>(tree: &FusionTree<I>) -> Vec<I> {
-    let mut inner_extended = Vec::with_capacity(tree.uncoupled.len());
-    inner_extended.push(tree.uncoupled[0].clone());
-    inner_extended.extend(tree.innerlines.iter().cloned());
-    inner_extended.push(tree.coupled.clone());
+    let mut inner_extended = Vec::with_capacity(tree.uncoupled().len());
+    inner_extended.push(tree.uncoupled()[0].clone());
+    inner_extended.extend(tree.innerlines().iter().cloned());
+    inner_extended.push(tree.coupled().clone());
     inner_extended
 }
 

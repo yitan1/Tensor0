@@ -251,8 +251,14 @@ fn su2_irrep_matches_representative_fusion_rules() {
     let half = su2(1);
     let one = su2(2);
 
-    assert_eq!(half.fusion_outputs(&half), vec![su2(0), su2(2)]);
-    assert_eq!(one.fusion_outputs(&half), vec![su2(1), su2(3)]);
+    assert_eq!(
+        half.fusion_outputs(&half).collect::<Vec<_>>(),
+        vec![su2(0), su2(2)]
+    );
+    assert_eq!(
+        one.fusion_outputs(&half).collect::<Vec<_>>(),
+        vec![su2(1), su2(3)]
+    );
 }
 
 #[test]
@@ -389,19 +395,19 @@ fn assert_unit_fusion_identity<I: Sector>(name: &str, sectors: &[I]) {
     for sector in sectors {
         check(
             name,
-            unit.fusion_outputs(sector) == vec![sector.clone()],
+            unit.fusion_outputs(sector).collect::<Vec<_>>() == vec![sector.clone()],
             "left unit",
         );
         check(
             name,
-            sector.fusion_outputs(&unit) == vec![sector.clone()],
+            sector.fusion_outputs(&unit).collect::<Vec<_>>() == vec![sector.clone()],
             "right unit",
         );
     }
 }
 
 fn assert_fusion_contract<I: Sector>(name: &str, a: &I, b: &I, candidates: &[I]) {
-    let outputs = a.fusion_outputs(b);
+    let outputs = a.fusion_outputs(b).collect::<Vec<_>>();
     let dimension_sum = outputs
         .iter()
         .map(|c| c.quantum_dim() * I::n_symbol(a, b, c))

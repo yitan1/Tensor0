@@ -4,6 +4,7 @@ resolver = "2"
 
 [workspace.package]
 edition = "2021"
+rust-version = "1.87"
 version = "0.0.0"
 license = "MIT"
 description = "Rust core and Python extension support for Tensor0"

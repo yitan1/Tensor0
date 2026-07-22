@@ -801,8 +801,8 @@ impl Sector for GenericLayoutSector {
         Ok(SectorCardinality::Infinite)
     }
 
-    fn fusion_outputs(&self, rhs: &Self) -> Vec<Self> {
-        vec![GenericLayoutSector(self.0 + rhs.0)]
+    fn fusion_outputs(&self, rhs: &Self) -> impl Iterator<Item = Self> {
+        std::iter::once(GenericLayoutSector(self.0 + rhs.0))
     }
 
     fn n_symbol(a: &Self, b: &Self, c: &Self) -> usize {

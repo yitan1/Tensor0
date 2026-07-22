@@ -66,14 +66,14 @@ impl Sector for FermionParity {
         Ok(SectorCardinality::Finite(2))
     }
 
-    fn fusion_outputs(&self, rhs: &Self) -> Vec<Self> {
-        vec![FermionParity {
+    fn fusion_outputs(&self, rhs: &Self) -> impl Iterator<Item = Self> {
+        std::iter::once(FermionParity {
             value: self.value ^ rhs.value,
-        }]
+        })
     }
 
     fn n_symbol(a: &Self, b: &Self, c: &Self) -> usize {
-        usize::from(a.fusion_outputs(b).iter().any(|out| out == c))
+        usize::from((a.value ^ b.value) == c.value)
     }
 
     fn r_symbol(a: &Self, b: &Self, c: &Self) -> f64 {

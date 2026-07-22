@@ -1,9 +1,9 @@
 use std::collections::BTreeSet;
 
 use crate::error::{Result, Tensor0Error};
-use crate::fusion_tree::{FusionTreeBlock, FusionTreePair};
+use crate::fusion_tree::{FusionTree, FusionTreeBlock, FusionTreePair};
 use crate::sector::{FusionStyle, Sector};
-use crate::space::{HomSpace, ProductSpace};
+use crate::space::{HomSpace, ProductSectorSupport};
 
 use super::indices::Indices;
 
@@ -120,10 +120,9 @@ struct SectorStructureFactorKey<I: Sector> {
 }
 
 fn sector_structure_key<I: Sector>(space: &HomSpace<I>) -> SectorStructureKey<I> {
-    SectorStructureKey {
-        codomain: product_sector_key(space.codomain()),
-        domain: product_sector_key(space.domain()),
-    }
+    let codomain = space.codomain().sector_support();
+    let domain = space.domain().sector_support();
+    sector_structure_key_from_supports(&codomain, &domain)
 }
 
 pub fn build_sector_structure<I: Sector>(space: &HomSpace<I>) -> Result<SectorStructure<I>> {
@@ -132,15 +131,30 @@ pub fn build_sector_structure<I: Sector>(space: &HomSpace<I>) -> Result<SectorSt
             "layout does not support GenericFusion sector families".to_string(),
         ));
     }
+    if space.numout() == 0 && space.numin() == 0 {
+        let unit = I::unit();
+        let tree = FusionTree::new(vec![], unit.clone(), vec![], vec![], vec![])?;
+        return Ok(SectorStructure {
+            sector_key: SectorStructureKey {
+                codomain: vec![],
+                domain: vec![],
+            },
+            blocksectors: Indices::new(vec![unit])?,
+            fusiontree_pairs: Indices::new(vec![FusionTreePair {
+                row: tree.clone(),
+                col: tree,
+            }])?,
+        });
+    }
 
-    let sector_key = sector_structure_key(space);
-    let blocksectors = hom_block_sectors(space)?;
+    let codomain = space.codomain().sector_support();
+    let domain = space.domain().sector_support();
+    let sector_key = sector_structure_key_from_supports(&codomain, &domain);
+    let blocksectors = hom_block_sectors_from_supports(&codomain, &domain);
     let mut fusiontree_pairs = Vec::new();
-
     for blocksector in &blocksectors {
-        let row_trees = space.codomain().fusion_trees(blocksector)?;
-        let col_trees = space.domain().fusion_trees(blocksector)?;
-
+        let row_trees = codomain.fusion_trees(blocksector)?;
+        let col_trees = domain.fusion_trees(blocksector)?;
         for row in &row_trees {
             for col in &col_trees {
                 fusiontree_pairs.push(FusionTreePair {
@@ -150,7 +164,6 @@ pub fn build_sector_structure<I: Sector>(space: &HomSpace<I>) -> Result<SectorSt
             }
         }
     }
-
     Ok(SectorStructure {
         sector_key,
         blocksectors: Indices::new(blocksectors)?,
@@ -158,58 +171,62 @@ pub fn build_sector_structure<I: Sector>(space: &HomSpace<I>) -> Result<SectorSt
     })
 }
 
-fn product_sector_key<I: Sector>(product: &ProductSpace<I>) -> Vec<SectorStructureFactorKey<I>> {
+fn sector_structure_key_from_supports<I: Sector>(
+    codomain: &ProductSectorSupport<I>,
+    domain: &ProductSectorSupport<I>,
+) -> SectorStructureKey<I> {
+    SectorStructureKey {
+        codomain: product_sector_key(codomain),
+        domain: product_sector_key(domain),
+    }
+}
+
+fn product_sector_key<I: Sector>(
+    product: &ProductSectorSupport<I>,
+) -> Vec<SectorStructureFactorKey<I>> {
     product
-        .factors()
+        .sectors
         .iter()
-        .map(|factor| SectorStructureFactorKey {
-            is_dual: factor.is_dual(),
-            sectors: factor
-                .sectors()
-                .into_iter()
-                .map(|(sector, _)| sector)
-                .collect(),
+        .zip(&product.is_dual)
+        .map(|(sectors, is_dual)| SectorStructureFactorKey {
+            is_dual: *is_dual,
+            sectors: sectors.clone(),
         })
         .collect()
 }
 
-fn hom_block_sectors<I: Sector>(space: &HomSpace<I>) -> Result<Vec<I>> {
-    let codomain = space.codomain();
-    let domain = space.domain();
-    let codomain_len = codomain.factors().len();
-    let domain_len = domain.factors().len();
+fn hom_block_sectors_from_supports<I: Sector>(
+    codomain: &ProductSectorSupport<I>,
+    domain: &ProductSectorSupport<I>,
+) -> Vec<I> {
+    let codomain_len = codomain.sectors.len();
+    let domain_len = domain.sectors.len();
 
-    if codomain_len == 0 && domain_len == 0 {
-        return Ok(vec![I::unit()]);
+    if codomain_len == 1 && domain_len == 1 {
+        let codomain_set = codomain.sectors[0].iter().collect::<BTreeSet<_>>();
+        let mut blocksectors = domain.sectors[0]
+            .iter()
+            .filter(|sector| codomain_set.contains(sector))
+            .cloned()
+            .collect::<Vec<_>>();
+        blocksectors.sort();
+        return blocksectors;
     }
 
-    let codomain_blocksectors = codomain.block_sectors()?;
-    let domain_blocksectors = domain.block_sectors()?;
-
-    if codomain_len == 0 {
-        return Ok(domain_blocksectors
-            .into_iter()
-            .filter(|sector| sector == &I::unit())
-            .collect());
-    }
-    if domain_len == 0 {
-        return Ok(codomain_blocksectors
-            .into_iter()
-            .filter(|sector| sector == &I::unit())
-            .collect());
-    }
+    let codomain_blocksectors = codomain.block_sectors();
+    let domain_blocksectors = domain.block_sectors();
 
     if domain_len <= codomain_len {
         let codomain_set = codomain_blocksectors.into_iter().collect::<BTreeSet<_>>();
-        Ok(domain_blocksectors
+        domain_blocksectors
             .into_iter()
             .filter(|sector| codomain_set.contains(sector))
-            .collect())
+            .collect()
     } else {
         let domain_set = domain_blocksectors.into_iter().collect::<BTreeSet<_>>();
-        Ok(codomain_blocksectors
+        codomain_blocksectors
             .into_iter()
             .filter(|sector| domain_set.contains(sector))
-            .collect())
+            .collect()
     }
 }

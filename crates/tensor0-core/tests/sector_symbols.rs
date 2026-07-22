@@ -299,7 +299,11 @@ fn assert_symmetric_braiding<I: Sector>(a: I, b: I) {
     }
 }
 
-fn common_outputs<I: Sector>(left: Vec<I>, right: Vec<I>) -> Vec<I> {
+fn common_outputs<I: Sector>(
+    left: impl IntoIterator<Item = I>,
+    right: impl IntoIterator<Item = I>,
+) -> Vec<I> {
+    let right = right.into_iter().collect::<Vec<_>>();
     let mut outputs = left
         .into_iter()
         .filter(|candidate| right.contains(candidate))
@@ -345,12 +349,10 @@ fn assert_f_move_unitary<I: Sector>(a: I, b: I, c: I) {
     for d in targets {
         let es = a
             .fusion_outputs(&b)
-            .into_iter()
             .filter(|e| I::n_symbol(e, &c, &d) > 0)
             .collect::<Vec<_>>();
         let fs = b
             .fusion_outputs(&c)
-            .into_iter()
             .filter(|f| I::n_symbol(&a, f, &d) > 0)
             .collect::<Vec<_>>();
 
@@ -384,7 +386,7 @@ fn assert_pentagon_equation<I: Sector>(a: I, b: I, c: I, d: I) {
                     for e in common_outputs(g.fusion_outputs(&d), a.fusion_outputs(&i)) {
                         let p1 = I::f_symbol(&f, &c, &d, &e, &g, &h).unwrap()
                             * I::f_symbol(&a, &b, &h, &e, &f, &i).unwrap();
-                        let p2 = b.fusion_outputs(&c).into_iter().fold(0.0, |sum, j| {
+                        let p2 = b.fusion_outputs(&c).fold(0.0, |sum, j| {
                             sum + I::f_symbol(&a, &b, &c, &g, &f, &j).unwrap()
                                 * I::f_symbol(&a, &j, &d, &e, &g, &i).unwrap()
                                 * I::f_symbol(&b, &c, &d, &i, &j, &h).unwrap()
@@ -409,17 +411,14 @@ fn assert_hexagon_equation<I: Sector>(a: I, b: I, c: I) {
                 let rfr1 = rcae * facbdef * rcbf;
                 let rfr2 = race * facbdef * rbcf;
 
-                let (frf1, frf2) =
-                    a.fusion_outputs(&b)
-                        .into_iter()
-                        .fold((0.0, 0.0), |(frf1, frf2), g| {
-                            let fcabdeg = I::f_symbol(&c, &a, &b, &d, &e, &g).unwrap();
-                            let fabcdgf = I::f_symbol(&a, &b, &c, &d, &g, &f).unwrap();
-                            (
-                                frf1 + fcabdeg * I::r_symbol(&c, &g, &d) * fabcdgf,
-                                frf2 + fcabdeg * I::r_symbol(&g, &c, &d) * fabcdgf,
-                            )
-                        });
+                let (frf1, frf2) = a.fusion_outputs(&b).fold((0.0, 0.0), |(frf1, frf2), g| {
+                    let fcabdeg = I::f_symbol(&c, &a, &b, &d, &e, &g).unwrap();
+                    let fabcdgf = I::f_symbol(&a, &b, &c, &d, &g, &f).unwrap();
+                    (
+                        frf1 + fcabdeg * I::r_symbol(&c, &g, &d) * fabcdgf,
+                        frf2 + fcabdeg * I::r_symbol(&g, &c, &d) * fabcdgf,
+                    )
+                });
                 assert_close(rfr1, frf1);
                 assert_close(rfr2, frf2);
             }
@@ -443,7 +442,7 @@ fn assert_multiplicity_free_symbol_contracts<I: Sector>(a: I, b: I, c: I, d: I) 
 }
 
 fn assert_fusion_tensors_orthonormal<I: Sector>(a: I, b: I) {
-    let channels = a.fusion_outputs(&b);
+    let channels = a.fusion_outputs(&b).collect::<Vec<_>>();
     let tensors = channels
         .iter()
         .map(|c| (c.clone(), I::fusion_tensor(&a, &b, c).unwrap()))

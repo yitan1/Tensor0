@@ -63,7 +63,8 @@ pub trait Sector: Clone + Eq + Ord + std::hash::Hash + Sized + 'static {
     fn braiding_style() -> BraidingStyle;
     fn cardinality() -> Result<SectorCardinality>;
 
-    fn fusion_outputs(&self, rhs: &Self) -> Vec<Self>;
+    /// Enumerates fusion outputs once in canonical sector order.
+    fn fusion_outputs(&self, rhs: &Self) -> impl Iterator<Item = Self>;
     fn n_symbol(a: &Self, b: &Self, c: &Self) -> usize;
     fn f_symbol(a: &Self, b: &Self, c: &Self, d: &Self, e: &Self, f: &Self) -> Result<f64> {
         unique_fusion_f_symbol::<Self>(a, b, c, d, e, f)
@@ -81,7 +82,6 @@ pub trait Sector: Clone + Eq + Ord + std::hash::Hash + Sized + 'static {
     fn twist(&self) -> f64 {
         let dim = self.quantum_dim() as f64;
         self.fusion_outputs(self)
-            .into_iter()
             .map(|output| output.quantum_dim() as f64 / dim * Self::r_symbol(self, self, &output))
             .sum()
     }
@@ -110,7 +110,7 @@ pub trait SectorTuple: Clone + Eq + Ord + std::hash::Hash + Sized + 'static {
     fn fusion_style() -> FusionStyle;
     fn braiding_style() -> BraidingStyle;
     fn cardinality() -> Result<SectorCardinality>;
-    fn fusion_outputs(&self, rhs: &Self) -> Vec<Self>;
+    fn fusion_outputs(&self, rhs: &Self) -> impl Iterator<Item = Self>;
     fn n_symbol(a: &Self, b: &Self, c: &Self) -> usize;
     fn f_symbol(a: &Self, b: &Self, c: &Self, d: &Self, e: &Self, f: &Self) -> Result<f64>;
     fn r_symbol(a: &Self, b: &Self, c: &Self) -> f64;
