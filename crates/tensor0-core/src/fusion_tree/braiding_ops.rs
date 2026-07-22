@@ -4,12 +4,12 @@
 //! structure. Future anyonic support should add explicit braid-word operations
 //! here instead of representing every braid as a plain permutation.
 
-use std::collections::HashMap;
-
 use ndarray::Array2;
 
 use crate::error::{Result, Tensor0Error};
-use crate::fusion_tree::{enumerate_fusion_trees, FusionTree, FusionTreeBlock, FusionTreePair};
+use crate::fusion_tree::{
+    enumerate_fusion_trees, FusionTree, FusionTreeBlock, FusionTreeBlockIndex, FusionTreePair,
+};
 use crate::sector::{BraidingStyle, FusionStyle, Sector};
 
 use super::auxiliary::{linearize_permutation, permutation_to_swaps};
@@ -246,7 +246,7 @@ fn artin_braid_block<I: Sector>(
         vec![],
     )?;
     let mut transform = Array2::zeros((dst.trees().len(), src.trees().len()));
-    let dst_index = dst.index_map();
+    let dst_index = dst.tree_index();
 
     if !is_unit_braid && I::fusion_style() == FusionStyle::GenericFusion {
         let message = if i == 0 {
@@ -276,7 +276,7 @@ fn fill_artin_braid_block<I: Sector>(
     inv: bool,
     uncoupled_prime: &[I],
     is_dual_prime: &[bool],
-    dst_index: &HashMap<FusionTreePair<I>, usize>,
+    dst_index: &FusionTreeBlockIndex<'_, I>,
     transform: &mut Array2<f64>,
 ) -> Result<()> {
     for (source_index, FusionTreePair { row, col }) in src.trees().iter().enumerate() {
@@ -291,7 +291,7 @@ fn fill_artin_braid_block<I: Sector>(
                 row: row_prime,
                 col: col.clone(),
             };
-            let Some(target_index) = dst_index.get(&target_pair).copied() else {
+            let Some(target_index) = dst_index.get(&target_pair) else {
                 return Err(Tensor0Error::Message(
                     "artin_braid destination fusion tree pair was not found".to_string(),
                 ));

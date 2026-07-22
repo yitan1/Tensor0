@@ -1,5 +1,6 @@
 use std::collections::{BTreeSet, HashMap};
 use std::fmt;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::Arc;
 
 use ndarray::{ArrayD, Axis, IxDyn};
@@ -114,6 +115,143 @@ pub struct FusionTreePair<I: Sector> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct FusionTreeBlock<I: Sector> {
     trees: Vec<FusionTreePair<I>>,
+}
+
+enum FusionTreeBlockIndexData<I: Sector> {
+    Unique,
+    SimpleLinear,
+    SimpleFingerprints(HashMap<u64, usize>),
+    Generic(HashMap<FusionTreePair<I>, usize>),
+}
+
+const LINEAR_FUSION_TREE_BLOCK_MAX: usize = 16;
+
+pub(crate) struct FusionTreeBlockIndex<'a, I: Sector> {
+    block: &'a FusionTreeBlock<I>,
+    data: FusionTreeBlockIndexData<I>,
+}
+
+impl<'a, I: Sector> FusionTreeBlockIndex<'a, I> {
+    fn new(block: &'a FusionTreeBlock<I>) -> Self {
+        let data = match I::fusion_style() {
+            FusionStyle::UniqueFusion => {
+                debug_assert!(block.trees.len() <= 1);
+                FusionTreeBlockIndexData::Unique
+            }
+            FusionStyle::SimpleFusion => {
+                if block.trees.len() <= LINEAR_FUSION_TREE_BLOCK_MAX {
+                    FusionTreeBlockIndexData::SimpleLinear
+                } else {
+                    FusionTreeBlockIndexData::SimpleFingerprints(build_fingerprint_index(
+                        block,
+                        block_local_pair_fingerprint::<I>,
+                    ))
+                }
+            }
+            FusionStyle::GenericFusion => FusionTreeBlockIndexData::Generic(
+                block
+                    .trees
+                    .iter()
+                    .cloned()
+                    .enumerate()
+                    .map(|(index, pair)| (pair, index))
+                    .collect(),
+            ),
+        };
+        Self { block, data }
+    }
+
+    pub(crate) fn get(&self, pair: &FusionTreePair<I>) -> Option<usize> {
+        #[cfg(debug_assertions)]
+        {
+            if matches!(
+                &self.data,
+                FusionTreeBlockIndexData::SimpleLinear
+                    | FusionTreeBlockIndexData::SimpleFingerprints(_)
+            ) {
+                if let Some(first) = self.block.trees.first() {
+                    debug_assert!(same_block_constants(first, pair));
+                    debug_assert!(pair.row.coupled() == pair.col.coupled());
+                }
+            }
+        }
+
+        match &self.data {
+            FusionTreeBlockIndexData::Unique => self
+                .block
+                .trees
+                .first()
+                .filter(|expected| *expected == pair)
+                .map(|_| 0),
+            FusionTreeBlockIndexData::SimpleLinear => self
+                .block
+                .trees
+                .iter()
+                .position(|candidate| block_local_pair_equal(candidate, pair)),
+            FusionTreeBlockIndexData::SimpleFingerprints(index) => {
+                lookup_fingerprint_index(self.block, index, pair, block_local_pair_fingerprint::<I>)
+            }
+            FusionTreeBlockIndexData::Generic(index) => index.get(pair).copied(),
+        }
+    }
+}
+
+fn block_local_pair_fingerprint<I: Sector>(pair: &FusionTreePair<I>) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    pair.row.coupled().hash(&mut hasher);
+    pair.row.innerlines().hash(&mut hasher);
+    pair.col.innerlines().hash(&mut hasher);
+    hasher.finish()
+}
+
+fn block_local_pair_equal<I: Sector>(left: &FusionTreePair<I>, right: &FusionTreePair<I>) -> bool {
+    left.row.coupled() == right.row.coupled()
+        && left.col.coupled() == right.col.coupled()
+        && left.row.innerlines() == right.row.innerlines()
+        && left.col.innerlines() == right.col.innerlines()
+}
+
+#[cfg(debug_assertions)]
+fn same_block_constants<I: Sector>(left: &FusionTreePair<I>, right: &FusionTreePair<I>) -> bool {
+    left.row.uncoupled() == right.row.uncoupled()
+        && left.row.is_dual() == right.row.is_dual()
+        && left.col.uncoupled() == right.col.uncoupled()
+        && left.col.is_dual() == right.col.is_dual()
+}
+
+fn build_fingerprint_index<I, F>(block: &FusionTreeBlock<I>, fingerprint: F) -> HashMap<u64, usize>
+where
+    I: Sector,
+    F: Fn(&FusionTreePair<I>) -> u64,
+{
+    let mut index = HashMap::with_capacity(block.trees.len());
+    for (position, pair) in block.trees.iter().enumerate() {
+        index.entry(fingerprint(pair)).or_insert(position);
+    }
+    index
+}
+
+fn lookup_fingerprint_index<I, F>(
+    block: &FusionTreeBlock<I>,
+    index: &HashMap<u64, usize>,
+    pair: &FusionTreePair<I>,
+    fingerprint: F,
+) -> Option<usize>
+where
+    I: Sector,
+    F: Fn(&FusionTreePair<I>) -> u64,
+{
+    let value = fingerprint(pair);
+    let position = *index.get(&value)?;
+    if block_local_pair_equal(&block.trees[position], pair) {
+        return Some(position);
+    }
+    // A fingerprint only narrows the common path. An actual collision falls
+    // back to an exact reduced-key scan without retaining collision storage.
+    block
+        .trees
+        .iter()
+        .position(|candidate| block_local_pair_equal(candidate, pair))
 }
 
 pub(crate) fn enumerate_fusion_trees<I: Sector>(
@@ -288,27 +426,24 @@ impl<I: Sector> FusionTreeBlock<I> {
         self.numout() + self.numin()
     }
 
-    pub(crate) fn index_map(&self) -> HashMap<FusionTreePair<I>, usize> {
-        self.trees
-            .iter()
-            .cloned()
-            .enumerate()
-            .map(|(index, pair)| (pair, index))
-            .collect()
+    pub(crate) fn tree_index(&self) -> FusionTreeBlockIndex<'_, I> {
+        FusionTreeBlockIndex::new(self)
     }
 }
 
 pub(crate) fn fusion_blocks<I: Sector>(space: &HomSpace<I>) -> Result<Vec<FusionTreeBlock<I>>> {
-    let codomain_tuples = space.codomain().sector_tuples()?;
-    let domain_tuples = space.domain().sector_tuples()?;
+    let codomain = space.codomain().sector_support();
+    let domain = space.domain().sector_support();
+    let codomain_tuples = codomain.sector_tuples();
+    let domain_tuples = domain.sector_tuples();
     let mut blocks = Vec::new();
 
-    for domain in &domain_tuples {
-        for codomain in &codomain_tuples {
+    for domain_tuple in &domain_tuples {
+        for codomain_tuple in &codomain_tuples {
             let block = FusionTreeBlock::new(
-                codomain.sectors.clone(),
+                codomain_tuple.clone(),
                 codomain.is_dual.clone(),
-                domain.sectors.clone(),
+                domain_tuple.clone(),
                 domain.is_dual.clone(),
             )?;
             if !block.is_empty() {
@@ -570,5 +705,49 @@ mod tests {
                 (vec![su2(2), su2(1)], vec![su2(2), su2(1)]),
             ]
         );
+    }
+
+    #[test]
+    fn fusion_tree_block_index_resolves_forced_fingerprint_collisions() {
+        let half = su2(1);
+        let uncoupled = vec![half, half, half, half];
+        let block =
+            FusionTreeBlock::new(uncoupled.clone(), vec![false; 4], uncoupled, vec![false; 4])
+                .unwrap();
+        let index = build_fingerprint_index(&block, |_| 0);
+
+        assert_eq!(index.len(), 1);
+        for (expected, pair) in block.trees().iter().enumerate() {
+            assert_eq!(
+                lookup_fingerprint_index(&block, &index, pair, |_| 0),
+                Some(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn fusion_tree_block_index_selects_and_resolves_linear_and_fingerprint_strategies() {
+        let half = su2(1);
+        for rank in [4, 5] {
+            let uncoupled = vec![half; rank];
+            let block = FusionTreeBlock::new(
+                uncoupled.clone(),
+                vec![false; rank],
+                uncoupled,
+                vec![false; rank],
+            )
+            .unwrap();
+            let index = block.tree_index();
+            let has_expected_strategy = match rank {
+                4 => matches!(&index.data, FusionTreeBlockIndexData::SimpleLinear),
+                5 => matches!(&index.data, FusionTreeBlockIndexData::SimpleFingerprints(_)),
+                _ => unreachable!(),
+            };
+            assert!(has_expected_strategy);
+
+            for (expected, pair) in block.trees().iter().enumerate() {
+                assert_eq!(index.get(pair), Some(expected));
+            }
+        }
     }
 }

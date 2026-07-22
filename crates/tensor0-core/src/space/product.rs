@@ -7,12 +7,6 @@ use crate::sector::{FusionStyle, Sector};
 use super::graded::GradedSpace;
 use super::spec::ProductSpaceSpec;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ProductSectorTuple<I: Sector> {
-    pub sectors: Vec<I>,
-    pub is_dual: Vec<bool>,
-}
-
 pub(crate) struct ProductSectorSupport<I: Sector> {
     pub(crate) sectors: Vec<Vec<I>>,
     pub(crate) is_dual: Vec<bool>,
@@ -185,48 +179,26 @@ impl<I: Sector> ProductSpace<I> {
             is_dual: self.factors.iter().map(GradedSpace::is_dual).collect(),
         }
     }
-
-    pub(crate) fn sector_tuples(&self) -> Result<Vec<ProductSectorTuple<I>>> {
-        match self.factors.len() {
-            0 => Ok(vec![ProductSectorTuple {
-                sectors: vec![],
-                is_dual: vec![],
-            }]),
-            _ => {
-                let mut tuples = vec![ProductSectorTuple {
-                    sectors: vec![],
-                    is_dual: vec![],
-                }];
-
-                for factor in self.factors.iter().rev() {
-                    let sectors = factor.sectors();
-                    let mut next = Vec::with_capacity(tuples.len().saturating_mul(sectors.len()));
-                    for tuple in tuples {
-                        for (sector, _) in &sectors {
-                            let mut tuple_sectors = Vec::with_capacity(tuple.sectors.len() + 1);
-                            tuple_sectors.push(sector.clone());
-                            tuple_sectors.extend(tuple.sectors.iter().cloned());
-
-                            let mut tuple_is_dual = Vec::with_capacity(tuple.is_dual.len() + 1);
-                            tuple_is_dual.push(factor.is_dual());
-                            tuple_is_dual.extend(tuple.is_dual.iter().copied());
-
-                            next.push(ProductSectorTuple {
-                                sectors: tuple_sectors,
-                                is_dual: tuple_is_dual,
-                            });
-                        }
-                    }
-                    tuples = next;
-                }
-
-                Ok(tuples)
-            }
-        }
-    }
 }
 
 impl<I: Sector> ProductSectorSupport<I> {
+    pub(crate) fn sector_tuples(&self) -> Vec<Vec<I>> {
+        let mut tuples = vec![Vec::new()];
+        for factor in self.sectors.iter().rev() {
+            let mut next = Vec::with_capacity(tuples.len().saturating_mul(factor.len()));
+            for tuple in tuples {
+                for sector in factor {
+                    let mut sectors = Vec::with_capacity(tuple.len() + 1);
+                    sectors.push(sector.clone());
+                    sectors.extend(tuple.iter().cloned());
+                    next.push(sectors);
+                }
+            }
+            tuples = next;
+        }
+        tuples
+    }
+
     pub(crate) fn block_sectors(&self) -> Vec<I> {
         if self.sectors.iter().any(Vec::is_empty) {
             return Vec::new();
@@ -453,17 +425,19 @@ mod tests {
     }
 
     fn tuple_reference<I: Sector>(product: &ProductSpace<I>, coupled: &I) -> Vec<FusionTree<I>> {
+        let support = product.sector_support();
         let mut trees = Vec::new();
-        for tuple in product.sector_tuples().unwrap() {
-            trees.extend(enumerate_fusion_trees(&tuple.sectors, &tuple.is_dual, coupled).unwrap());
+        for tuple in support.sector_tuples() {
+            trees.extend(enumerate_fusion_trees(&tuple, &support.is_dual, coupled).unwrap());
         }
         trees
     }
 
     fn tuple_block_sector_reference<I: Sector>(product: &ProductSpace<I>) -> Vec<I> {
+        let support = product.sector_support();
         let mut blocksectors = BTreeSet::new();
-        for tuple in product.sector_tuples().unwrap() {
-            blocksectors.extend(fusion_sectors(&tuple.sectors));
+        for tuple in support.sector_tuples() {
+            blocksectors.extend(fusion_sectors(&tuple));
         }
         blocksectors.into_iter().collect()
     }

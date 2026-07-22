@@ -294,12 +294,12 @@ fn foldright_block<I: Sector>(
         col_uncoupled_dst,
         col_is_dual_dst,
     )?;
-    let dst_index = dst.index_map();
+    let dst_index = dst.tree_index();
     let mut transform = Array2::zeros((dst.trees().len(), src.trees().len()));
     if I::fusion_style() == FusionStyle::UniqueFusion {
         for (source_index, pair) in src.trees().iter().enumerate() {
             let (target_pair, coeff) = foldright_pair(pair)?;
-            let Some(target_index) = dst_index.get(&target_pair).copied() else {
+            let Some(target_index) = dst_index.get(&target_pair) else {
                 return Err(Tensor0Error::Message(
                     "foldright destination fusion tree pair was not found".to_string(),
                 ));
@@ -356,7 +356,7 @@ fn foldright_block<I: Sector>(
                     row: row_prime.clone(),
                     col: col_prime.clone(),
                 };
-                let Some(target_index) = dst_index.get(&target_pair).copied() else {
+                let Some(target_index) = dst_index.get(&target_pair) else {
                     return Err(Tensor0Error::Message(
                         "foldright destination fusion tree pair was not found".to_string(),
                     ));
@@ -475,7 +475,7 @@ fn bendright_block<I: Sector>(
         col_uncoupled_dst,
         col_is_dual_dst,
     )?;
-    let dst_index = dst.index_map();
+    let dst_index = dst.tree_index();
     let mut transform = Array2::zeros((dst.trees().len(), src.trees().len()));
 
     for (source_index, pair) in src.trees().iter().enumerate() {
@@ -483,7 +483,7 @@ fn bendright_block<I: Sector>(
         if coeff == 0.0 {
             continue;
         }
-        let Some(target_index) = dst_index.get(&target_pair).copied() else {
+        let Some(target_index) = dst_index.get(&target_pair) else {
             return Err(Tensor0Error::Message(
                 "bendright destination fusion tree pair was not found".to_string(),
             ));
@@ -540,12 +540,12 @@ fn foldleft_block<I: Sector>(
         col_uncoupled_dst,
         col_is_dual_dst,
     )?;
-    let dst_index = dst.index_map();
+    let dst_index = dst.tree_index();
     let mut transform = Array2::zeros((dst.trees().len(), src.trees().len()));
     if I::fusion_style() == FusionStyle::UniqueFusion {
         for (source_index, pair) in src.trees().iter().enumerate() {
             let (target_pair, coeff) = foldleft_pair(pair)?;
-            let Some(target_index) = dst_index.get(&target_pair).copied() else {
+            let Some(target_index) = dst_index.get(&target_pair) else {
                 return Err(Tensor0Error::Message(
                     "foldleft destination fusion tree pair was not found".to_string(),
                 ));
@@ -602,7 +602,7 @@ fn foldleft_block<I: Sector>(
                     row: row_prime.clone(),
                     col: col_prime.clone(),
                 };
-                let Some(target_index) = dst_index.get(&target_pair).copied() else {
+                let Some(target_index) = dst_index.get(&target_pair) else {
                     return Err(Tensor0Error::Message(
                         "foldleft destination fusion tree pair was not found".to_string(),
                     ));
@@ -651,7 +651,7 @@ fn bendleft_block<I: Sector>(
         col_uncoupled_dst,
         col_is_dual_dst,
     )?;
-    let dst_index = dst.index_map();
+    let dst_index = dst.tree_index();
     let mut transform = Array2::zeros((dst.trees().len(), src.trees().len()));
 
     for (source_index, pair) in src.trees().iter().enumerate() {
@@ -659,7 +659,7 @@ fn bendleft_block<I: Sector>(
         if coeff == 0.0 {
             continue;
         }
-        let Some(target_index) = dst_index.get(&target_pair).copied() else {
+        let Some(target_index) = dst_index.get(&target_pair) else {
             return Err(Tensor0Error::Message(
                 "bendleft destination fusion tree pair was not found".to_string(),
             ));
