@@ -18,6 +18,7 @@ dist/
 htmlcov/
 coverage.xml
 site/
+benchmark-results/
 
 target/
 Cargo.lock

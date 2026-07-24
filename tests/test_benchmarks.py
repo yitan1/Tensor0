@@ -1,90 +1,91 @@
 from __future__ import annotations
 
 import ast
+import importlib
 import importlib.util
 import json
 from pathlib import Path
 import subprocess
 import sys
+import tomllib
 
 import pytest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-CORE_BENCHMARK_SCRIPT = REPO_ROOT / "benchmarks" / "core.py"
-CONTRACTION_BENCHMARK_SCRIPT = REPO_ROOT / "benchmarks" / "contractions.py"
-TRIVIAL_BENCHMARK_SCRIPT = REPO_ROOT / "benchmarks" / "trivial.py"
-RUNNER_MODULE = REPO_ROOT / "benchmarks" / "_runner.py"
+STANDARD_ROOT = REPO_ROOT / "benchmarks" / "standard"
+RUNNER_MODULE = STANDARD_ROOT / "_runner.py"
+PARAMETER_FILES = (
+    STANDARD_ROOT / "linalg" / "params.toml",
+    STANDARD_ROOT / "transforms" / "params.toml",
+    STANDARD_ROOT
+    / "contractions"
+    / "api_networks"
+    / "params.toml",
+    STANDARD_ROOT
+    / "contractions"
+    / "tensor_networks"
+    / "params.toml",
+)
 
-EXPECTED_QUICK_SCENARIOS = {
-    "layout.u1_two_factor.cold",
-    "layout.su2_four_half.cold",
-    "composition.u1.eager",
-    "svd.u1_compact.eager",
-    "transform.u1_permute.cold",
-    "transform.u1_repartition.cold",
-    "transform.su2_permute.cold",
-    "jax.composition.jit_compile_and_run",
-    "jax.composition.jit_cached_run",
-    "jax.composition.value_and_grad_cached",
-}
-
-EXPECTED_FULL_ONLY_SCENARIOS = {
-    "layout.u1_two_factor.cached",
-    "layout.su2_four_half.cached",
-    "composition.u1.eager.float64.medium",
-    "composition.u1.eager.float64.large",
-    "composition.u1.eager.complex128.small",
-    "composition.u1.eager.complex128.medium",
-    "composition.fermion_parity.eager.float64.small",
-    "svd.u1_compact.eager.float64.medium",
-    "svd.u1_compact.eager.complex128.small",
-    "svd.u1_compact.eager.complex128.medium",
-    "svd.fermion_parity_compact.eager.float64.small",
-    "transform.u1_permute.cached",
-    "transform.u1_repartition.cached",
-    "transform.su2_permute.cached",
-    "transform.u1_permute.large.cold",
-    "transform.u1_permute.large.cached",
-}
-
-EXPECTED_EXPLICIT_ONLY_SCENARIOS = {
-    "internal.strided_indices.rank2_noncontiguous",
-    "internal.strided_indices.rank3_noncontiguous",
-}
-
-EXPECTED_TRIVIAL_SCENARIOS = {
-    "dense.trivial.from_dense.rank2.float64.small.eager",
-    "dense.trivial.to_dense.rank4.float64.small.eager",
-    "dense.trivial.to_dense.rank4.float64.small.jit_compile_and_run",
-    "dense.trivial.to_dense.rank4.float64.small.jit_cached_run",
+EXPECTED_TRIVIAL_PERMUTE_SCENARIOS = {
     "permute.trivial.rank4.float64.small.eager",
     "permute.trivial.rank4.float64.small.jit_compile_and_run",
     "permute.trivial.rank4.float64.small.jit_cached_run",
+    "permute.trivial.rank4.complex128.medium.eager",
+}
+EXPECTED_TRIVIAL_PRIMITIVE_SCENARIOS = {
     "trace.trivial.partial.rank4.float64.small.eager",
     "trace.trivial.partial.rank4.float64.small.jit_compile_and_run",
     "trace.trivial.partial.rank4.float64.small.jit_cached_run",
+    "trace.trivial.partial.rank4.complex128.medium.eager",
     "contract.trivial.partial.float64.small.eager",
     "contract.trivial.partial.float64.small.jit_compile_and_run",
     "contract.trivial.partial.float64.small.jit_cached_run",
+    "contract.trivial.partial.complex128.medium.eager",
+}
+EXPECTED_TRIVIAL_COMPOSITION_SCENARIOS = {
     "composition.trivial.float64.small.eager",
     "composition.trivial.float64.small.jit_compile_and_run",
     "composition.trivial.float64.small.jit_cached_run",
-    "network.trivial.three_tensor.float64.small.eager",
-    "network.trivial.three_tensor.float64.small.jit_compile_and_run",
-    "network.trivial.three_tensor.float64.small.jit_cached_run",
-    "dense.trivial.from_dense.rank2.complex128.medium.eager",
-    "dense.trivial.to_dense.rank4.complex128.medium.eager",
-    "permute.trivial.rank4.complex128.medium.eager",
-    "trace.trivial.partial.rank4.complex128.medium.eager",
-    "contract.trivial.partial.complex128.medium.eager",
     "composition.trivial.complex128.medium.eager",
-    "network.trivial.three_tensor.complex128.medium.eager",
-    "protect.u1.from_dense.float64.small.eager",
+}
+TRANSFORM_SMOKE_SCENARIO = (
+    "transforms.permute.trivial.float64.d64x48.p2x1_to_empty.eager"
+)
+EXPECTED_QUICK_SUITE_SCENARIOS = {
+    "linalg.mul.trivial.float64.d2x2x2.eager",
+    "linalg.svd.trivial.float64.d2x2.eager",
+    "linalg.mul.u1.float64.small.eager",
+    "linalg.svd.u1.float64.small.eager",
+    "linalg.mul.u1.float64.small.jit_compile_and_run",
+    "linalg.mul.u1.float64.small.jit_cached_run",
+    "linalg.mul.u1.float64.small.value_and_grad_cached",
+    TRANSFORM_SMOKE_SCENARIO,
+    "transforms.permute.u1.float64.small.cold",
+    "transforms.repartition.u1.float64.small.cold",
+    "transforms.permute.su2.float64.small.cold",
+    "transforms.twist.u1.identity.eager",
+    "transforms.twist.fermion_parity.nontrivial.eager",
+    "trace.u1.partial",
+    "trace.su2.partial",
+    "contract.u1.partial",
+    "network.named.default",
+    "network.ncon.default",
+    "network.disconnected",
+    "jax.network.compile_and_run",
+    "jax.network.cached",
+    "jax.network.value_and_grad",
+    "tensor_networks.mpo.trivial.float64.d10x4x3.eager",
+    "tensor_networks.pepo.trivial.float64.d3x2x2x50.eager",
+    "tensor_networks.mera.trivial.float64.d2.eager",
+    "layout.u1_two_factor.cold",
+    "layout.su2_four_half.cold",
+    "permute.trivial.rank4.float64.small.eager",
+    "trace.trivial.partial.rank4.float64.small.eager",
+    "contract.trivial.partial.float64.small.eager",
+    "composition.trivial.float64.small.eager",
     "protect.su2.permute.float64.small.eager",
-    "protect.u1.contract.float64.small.eager",
-    "protect.su2.trace.float64.small.eager",
-    "protect.u1.composition.float64.small.eager",
 }
 
 RESULT_FIELDS = {
@@ -134,170 +135,78 @@ def _load_runner():
     return module
 
 
-def _run_core_benchmark(*args: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        [sys.executable, str(CORE_BENCHMARK_SCRIPT), *args],
+def _load_tensor_network_cases():
+    return importlib.import_module(
+        "benchmarks.standard.contractions.tensor_networks.cases"
+    )
+
+
+def _suite_registry() -> list[dict[str, str]]:
+    script = (
+        "import json; "
+        "from benchmarks.standard import __main__ as suite; "
+        "print(json.dumps(["
+        "{'id': item.id, 'group': item.group, "
+        "'profile': item.scenario_profile} "
+        "for item in suite._scenarios()]))"
+    )
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
         cwd=REPO_ROOT,
         check=True,
         capture_output=True,
         text=True,
     )
+    return json.loads(completed.stdout)
 
 
-def _run_contraction_benchmark(*args: str) -> subprocess.CompletedProcess[str]:
+def _run_benchmark_suite(
+    *args: str,
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        [sys.executable, str(CONTRACTION_BENCHMARK_SCRIPT), *args],
+        [sys.executable, "-m", "benchmarks.standard", *args],
         cwd=REPO_ROOT,
         check=True,
         capture_output=True,
         text=True,
     )
-
-
-def _run_trivial_benchmark(*args: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        [sys.executable, str(TRIVIAL_BENCHMARK_SCRIPT), *args],
-        cwd=REPO_ROOT,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-
-
-def test_core_benchmark_lists_exact_historical_scenarios():
-    completed = _run_core_benchmark("--list-scenarios")
-
-    scenario_ids = completed.stdout.splitlines()
-
-    assert len(scenario_ids) == len(set(scenario_ids))
-    assert set(scenario_ids) == (
-        EXPECTED_QUICK_SCENARIOS
-        | EXPECTED_FULL_ONLY_SCENARIOS
-        | EXPECTED_EXPLICIT_ONLY_SCENARIOS
-    )
-
-
-def test_core_benchmark_quick_json_selected_scenarios_run(tmp_path):
-    json_output = tmp_path / "core.json"
-    completed = _run_core_benchmark(
-        "--quick",
-        "--scenario",
-        "layout.u1_two_factor.cold",
-        "--scenario",
-        "composition.u1.eager",
-        "--json",
-        "--json-output",
-        str(json_output),
-    )
-
-    payload = json.loads(completed.stdout)
-    file_payload = json.loads(json_output.read_text(encoding="utf-8"))
-
-    assert file_payload == payload
-    assert payload["config"]["profile"] == "quick"
-    assert payload["config"]["warmup"] == 1
-    assert payload["config"]["repeat"] == 2
-    assert payload["config"]["scenario_count"] == 2
-    assert {result["id"] for result in payload["results"]} == {
-        "layout.u1_two_factor.cold",
-        "composition.u1.eager",
-    }
-    for result in payload["results"]:
-        assert RESULT_FIELDS <= result.keys()
-        assert result["warmup"] == 1
-        assert result["repeat"] == 2
-        assert len(result["times_ms"]) == 2
-        assert result["min_ms"] >= 0.0
-        assert result["median_ms"] >= 0.0
-        assert result["iqr_ms"] >= 0.0
-        assert result["max_ms"] >= 0.0
-
-
-def test_core_benchmark_runs_explicit_only_scenario():
-    completed = _run_core_benchmark(
-        "--scenario",
-        "internal.strided_indices.rank2_noncontiguous",
-        "--warmup",
-        "0",
-        "--repeat",
-        "1",
-        "--json",
-    )
-
-    payload = json.loads(completed.stdout)
-
-    assert payload["config"]["profile"] == "full"
-    assert payload["config"]["warmup"] == 0
-    assert payload["config"]["repeat"] == 1
-    assert payload["config"]["scenario_count"] == 1
-    assert len(payload["results"]) == 1
-    result = payload["results"][0]
-    assert RESULT_FIELDS <= result.keys()
-    assert result["id"] == "internal.strided_indices.rank2_noncontiguous"
-    assert result["scenario_profile"] == "explicit-only"
-    assert result["group"] == "internal"
-    assert result["dtype"] == "int64"
-    assert result["size_label"] == "large"
-    assert result["execution"] == "eager"
-    assert result["cache_policy"] == "cache_miss_builder"
-    assert len(result["times_ms"]) == 1
-
-
-def test_core_benchmark_writes_historical_markdown_sections(tmp_path):
-    output = tmp_path / "baseline.md"
-
-    _run_core_benchmark(
-        "--quick",
-        "--scenario",
-        "composition.u1.eager",
-        "--markdown",
-        str(output),
-    )
-
-    content = output.read_text(encoding="utf-8")
-
-    assert content.startswith("# Tensor0 Core Benchmark Baseline\n")
-    assert "`uv run python benchmarks/core.py" in content
-    assert "## Measurement Scope" in content
-    assert "## TensorKit Reference Alignment" in content
-    assert "## Results" in content
-    assert "## Highest Median Scenarios" in content
-    assert "## Recommendation" in content
-    assert "## Deferred TensorKit Parity" in content
-    assert "`composition.u1.eager`" in content
-    assert "- Times ms: `" in content
-
-
-def test_core_benchmark_keeps_dependency_surface_small():
-    imported_roots = _imported_roots(CORE_BENCHMARK_SCRIPT)
-
-    assert imported_roots <= {
-        "_runner",
-        "__future__",
-        "platform",
-        "typing",
-        "jax",
-        "tensor0",
-    }
-    assert {"_runner", "jax", "tensor0"} <= imported_roots
 
 
 def test_common_benchmark_runner_keeps_dependency_surface_small():
     imported_roots = _imported_roots(RUNNER_MODULE)
 
-    assert imported_roots <= {
-        "__future__",
-        "argparse",
-        "collections",
-        "dataclasses",
-        "json",
-        "pathlib",
-        "shlex",
-        "statistics",
-        "time",
-        "typing",
+    assert imported_roots <= sys.stdlib_module_names | {"__future__"}
+
+
+def test_parameter_files_use_tensor0_native_schema():
+    legacy_keys = {"T", "I", "dims", "profile"}
+    legacy_values = {
+        "Float64",
+        "ComplexF64",
+        "Trivial",
+        "Z2Irrep",
+        "U1Irrep",
+        "SU2Irrep",
     }
-    assert {"dataclasses", "statistics", "time"} <= imported_roots
+
+    def check(value: object) -> None:
+        if isinstance(value, dict):
+            assert legacy_keys.isdisjoint(value)
+            for nested in value.values():
+                check(nested)
+        elif isinstance(value, list):
+            for nested in value:
+                check(nested)
+        elif isinstance(value, str):
+            assert value not in legacy_values
+
+    for path in PARAMETER_FILES:
+        with path.open("rb") as stream:
+            parameters = tomllib.load(stream)
+        check(parameters)
+        for workload in parameters.get("workload", []):
+            assert {"sector", "dimensions"} <= workload.keys()
+            assert "dtype" in workload or "dtypes" in workload
 
 
 def test_runner_runs_per_iteration_setup_outside_timed_region(monkeypatch):
@@ -320,7 +229,7 @@ def test_runner_runs_per_iteration_setup_outside_timed_region(monkeypatch):
         return next(ticks)
 
     monkeypatch.setattr(runner.time, "perf_counter_ns", clock)
-    item = runner.scenario(
+    item = runner.Scenario(
         "setup-boundary",
         "test",
         "setup boundary",
@@ -367,7 +276,7 @@ def test_runner_synchronizes_tensormap_storage_before_timer_stops(monkeypatch):
         return next(ticks)
 
     monkeypatch.setattr(runner.time, "perf_counter_ns", clock)
-    item = runner.scenario(
+    item = runner.Scenario(
         "synchronization-boundary",
         "test",
         "synchronization boundary",
@@ -388,7 +297,7 @@ def test_runner_synchronizes_tensormap_storage_before_timer_stops(monkeypatch):
 def test_runner_rejects_invalid_scenario_registries():
     runner = _load_runner()
 
-    item = runner.scenario(
+    item = runner.Scenario(
         "duplicate",
         "test",
         "duplicate id",
@@ -402,7 +311,7 @@ def test_runner_rejects_invalid_scenario_registries():
     with pytest.raises(ValueError, match="duplicate benchmark scenario ids"):
         runner.validate_scenarios((item, item))
 
-    invalid_profile = runner.scenario(
+    invalid_profile = runner.Scenario(
         "invalid-profile",
         "test",
         "invalid profile",
@@ -417,192 +326,287 @@ def test_runner_rejects_invalid_scenario_registries():
         runner.validate_scenarios((invalid_profile,))
 
 
-def test_contraction_benchmark_lists_scenarios():
-    completed = _run_contraction_benchmark("--list-scenarios")
-
-    scenario_ids = completed.stdout.splitlines()
-
-    assert len(scenario_ids) == len(set(scenario_ids))
-    assert set(scenario_ids) == {
-        "twist.u1.identity",
-        "twist.fermion.nontrivial",
-        "trace.u1.partial",
-        "trace.su2.partial",
-        "trace.fermion.full",
-        "contract.u1.partial",
-        "contract.su2.fusion_basis",
-        "contract.fermion.twist",
-        "contract.u1.partial.complex",
-        "network.named.default",
-        "network.named.default.medium",
-        "network.named.custom.medium",
-        "network.ncon.default",
-        "network.ncon.default.medium",
-        "network.ncon.custom.medium",
-        "network.disconnected",
-        "jax.network.compile_and_run",
-        "jax.network.cached",
-        "jax.network.value_and_grad",
-    }
-
-
-def test_contraction_benchmark_selected_quick_json_runs():
-    completed = _run_contraction_benchmark(
-        "--quick",
-        "--scenario",
-        "twist.u1.identity",
-        "--scenario",
-        "network.named.default",
-        "--warmup",
-        "0",
-        "--repeat",
-        "1",
-        "--json",
+def test_runner_all_selection_includes_explicit_only_scenarios():
+    runner = _load_runner()
+    quick = runner.Scenario(
+        "quick",
+        "fast",
+        "quick",
+        "quick",
+        "none",
+        "tiny",
+        "eager",
+        "none",
+        lambda: lambda: None,
+    )
+    explicit = runner.Scenario(
+        "explicit",
+        "slow",
+        "explicit",
+        "explicit-only",
+        "none",
+        "large",
+        "eager",
+        "none",
+        lambda: lambda: None,
     )
 
-    payload = json.loads(completed.stdout)
+    selected = runner.selected_scenarios(
+        (quick, explicit),
+        None,
+        quick=False,
+        include_explicit=True,
+    )
 
-    assert payload["config"] == {
-        "profile": "quick",
-        "warmup": 0,
-        "repeat": 1,
-        "scenario_count": 2,
-    }
-    assert {result["id"] for result in payload["results"]} == {
-        "twist.u1.identity",
+    assert selected == (quick, explicit)
+
+    selected_group = runner.selected_scenarios(
+        (quick, explicit),
+        None,
+        quick=False,
+        include_explicit=True,
+        selected_groups=("slow",),
+    )
+
+    assert selected_group == (explicit,)
+    with pytest.raises(SystemExit, match="unknown benchmark groups"):
+        runner.selected_scenarios(
+            (quick, explicit),
+            None,
+            quick=False,
+            selected_groups=("missing",),
+        )
+
+
+def test_tensor_network_space_generator_matches_standard_distributions():
+    cases = _load_tensor_network_cases()
+
+    z2 = cases.generate_space("z2", 10, 0.5)
+    u1 = cases.generate_space("u1", 40, 0.5)
+    su2 = cases.generate_space("su2", 40, 2.0)
+
+    assert z2.sectors == (((0,), 5), ((1,), 5))
+    assert u1.sectors == (((0,), 32), ((1,), 5), ((-1,), 5))
+    assert su2.sectors == (
+        ((0,), 8),
+        ((1,), 4),
+        ((2,), 3),
+        ((3,), 2),
+        ((4,), 1),
+        ((5,), 1),
+    )
+
+
+def test_benchmark_suite_lists_valid_registry():
+    completed = _run_benchmark_suite("--list-scenarios")
+
+    scenario_ids = completed.stdout.splitlines()
+    scenario_set = set(scenario_ids)
+
+    assert {
+        "linalg.mul.z2.complex128.d8x8x8.eager",
+        "transforms.permute.u1.float64.small.cold",
         "network.named.default",
+        "tensor_networks.mpo.trivial.float64.d10x4x3.eager",
+        "tensor_networks.pepo.u1.float64.d4x2x2x100.eager",
+        "tensor_networks.mera.su2.float64.d4.eager",
+        "layout.u1_two_factor.cold",
+        "internal.strided_indices.rank2_noncontiguous",
+    } <= scenario_set
+
+
+def test_benchmark_suite_quick_profile_has_expected_domain_coverage():
+    quick_ids = {
+        item["id"]
+        for item in _suite_registry()
+        if item["profile"] == "quick"
     }
-    assert "public_repository" in payload["environment"]
-    assert "private_repository" not in payload["environment"]
-    for result in payload["results"]:
-        assert RESULT_FIELDS <= result.keys()
-        assert len(result["times_ms"]) == 1
+
+    assert quick_ids == EXPECTED_QUICK_SUITE_SCENARIOS
 
 
-def test_contraction_benchmark_custom_network_and_markdown_run(tmp_path):
-    output = tmp_path / "contraction-baseline.md"
-    json_output = tmp_path / "contraction-baseline.json"
+def test_direct_twist_scenarios_belong_to_transforms():
+    groups = {
+        item["id"]: item["group"]
+        for item in _suite_registry()
+        if "twist" in item["id"].split(".")
+    }
 
-    completed = _run_contraction_benchmark(
-        "--scenario",
-        "network.ncon.custom.medium",
+    assert groups == {
+        "transforms.twist.u1.identity.eager": "transforms",
+        "transforms.twist.fermion_parity.nontrivial.eager": "transforms",
+        "contract.fermion.twist": "contractions",
+    }
+
+
+def test_public_path_scenarios_belong_to_operation_domains():
+    expected_groups = {
+        **dict.fromkeys(EXPECTED_TRIVIAL_COMPOSITION_SCENARIOS, "linalg"),
+        **dict.fromkeys(EXPECTED_TRIVIAL_PERMUTE_SCENARIOS, "transforms"),
+        **dict.fromkeys(
+            EXPECTED_TRIVIAL_PRIMITIVE_SCENARIOS,
+            "contractions",
+        ),
+        "protect.su2.permute.float64.small.eager": "transforms",
+    }
+    groups = {
+        item["id"]: item["group"]
+        for item in _suite_registry()
+        if item["id"] in expected_groups
+    }
+
+    assert groups == expected_groups
+
+
+def test_benchmark_suite_selected_smoke_and_report(tmp_path):
+    markdown_output = tmp_path / "benchmark-suite.md"
+    scenario_ids = {
+        "linalg.mul.trivial.float64.d2x2x2.eager",
+        "linalg.mul.u1.float64.small.eager",
+        "transforms.permute.u1.float64.small.cold",
+        "network.named.default",
+        "tensor_networks.mpo.trivial.float64.d10x4x3.eager",
+        "layout.u1_two_factor.cold",
+    }
+    arguments = [
+        "--quick",
         "--warmup",
         "0",
         "--repeat",
         "1",
         "--json",
-        "--json-output",
-        str(json_output),
         "--markdown",
-        str(output),
+        str(markdown_output),
+    ]
+    for scenario_id in sorted(scenario_ids):
+        arguments.extend(("--scenario", scenario_id))
+    completed = _run_benchmark_suite(
+        *arguments,
     )
     payload = json.loads(completed.stdout)
-    file_payload = json.loads(json_output.read_text(encoding="utf-8"))
-    content = output.read_text(encoding="utf-8")
 
-    assert payload["results"][0]["id"] == "network.ncon.custom.medium"
-    assert file_payload == payload
-    assert "## Environment" in content
-    assert "## Results" in content
-    assert "## Interpretation Boundary" in content
-    assert "`network.ncon.custom.medium`" in content
-    assert "`uv run python benchmarks/contractions.py" in content
-
-
-def test_contraction_benchmark_keeps_dependency_surface_small():
-    imported_roots = _imported_roots(CONTRACTION_BENCHMARK_SCRIPT)
-
-    assert imported_roots <= {
-        "_runner",
-        "__future__",
-        "json",
-        "os",
-        "pathlib",
-        "platform",
-        "subprocess",
-        "typing",
-        "jax",
-        "tensor0",
-    }
-    assert {"_runner", "jax", "tensor0"} <= imported_roots
-
-
-def test_trivial_benchmark_lists_stable_scenarios():
-    completed = _run_trivial_benchmark("--list-scenarios")
-
-    scenario_ids = completed.stdout.splitlines()
-
-    assert len(scenario_ids) == len(set(scenario_ids))
-    assert set(scenario_ids) == EXPECTED_TRIVIAL_SCENARIOS
-
-
-def test_trivial_benchmark_selected_quick_json_runs(tmp_path):
-    json_output = tmp_path / "trivial.json"
-    completed = _run_trivial_benchmark(
-        "--quick",
-        "--scenario",
-        "dense.trivial.from_dense.rank2.float64.small.eager",
-        "--scenario",
-        "composition.trivial.float64.small.eager",
-        "--warmup",
-        "0",
-        "--repeat",
-        "1",
-        "--json",
-        "--json-output",
-        str(json_output),
-    )
-
-    payload = json.loads(completed.stdout)
-
-    assert json.loads(json_output.read_text(encoding="utf-8")) == payload
     assert payload["config"] == {
         "profile": "quick",
         "warmup": 0,
         "repeat": 1,
-        "scenario_count": 2,
+        "scenario_count": len(scenario_ids),
     }
-    assert {result["id"] for result in payload["results"]} == {
-        "dense.trivial.from_dense.rank2.float64.small.eager",
-        "composition.trivial.float64.small.eager",
-    }
-    for result in payload["results"]:
-        assert RESULT_FIELDS <= result.keys()
-        assert len(result["times_ms"]) == 1
-        assert result["min_ms"] >= 0.0
-        assert result["median_ms"] >= 0.0
-        assert result["iqr_ms"] >= 0.0
-        assert result["max_ms"] >= 0.0
-
-    environment = payload["environment"]
-    assert environment["benchmark_script_sha256"]
-    assert environment["jax_devices"]
-    source_state = environment["public_repository"]
-    assert source_state["revision"]
-    assert isinstance(source_state["dirty"], bool)
-    assert source_state["binary_diff_sha256"]
-    assert isinstance(source_state["untracked_files"], list)
+    assert {result["id"] for result in payload["results"]} == scenario_ids
     assert all(
-        {"path", "sha256"} == entry.keys()
-        for entry in source_state["untracked_files"]
+        set(result) == RESULT_FIELDS for result in payload["results"]
     )
-
-
-def test_trivial_benchmark_keeps_dependency_surface_small():
-    imported_roots = _imported_roots(TRIVIAL_BENCHMARK_SCRIPT)
-
-    assert imported_roots <= {
-        "_runner",
-        "__future__",
-        "collections",
-        "hashlib",
-        "json",
-        "os",
-        "pathlib",
-        "platform",
-        "subprocess",
-        "typing",
-        "jax",
-        "tensor0",
+    assert {result["group"] for result in payload["results"]} == {
+        "linalg",
+        "transforms",
+        "contractions",
+        "tensor_networks",
+        "diagnostics",
     }
-    assert {"_runner", "hashlib", "jax", "tensor0"} <= imported_roots
+    metadata = payload["environment"]["benchmark_suite"]
+    assert {
+        "linalg",
+        "transforms",
+        "contractions",
+        "tensor_networks",
+        "diagnostics",
+    } <= metadata.keys()
+    assert metadata["transforms"]["memory_contract"] == {
+        "logical_input_mib": [32],
+        "minimum_live_dense_mib": [64],
+        "boundary": "input remains live while a distinct output is allocated",
+    }
+    assert (
+        metadata["tensor_networks"]["workload_contract"]["result_boundary"]
+        == "rank_zero_tensormap"
+    )
+    topology_definitions = metadata["tensor_networks"]["topology_definitions"]
+    assert topology_definitions["mpo"]["operand_positions"] == [2, 0, 1, 0, 3]
+    assert topology_definitions["pepo"]["labels"][0] == [18, 7, 4, 2, 1]
+    assert len(topology_definitions["mera"]["order"]) == 23
+    support_files = payload["environment"]["benchmark_support_files_sha256"]
+    assert {
+        "benchmarks/standard/_inputs.py",
+        "benchmarks/standard/_runner.py",
+        "benchmarks/standard/_specs.py",
+        "benchmarks/standard/contractions/api_networks/cases.py",
+        "benchmarks/standard/contractions/api_networks/params.toml",
+        "benchmarks/standard/contractions/primitives/cases.py",
+        "benchmarks/standard/diagnostics/layout_cache.py",
+        "benchmarks/standard/diagnostics/strided_indices.py",
+        "benchmarks/standard/linalg/cases.py",
+        "benchmarks/standard/linalg/params.toml",
+        "benchmarks/standard/contractions/tensor_networks/cases.py",
+        "benchmarks/standard/contractions/tensor_networks/params.toml",
+        "benchmarks/standard/transforms/cases.py",
+        "benchmarks/standard/transforms/params.toml",
+    } <= support_files.keys()
+    content = markdown_output.read_text(encoding="utf-8")
+    assert content.startswith("# Tensor0 Benchmark Suite\n")
+    assert "## Measurement Boundary" in content
+    assert "## Workload Boundary" in content
+    assert "`uv run python -m benchmarks.standard --quick" in content
+
+
+def test_benchmark_suite_nontrivial_network_and_jit_run():
+    scenario_ids = {
+        "tensor_networks.mpo.z2.float64.d10x4x4.eager",
+        "tensor_networks.mpo.trivial.float64.d10x4x3.jit_compile_and_run",
+        "tensor_networks.mpo.trivial.float64.d10x4x3.jit_cached_run",
+    }
+    arguments = ["--warmup", "0", "--repeat", "1", "--json"]
+    for scenario_id in sorted(scenario_ids):
+        arguments.extend(("--scenario", scenario_id))
+
+    completed = _run_benchmark_suite(*arguments)
+    payload = json.loads(completed.stdout)
+
+    assert {result["id"] for result in payload["results"]} == scenario_ids
+    assert all(
+        result["group"] == "tensor_networks" for result in payload["results"]
+    )
+    assert all(
+        result["scenario_profile"] == "explicit-only"
+        for result in payload["results"]
+    )
+    assert {result["execution"] for result in payload["results"]} == {
+        "eager",
+        "jit_compile_and_run",
+        "jit_cached_run",
+    }
+
+
+def test_benchmark_suite_domain_and_diagnostic_scenarios_run():
+    scenario_ids = {
+        "network.ncon.custom.medium",
+        "protect.su2.permute.float64.small.eager",
+        "internal.strided_indices.rank2_noncontiguous",
+    }
+    arguments = ["--warmup", "0", "--repeat", "1", "--json"]
+    for scenario_id in sorted(scenario_ids):
+        arguments.extend(("--scenario", scenario_id))
+
+    completed = _run_benchmark_suite(*arguments)
+    payload = json.loads(completed.stdout)
+
+    assert {result["id"] for result in payload["results"]} == scenario_ids
+    assert {result["group"] for result in payload["results"]} == {
+        "contractions",
+        "diagnostics",
+        "transforms",
+    }
+
+
+def test_benchmark_suite_z2_complex_linalg_runs():
+    scenario_ids = {
+        "linalg.mul.z2.complex128.d8x8x8.eager",
+        "linalg.svd.z2.complex128.d8x8.eager",
+    }
+    arguments = ["--warmup", "0", "--repeat", "1", "--json"]
+    for scenario_id in sorted(scenario_ids):
+        arguments.extend(("--scenario", scenario_id))
+
+    completed = _run_benchmark_suite(*arguments)
+    payload = json.loads(completed.stdout)
+
+    assert {result["id"] for result in payload["results"]} == scenario_ids
+    assert all(result["dtype"] == "complex128" for result in payload["results"])

@@ -1,0 +1,22 @@
+# Tensor0 functional transform workload parameters.
+#
+# Each float64 input has 32 MiB of logical dense data. Because permute is
+# functional, the input remains live while a distinct output is allocated, so
+# the minimum logical live-data boundary is 64 MiB before backend temporaries.
+
+[[workload]]
+operation = "permute"
+dtypes = ["float64"]
+sector = "trivial"
+permutations = [[[2, 1], []]]
+dimensions = [[2048, 2048], [8192, 512]]
+logical_input_mib = 32
+
+[[workload]]
+operation = "permute"
+dtypes = ["float64"]
+sector = "z2"
+permutations = [[[2, 1], []]]
+dimensions = [[2048, 2048], [8192, 512]]
+sigmas = [0.5, 0.5]
+logical_input_mib = 32

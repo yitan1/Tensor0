@@ -1,0 +1,138 @@
+schema_version = 1
+
+[profile.smoke]
+description = "Small paired MPO checks for protocol and timing validation."
+workloads = [
+    "tensor_networks.mpo.trivial.float64.d10x4x3",
+    "tensor_networks.mpo.z2.float64.d10x4x4",
+]
+backends = ["tensor0", "tensorkit"]
+baseline = "tensorkit"
+warmup = 1
+repeat = 3
+rounds = 2
+
+[profile.medium]
+description = "Cost-aware half matrix with every topology and sector represented."
+workloads = [
+    "tensor_networks.mpo.trivial.float64.d10x4x3",
+    "tensor_networks.mpo.trivial.float64.d40x4x3",
+    "tensor_networks.mpo.trivial.float64.d160x4x3",
+    "tensor_networks.mpo.trivial.float64.d100x10x10",
+    "tensor_networks.mpo.z2.float64.d10x4x4",
+    "tensor_networks.mpo.z2.float64.d40x4x4",
+    "tensor_networks.mpo.z2.float64.d160x4x4",
+    "tensor_networks.mpo.z2.float64.d100x10x10",
+    "tensor_networks.mpo.u1.float64.d40x5x3",
+    "tensor_networks.mpo.u1.float64.d160x5x3",
+    "tensor_networks.mpo.u1.float64.d640x5x3",
+    "tensor_networks.mpo.u1.float64.d200x20x20",
+    "tensor_networks.mpo.su2.float64.d40x5x3",
+    "tensor_networks.pepo.trivial.float64.d3x2x2x50",
+    "tensor_networks.pepo.trivial.float64.d4x2x2x50",
+    "tensor_networks.pepo.trivial.float64.d5x2x2x50",
+    "tensor_networks.pepo.trivial.float64.d6x2x2x50",
+    "tensor_networks.pepo.z2.float64.d4x2x2x50",
+    "tensor_networks.pepo.z2.float64.d5x2x2x50",
+    "tensor_networks.pepo.z2.float64.d6x2x2x50",
+    "tensor_networks.pepo.z2.float64.d8x2x2x50",
+    "tensor_networks.pepo.u1.float64.d4x2x2x100",
+    "tensor_networks.pepo.u1.float64.d6x2x2x100",
+    "tensor_networks.pepo.u1.float64.d8x2x2x100",
+    "tensor_networks.pepo.u1.float64.d10x2x2x50",
+    "tensor_networks.pepo.su2.float64.d4x2x2x100",
+    "tensor_networks.mera.trivial.float64.d2",
+    "tensor_networks.mera.trivial.float64.d3",
+    "tensor_networks.mera.trivial.float64.d4",
+    "tensor_networks.mera.z2.float64.d2",
+    "tensor_networks.mera.z2.float64.d4",
+    "tensor_networks.mera.z2.float64.d8",
+    "tensor_networks.mera.u1.float64.d4",
+    "tensor_networks.mera.u1.float64.d8",
+    "tensor_networks.mera.u1.float64.d12",
+    "tensor_networks.mera.su2.float64.d4",
+]
+backends = ["tensor0", "tensorkit"]
+baseline = "tensorkit"
+warmup = 2
+repeat = 7
+rounds = 3
+
+[profile.full]
+description = "Complete comparison dimension matrices plus SU2 extensions."
+workloads = [
+    "tensor_networks.mpo.trivial.float64.d10x4x3",
+    "tensor_networks.mpo.trivial.float64.d40x4x3",
+    "tensor_networks.mpo.trivial.float64.d160x4x3",
+    "tensor_networks.mpo.trivial.float64.d640x4x3",
+    "tensor_networks.mpo.trivial.float64.d2560x4x3",
+    "tensor_networks.mpo.trivial.float64.d100x10x10",
+    "tensor_networks.mpo.trivial.float64.d200x10x10",
+    "tensor_networks.mpo.trivial.float64.d300x20x20",
+    "tensor_networks.mpo.z2.float64.d10x4x4",
+    "tensor_networks.mpo.z2.float64.d40x4x4",
+    "tensor_networks.mpo.z2.float64.d160x4x4",
+    "tensor_networks.mpo.z2.float64.d640x4x4",
+    "tensor_networks.mpo.z2.float64.d2560x4x4",
+    "tensor_networks.mpo.z2.float64.d100x10x10",
+    "tensor_networks.mpo.z2.float64.d200x10x10",
+    "tensor_networks.mpo.z2.float64.d300x20x20",
+    "tensor_networks.mpo.u1.float64.d40x5x3",
+    "tensor_networks.mpo.u1.float64.d160x5x3",
+    "tensor_networks.mpo.u1.float64.d640x5x3",
+    "tensor_networks.mpo.u1.float64.d2560x5x3",
+    "tensor_networks.mpo.u1.float64.d6120x5x3",
+    "tensor_networks.mpo.u1.float64.d200x20x20",
+    "tensor_networks.mpo.u1.float64.d400x20x20",
+    "tensor_networks.mpo.u1.float64.d400x40x40",
+    "tensor_networks.mpo.su2.float64.d40x5x3",
+    "tensor_networks.pepo.trivial.float64.d3x2x2x50",
+    "tensor_networks.pepo.trivial.float64.d3x3x3x100",
+    "tensor_networks.pepo.trivial.float64.d4x2x2x50",
+    "tensor_networks.pepo.trivial.float64.d4x3x3x100",
+    "tensor_networks.pepo.trivial.float64.d5x2x2x50",
+    "tensor_networks.pepo.trivial.float64.d5x2x3x100",
+    "tensor_networks.pepo.trivial.float64.d6x2x2x50",
+    "tensor_networks.pepo.trivial.float64.d6x3x2x100",
+    "tensor_networks.pepo.z2.float64.d4x2x2x50",
+    "tensor_networks.pepo.z2.float64.d4x4x4x100",
+    "tensor_networks.pepo.z2.float64.d5x2x2x50",
+    "tensor_networks.pepo.z2.float64.d5x3x4x100",
+    "tensor_networks.pepo.z2.float64.d6x2x2x50",
+    "tensor_networks.pepo.z2.float64.d6x2x4x100",
+    "tensor_networks.pepo.z2.float64.d8x2x2x50",
+    "tensor_networks.pepo.z2.float64.d8x3x2x100",
+    "tensor_networks.pepo.u1.float64.d4x2x2x100",
+    "tensor_networks.pepo.u1.float64.d4x4x4x200",
+    "tensor_networks.pepo.u1.float64.d6x2x2x100",
+    "tensor_networks.pepo.u1.float64.d6x3x4x200",
+    "tensor_networks.pepo.u1.float64.d8x2x2x100",
+    "tensor_networks.pepo.u1.float64.d8x2x4x200",
+    "tensor_networks.pepo.u1.float64.d10x2x2x50",
+    "tensor_networks.pepo.u1.float64.d10x3x2x100",
+    "tensor_networks.pepo.su2.float64.d4x2x2x100",
+    "tensor_networks.mera.trivial.float64.d2",
+    "tensor_networks.mera.trivial.float64.d3",
+    "tensor_networks.mera.trivial.float64.d4",
+    "tensor_networks.mera.trivial.float64.d8",
+    "tensor_networks.mera.trivial.float64.d12",
+    "tensor_networks.mera.trivial.float64.d16",
+    "tensor_networks.mera.z2.float64.d2",
+    "tensor_networks.mera.z2.float64.d4",
+    "tensor_networks.mera.z2.float64.d8",
+    "tensor_networks.mera.z2.float64.d12",
+    "tensor_networks.mera.z2.float64.d16",
+    "tensor_networks.mera.z2.float64.d20",
+    "tensor_networks.mera.u1.float64.d4",
+    "tensor_networks.mera.u1.float64.d8",
+    "tensor_networks.mera.u1.float64.d12",
+    "tensor_networks.mera.u1.float64.d16",
+    "tensor_networks.mera.u1.float64.d22",
+    "tensor_networks.mera.u1.float64.d28",
+    "tensor_networks.mera.su2.float64.d4",
+]
+backends = ["tensor0", "tensorkit"]
+baseline = "tensorkit"
+warmup = 2
+repeat = 7
+rounds = 3

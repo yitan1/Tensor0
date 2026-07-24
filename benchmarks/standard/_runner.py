@@ -1,4 +1,4 @@
-"""Shared benchmark scenario runner and command-line interface."""
+"""Standard benchmark scenario runner and command-line interface."""
 
 from __future__ import annotations
 
@@ -55,33 +55,6 @@ class BenchmarkResult:
     times_ms: list[float]
 
 
-def scenario(
-    id: str,
-    group: str,
-    description: str,
-    scenario_profile: str,
-    dtype: str,
-    size_label: str,
-    execution: str,
-    cache_policy: str,
-    factory: Callable[[], Operation],
-    *,
-    before_each: Callable[[], None] | None = None,
-) -> Scenario:
-    return Scenario(
-        id=id,
-        group=group,
-        description=description,
-        scenario_profile=scenario_profile,
-        dtype=dtype,
-        size_label=size_label,
-        execution=execution,
-        cache_policy=cache_policy,
-        factory=factory,
-        before_each=before_each,
-    )
-
-
 def block_until_ready(value: Any) -> None:
     if hasattr(value, "storage") and hasattr(value.storage, "data"):
         block_until_ready(value.storage.data)
@@ -103,17 +76,35 @@ def selected_scenarios(
     selected_ids: Iterable[str] | None,
     *,
     quick: bool,
+    include_explicit: bool = False,
+    selected_groups: Iterable[str] | None = None,
 ) -> tuple[Scenario, ...]:
     validate_scenarios(scenarios)
     if selected_ids is None:
-        if quick:
-            return tuple(
+        if include_explicit:
+            profile_selected = scenarios
+        elif quick:
+            profile_selected = tuple(
                 item for item in scenarios if item.scenario_profile == "quick"
             )
-        return tuple(
-            item for item in scenarios
-            if item.scenario_profile != "explicit-only"
-        )
+        else:
+            profile_selected = tuple(
+                item for item in scenarios
+                if item.scenario_profile != "explicit-only"
+            )
+        if selected_groups is None:
+            return profile_selected
+        valid_groups = {item.group for item in scenarios}
+        requested_groups = tuple(selected_groups)
+        unknown_groups = sorted(set(requested_groups) - valid_groups)
+        if unknown_groups:
+            valid = ", ".join(sorted(valid_groups))
+            unknown = ", ".join(unknown_groups)
+            raise SystemExit(
+                f"unknown benchmark groups {unknown}; valid groups: {valid}"
+            )
+        requested = set(requested_groups)
+        return tuple(item for item in profile_selected if item.group in requested)
 
     by_id = {item.id: item for item in scenarios}
     selected: list[Scenario] = []
@@ -222,16 +213,23 @@ def run_payload(
 def run_cli(
     *,
     description: str,
-    script_path: str,
+    module: str,
     scenarios: tuple[Scenario, ...],
     environment: Callable[[], dict[str, Any]],
     render_markdown: Callable[..., str],
 ) -> None:
     parser = argparse.ArgumentParser(description=description)
-    parser.add_argument(
+    profile_group = parser.add_mutually_exclusive_group()
+    profile_group.add_argument(
         "--quick",
         action="store_true",
         help="Use quick smoke timing and scenario selection.",
+    )
+    profile_group.add_argument(
+        "--all",
+        action="store_true",
+        dest="all_scenarios",
+        help="Include explicit-only scenarios; this may be slow or memory intensive.",
     )
     parser.add_argument(
         "--json",
@@ -248,10 +246,17 @@ def run_cli(
         type=Path,
         help="Write a Markdown report to this path.",
     )
-    parser.add_argument(
+    selection_group = parser.add_mutually_exclusive_group()
+    selection_group.add_argument(
         "--scenario",
         action="append",
         help="Run one scenario id; repeat this flag to select multiple scenarios.",
+    )
+    selection_group.add_argument(
+        "--group",
+        action="append",
+        dest="groups",
+        help="Run one benchmark group; repeat this flag to select multiple groups.",
     )
     parser.add_argument(
         "--list-scenarios",
@@ -268,7 +273,7 @@ def run_cli(
             print(item.id)
         return
 
-    profile = "quick" if args.quick else "full"
+    profile = "quick" if args.quick else ("all" if args.all_scenarios else "full")
     warmup = args.warmup if args.warmup is not None else (
         QUICK_WARMUP if args.quick else FULL_WARMUP
     )
@@ -284,6 +289,8 @@ def run_cli(
         scenarios,
         args.scenario,
         quick=args.quick,
+        include_explicit=args.all_scenarios,
+        selected_groups=args.groups,
     )
     payload = run_payload(
         selected,
@@ -298,7 +305,7 @@ def run_cli(
         args.markdown.write_text(
             render_markdown(
                 payload,
-                command=_command_from_args(args, script_path=script_path),
+                command=_command_from_args(args, module=module),
             ),
             encoding="utf-8",
         )
@@ -312,12 +319,16 @@ def run_cli(
         print(json.dumps(payload, indent=2, sort_keys=True))
 
 
-def _command_from_args(args: argparse.Namespace, *, script_path: str) -> str:
-    parts = ["uv", "run", "python", script_path]
+def _command_from_args(args: argparse.Namespace, *, module: str) -> str:
+    parts = ["uv", "run", "python", "-m", module]
     if args.quick:
         parts.append("--quick")
+    if args.all_scenarios:
+        parts.append("--all")
     for scenario_id in args.scenario or ():
         parts.extend(("--scenario", scenario_id))
+    for group in args.groups or ():
+        parts.extend(("--group", group))
     if args.json:
         parts.append("--json")
     if args.json_output is not None:

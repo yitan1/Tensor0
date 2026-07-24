@@ -1,0 +1,388 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "cross-backend-protocol-v1.schema.json",
+  "title": "Tensor0 cross-backend benchmark protocol",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/request"
+    },
+    {
+      "$ref": "#/$defs/response"
+    }
+  ],
+  "$defs": {
+    "measurement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "warmup", "repeat"],
+      "properties": {
+        "kind": {
+          "const": "steady_state"
+        },
+        "warmup": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "repeat": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "workload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind",
+        "topology",
+        "sector",
+        "dtype",
+        "data",
+        "dimensions",
+        "spaces",
+        "validation",
+        "workload_hash"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "const": "tensor_network"
+        },
+        "topology": {
+          "$ref": "#/$defs/topology"
+        },
+        "sector": {
+          "enum": ["trivial", "z2", "u1", "su2"]
+        },
+        "dtype": {
+          "enum": ["float64", "complex128"]
+        },
+        "data": {
+          "enum": ["uniform_v1", "fusion_tree_v1"]
+        },
+        "validation": {
+          "enum": ["cross_backend", "structural_only"]
+        },
+        "dimensions": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "spaces": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/space"
+          }
+        },
+        "workload_hash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "source": {
+          "type": "string"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "sector": {
+                "const": "su2"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "const": "fusion_tree_v1"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "data": {
+                "const": "uniform_v1"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "space": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "sectors", "dimension"],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "sectors": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 2,
+            "prefixItems": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "integer",
+                "minimum": 1
+              }
+            ]
+          }
+        },
+        "dimension": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "tensor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "spaces", "duals", "scale"],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "spaces": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        },
+        "duals": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "boolean"
+          }
+        },
+        "scale": {
+          "type": "number"
+        }
+      }
+    },
+    "topology": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "space_names",
+        "tensors",
+        "operands",
+        "labels",
+        "conjugate",
+        "order"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "space_names": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        },
+        "tensors": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/tensor"
+          }
+        },
+        "operands": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        },
+        "labels": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        },
+        "conjugate": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "boolean"
+          }
+        },
+        "order": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      }
+    },
+    "request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "message_type",
+        "run_id",
+        "round",
+        "measurement",
+        "workloads"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "message_type": {
+          "const": "benchmark_request"
+        },
+        "run_id": {
+          "type": "string"
+        },
+        "round": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "measurement": {
+          "$ref": "#/$defs/measurement"
+        },
+        "workloads": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/workload"
+          }
+        }
+      }
+    },
+    "backend": {
+      "type": "object",
+      "required": ["name", "version", "runtime"],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        },
+        "runtime": {
+          "type": "string"
+        }
+      }
+    },
+    "result": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["workload_id", "workload_hash", "status"],
+      "properties": {
+        "workload_id": {
+          "type": "string"
+        },
+        "workload_hash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "status": {
+          "enum": ["ok", "error"]
+        },
+        "samples_ms": {
+          "type": "array",
+          "items": {
+            "type": "number",
+            "exclusiveMinimum": 0
+          }
+        },
+        "output": {
+          "type": "object",
+          "required": ["real", "imag"],
+          "properties": {
+            "real": {
+              "type": "number"
+            },
+            "imag": {
+              "type": "number"
+            }
+          }
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "ok"
+              }
+            }
+          },
+          "then": {
+            "required": ["samples_ms", "output"]
+          },
+          "else": {
+            "required": ["error"]
+          }
+        }
+      ]
+    },
+    "response": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "message_type",
+        "run_id",
+        "round",
+        "backend",
+        "results"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "message_type": {
+          "const": "benchmark_response"
+        },
+        "run_id": {
+          "type": "string"
+        },
+        "round": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "backend": {
+          "$ref": "#/$defs/backend"
+        },
+        "results": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/result"
+          }
+        }
+      }
+    }
+  }
+}

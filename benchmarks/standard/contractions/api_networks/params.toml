@@ -1,0 +1,5 @@
+# Tensor0 small API-network workload parameters.
+
+[chain]
+small = [4, 3, 5, 4]
+medium = [16, 4, 16, 4]

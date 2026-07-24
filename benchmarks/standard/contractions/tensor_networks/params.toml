@@ -1,0 +1,88 @@
+# Tensor0 tensor-network workload parameters.
+
+# MPO dimensions: [mps, mpo, physical]
+
+[[workload]]
+topology = "mpo"
+dtypes = ["float64"]
+sector = "trivial"
+dimensions = [[10, 4, 3], [40, 4, 3], [160, 4, 3], [640, 4, 3], [2560, 4, 3], [100, 10, 10], [200, 10, 10], [300, 20, 20]]
+
+[[workload]]
+topology = "mpo"
+dtypes = ["float64"]
+sector = "z2"
+dimensions = [[10, 4, 4], [40, 4, 4], [160, 4, 4], [640, 4, 4], [2560, 4, 4], [100, 10, 10], [200, 10, 10], [300, 20, 20]]
+sigmas = [0.5, 0.5, 0.5]
+
+[[workload]]
+topology = "mpo"
+dtypes = ["float64"]
+sector = "u1"
+dimensions = [[40, 5, 3], [160, 5, 3], [640, 5, 3], [2560, 5, 3], [6120, 5, 3], [200, 20, 20], [400, 20, 20], [400, 40, 40]]
+sigmas = [0.5, 0.5, 0.5]
+
+[[workload]]
+topology = "mpo"
+dtypes = ["float64"]
+sector = "su2"
+dimensions = [[40, 5, 3], [160, 5, 3], [640, 5, 3], [2560, 5, 3], [6120, 5, 3], [200, 20, 20], [400, 20, 20], [400, 40, 40]]
+sigmas = [2.0, 2.0, 2.0]
+
+# PEPO dimensions: [peps, pepo, physical, environment]
+
+[[workload]]
+topology = "pepo"
+dtypes = ["float64"]
+sector = "trivial"
+dimensions = [[3, 2, 2, 50], [3, 3, 3, 100], [4, 2, 2, 50], [4, 3, 3, 100], [5, 2, 2, 50], [5, 2, 3, 100], [6, 2, 2, 50], [6, 3, 2, 100]]
+
+[[workload]]
+topology = "pepo"
+dtypes = ["float64"]
+sector = "z2"
+dimensions = [[4, 2, 2, 50], [4, 4, 4, 100], [5, 2, 2, 50], [5, 3, 4, 100], [6, 2, 2, 50], [6, 2, 4, 100], [8, 2, 2, 50], [8, 3, 2, 100]]
+sigmas = [0.5, 0.5, 0.5, 0.5]
+
+[[workload]]
+topology = "pepo"
+dtypes = ["float64"]
+sector = "u1"
+dimensions = [[4, 2, 2, 100], [4, 4, 4, 200], [6, 2, 2, 100], [6, 3, 4, 200], [8, 2, 2, 100], [8, 2, 4, 200], [10, 2, 2, 50], [10, 3, 2, 100]]
+sigmas = [0.5, 0.5, 0.5, 0.5]
+
+[[workload]]
+topology = "pepo"
+dtypes = ["float64"]
+sector = "su2"
+dimensions = [[4, 2, 2, 100], [4, 4, 4, 200], [6, 2, 2, 100], [6, 3, 4, 200], [8, 2, 2, 100], [8, 2, 4, 200], [10, 2, 2, 50], [10, 3, 2, 100]]
+sigmas = [2.0, 2.0, 2.0, 2.0]
+
+# MERA dimensions: [bond]
+
+[[workload]]
+topology = "mera"
+dtypes = ["float64"]
+sector = "trivial"
+dimensions = [[2], [3], [4], [8], [12], [16]]
+
+[[workload]]
+topology = "mera"
+dtypes = ["float64"]
+sector = "z2"
+dimensions = [[2], [4], [8], [12], [16], [20]]
+sigmas = [0.5]
+
+[[workload]]
+topology = "mera"
+dtypes = ["float64"]
+sector = "u1"
+dimensions = [[4], [8], [12], [16], [22], [28]]
+sigmas = [0.5]
+
+[[workload]]
+topology = "mera"
+dtypes = ["float64"]
+sector = "su2"
+dimensions = [[4], [8], [12], [16], [22], [28]]
+sigmas = [2.0]

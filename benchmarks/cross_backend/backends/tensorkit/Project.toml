@@ -1,0 +1,10 @@
+[deps]
+JSON = "682c06a0-de6a-54ab-a142-c8b1cf79cde6"
+TensorKit = "07d1fe3e-3e46-537d-9eac-e9e13d0d4cec"
+TensorOperations = "6aa20fa7-93e2-5fca-9bc0-fbd0db3c71a2"
+
+[compat]
+JSON = "0.21"
+TensorKit = "0.16.5"
+TensorOperations = "5.1"
+julia = "1.12"
