@@ -395,6 +395,38 @@ def test_tensorcontract_partial_contraction_matches_dense():
     assert_allclose(to_dense(result), _dense_contract(left, right, axes, output))
 
 
+def test_tensorcontract_planner_copies_the_smaller_axis_ordering_operand():
+    open_left = space(U1Irrep, {0: 2})
+    contracted_left = space(U1Irrep, {0: 3})
+    contracted_right = space(U1Irrep, {0: 4})
+    open_right = space(U1Irrep, {0: 1})
+    left_space = hom((open_left,), (contracted_left, contracted_right))
+    right_space = hom(
+        (
+            left_space[2].dual(),
+            left_space[1].dual(),
+        ),
+        (open_right,),
+    )
+    axes = ((2, 1), (0, 1))
+    output = (((0, 0),), ((1, 2),))
+
+    plan = contractions._select_contraction_plan(
+        (left_space, right_space),
+        axes,
+        ((0,), (2,)),
+    )
+
+    assert plan.left_permutation == ((0,), (1, 2))
+    assert plan.right_permutation == ((1, 0), (2,))
+    assert plan.copy_cost == 12
+
+    left = _tensor(left_space)
+    right = _tensor(right_space)
+    result = tensorcontract(left, right, axes=axes, output=output)
+    assert_allclose(to_dense(result), _dense_contract(left, right, axes, output))
+
+
 def test_tensorcontract_su2_nontrivial_fusion_tree_transform_matches_dense():
     half = space(SU2Irrep, {1: 1})
     left = _tensor(hom((half, half, half), (half,)))

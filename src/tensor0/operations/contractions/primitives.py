@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TypeAlias
 
 import jax.numpy as jnp
 
 from ... import _native
 from ...structure.layout import get_degeneracystructure, get_sectorstructure
-from ...structure.spaces import hom, sector_spec
+from ...structure.spaces import hom, sector_spec, storage_dim
 from ...tensor._blocks import (
     add_to_subblock as _add_to_subblock,
     get_subblock as _get_subblock,
@@ -14,12 +15,24 @@ from ...tensor._blocks import (
 from ...tensor.dense import _trivial_dense_array
 from ...tensor.linalg import _compose
 from ...tensor.tensor_map import TensorMap
-from ..transforms import _treepermuter, permute, twist
+from ..transforms import (
+    _is_identity_permutation,
+    _treepermuter,
+    permute,
+    twist,
+)
 
 AxisRef: TypeAlias = tuple[int, int]
 OutputRefs: TypeAlias = tuple[tuple[AxisRef, ...], tuple[AxisRef, ...]]
 TraceAxes: TypeAlias = tuple[tuple[int, ...], tuple[int, ...]]
 TraceOutput: TypeAlias = tuple[tuple[int, ...], tuple[int, ...]]
+
+
+@dataclass(frozen=True)
+class _ContractionPlan:
+    left_permutation: TraceOutput
+    right_permutation: TraceOutput
+    copy_cost: int
 
 
 def _normalize_axis_tuple(
@@ -124,6 +137,74 @@ def _adjoint_axis(space: _native.HomSpace, axis: int) -> int:
     if axis < space.numout:
         return space.numin + axis
     return axis - space.numout
+
+
+def _permutation_copy_cost(
+    space: _native.HomSpace,
+    permutation: TraceOutput,
+) -> int:
+    if _is_identity_permutation(space, *permutation):
+        return 0
+    return storage_dim(space)
+
+
+def _contraction_candidate(
+    spaces: tuple[_native.HomSpace, _native.HomSpace],
+    contracted_axes: tuple[tuple[int, ...], tuple[int, ...]],
+    open_axes: tuple[tuple[int, ...], tuple[int, ...]],
+    sort_position: int,
+) -> _ContractionPlan:
+    pairs = tuple(
+        zip(
+            contracted_axes[0],
+            contracted_axes[1],
+            strict=True,
+        )
+    )
+    ordered_pairs = tuple(sorted(pairs, key=lambda pair: pair[sort_position]))
+    left_contracted = tuple(pair[0] for pair in ordered_pairs)
+    right_contracted = tuple(pair[1] for pair in ordered_pairs)
+
+    left_permutation = (open_axes[0], left_contracted)
+    right_permutation = (right_contracted, open_axes[1])
+
+    left_space, right_space = spaces
+    copy_cost = (
+        _permutation_copy_cost(left_space, left_permutation)
+        + _permutation_copy_cost(right_space, right_permutation)
+    )
+    return _ContractionPlan(
+        left_permutation,
+        right_permutation,
+        copy_cost,
+    )
+
+
+def _select_contraction_plan(
+    spaces: tuple[_native.HomSpace, _native.HomSpace],
+    contracted_axes: tuple[tuple[int, ...], tuple[int, ...]],
+    open_axes: tuple[tuple[int, ...], tuple[int, ...]],
+) -> _ContractionPlan:
+    if len(contracted_axes[0]) <= 1:
+        return _contraction_candidate(
+            spaces,
+            contracted_axes,
+            open_axes,
+            0,
+        )
+
+    return min(
+        (
+            _contraction_candidate(
+                spaces,
+                contracted_axes,
+                open_axes,
+                sort_position,
+            )
+            for sort_position in (0, 1)
+        ),
+        key=lambda candidate: candidate.copy_cost,
+    )
 
 
 def _normalize_trace_axes(value: object, rank: int) -> TraceAxes:
@@ -237,10 +318,6 @@ def tensorcontract(
         _adjoint_axis(right.space, axis) if conjugate_flags[1] else axis
         for axis in open_right
     )
-
-    left_permutation = (mapped_open_left, mapped_left_axes)
-    right_permutation = (mapped_right_axes, mapped_open_right)
-
     canonical_refs = tuple((0, axis) for axis in open_left) + tuple(
         (1, axis) for axis in open_right
     )
@@ -252,9 +329,10 @@ def tensorcontract(
         tuple(canonical_positions[ref] for ref in output_refs[1]),
     )
 
-    right_canonical_space = right_space.permute(*right_permutation)
-
     if sector_spec(left_space) == _native.Trivial:
+        left_permutation = (mapped_open_left, mapped_left_axes)
+        right_permutation = (mapped_right_axes, mapped_open_right)
+        right_canonical_space = right_space.permute(*right_permutation)
         left_canonical_space = left_space.permute(*left_permutation)
         canonical_result_space = hom(
             left_canonical_space.codomain,
@@ -270,15 +348,20 @@ def tensorcontract(
             conjugate_flags,
         )
 
-    right_twist_indices = tuple(
-        axis
-        for axis in range(len(right_axes))
-        if right_canonical_space[axis].is_dual
+    plan = _select_contraction_plan(
+        (left_space, right_space),
+        (mapped_left_axes, mapped_right_axes),
+        (mapped_open_left, mapped_open_right),
     )
     left_value = left.adjoint() if conjugate_flags[0] else left
     right_value = right.adjoint() if conjugate_flags[1] else right
-    left_canonical = permute(left_value, left_permutation)
-    right_canonical = permute(right_value, right_permutation)
+    left_canonical = permute(left_value, plan.left_permutation)
+    right_canonical = permute(right_value, plan.right_permutation)
+    right_twist_indices = tuple(
+        axis
+        for axis in range(len(plan.right_permutation[0]))
+        if right_canonical.space[axis].is_dual
+    )
     right_canonical = twist(right_canonical, right_twist_indices)
     canonical_result = _compose(left_canonical, right_canonical)
     return permute(canonical_result, output_permutation)
