@@ -6,6 +6,14 @@ metadata and JAX-backed tensor storage.
 Use this documentation for the current checkout. The public API is still
 evolving, and Tensor0 is not yet a production-ready tensor-network framework.
 
+## Runtime Compatibility
+
+The current numerical execution baseline supports Linux CPU with JAX and
+JAXLIB 0.10.1. The native stride handler is compiled against that exact XLA FFI
+header version and rejects mismatched runtimes. Other platforms and versions
+are not currently supported execution targets, and missing native routes are
+reported explicitly rather than hidden by an element-address fallback.
+
 ## Start Here
 
 - [Usage Guide](usage.md): current public API examples and boundaries.

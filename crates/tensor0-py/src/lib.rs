@@ -6,6 +6,7 @@ mod layout;
 mod pyconv;
 mod sector_type;
 mod space;
+mod stride;
 mod transform;
 
 use dense::{product_axes, product_dims};
@@ -21,6 +22,7 @@ use space::{
     make_hom_products, make_product_space, make_space, reduced_dim, supremum_space, unit_space,
     zero_space, PyElementarySpace, PyHomSpace, PyProductSpace,
 };
+use stride::add_stride_functions;
 use transform::{
     flip_entries, trace_transformer, tree_braider, tree_transposer, twist_is_trivial,
     twist_subblock_factors, PyAbelianTransformData, PyGenericTransformData, PyTreeTransformer,
@@ -79,6 +81,7 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(flip_entries, module)?)?;
     module.add_function(wrap_pyfunction!(tree_transposer, module)?)?;
 
+    add_stride_functions(module)?;
     add_sector_constants(py, module)?;
     Ok(())
 }

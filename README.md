@@ -28,7 +28,15 @@ Documentation: <https://yitan1.github.io/Tensor0/>
 ## Installation
 
 Tensor0 is currently installed from source. It requires Python 3.11 or newer and
-a Rust toolchain.
+a Rust toolchain. The current numerical execution baseline supports Linux CPU
+with JAX and JAXLIB 0.10.1. Tensor0 pins those versions because its native stride
+handler is compiled against the matching XLA FFI headers and validates the
+runtime versions exactly.
+
+Other platforms and JAX/JAXLIB versions are not currently supported execution
+targets. Tensor0 does not silently replace unavailable native stride operations
+with element-address gather/scatter implementations; affected operations fail
+with an explicit no-route diagnostic.
 
 The recommended setup is to install Tensor0 into a virtual environment:
 
