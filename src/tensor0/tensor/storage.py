@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Protocol, cast
 
 from jax import Array
+from jax.core import Tracer
 
 
 @dataclass(frozen=True, eq=False, init=False)
@@ -19,6 +20,17 @@ class VectorStorage:
 
 class _Sliceable(Protocol):
     def __getitem__(self, key: slice, /) -> object: ...
+
+
+def _require_jax_storage_data(data: object, operation: str) -> Array:
+    """Require JAX-backed storage at a numerical execution boundary."""
+
+    if not isinstance(data, (Array, Tracer)):
+        raise TypeError(
+            f"{operation} requires JAX-backed storage, "
+            f"got {type(data).__name__}"
+        )
+    return cast(Array, data)
 
 
 def _validate_vector_storage_data(data: object, expected_total_dim: int) -> None:

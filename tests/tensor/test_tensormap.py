@@ -393,7 +393,7 @@ def test_tensormap_subblocks_are_lazy_reiterable_and_match_indexed_access(monkey
     sectorstructure = get_sectorstructure(tensor.space)
     degeneracystructure = get_degeneracystructure(tensor.space)
     expected_count = sectorstructure.fusiontree_pair_count
-    native_get_subblock = tensor_map_module._get_subblock
+    native_materialize = tensor_map_module.materialize
     get_calls = 0
 
     class SectorStructureProxy:
@@ -415,9 +415,9 @@ def test_tensormap_subblocks_are_lazy_reiterable_and_match_indexed_access(monkey
     def count_gets(*args, **kwargs):
         nonlocal get_calls
         get_calls += 1
-        return native_get_subblock(*args, **kwargs)
+        return native_materialize(*args, **kwargs)
 
-    monkeypatch.setattr(tensor_map_module, "_get_subblock", count_gets)
+    monkeypatch.setattr(tensor_map_module, "materialize", count_gets)
     monkeypatch.setattr(
         tensor_map_module,
         "get_sectorstructure",
@@ -857,7 +857,9 @@ def test_trivial_block_rejects_nonempty_sector_keys_with_width_error(key):
 
 
 @pytest.mark.parametrize("storage_kind", ["slice-only", "numpy"])
-def test_trivial_dense_arrays_convert_non_jax_storage_to_jax_arrays(storage_kind):
+def test_non_jax_storage_is_allowed_for_metadata_but_rejected_by_execution(
+    storage_kind,
+):
     expected = jnp.arange(24, dtype=jnp.float32)
 
     class SliceOnlyData:
@@ -874,19 +876,43 @@ def test_trivial_dense_arrays_convert_non_jax_storage_to_jax_arrays(storage_kind
     )
     tensor = TensorMap(target, storage)
     pair = get_sectorstructure(target).fusiontree_pairs[0]
-    block = tensor.block(())
-    blocks = tensor.blocks()
-    dense = to_dense(tensor)
-    subblock = tensor.subblock(pair)
 
-    assert isinstance(block, jax.Array)
-    assert isinstance(blocks[0][1], jax.Array)
-    assert isinstance(dense, jax.Array)
-    assert isinstance(subblock, jax.Array)
-    assert jnp.array_equal(block, expected.reshape(6, 4))
-    assert jnp.array_equal(blocks[0][1], expected.reshape(6, 4))
-    assert jnp.array_equal(dense, expected.reshape(2, 3, 4))
-    assert jnp.array_equal(subblock, expected.reshape(2, 3, 4))
+    assert tensor.storage.data is storage
+    assert tensor.shape == (2, 3, 4)
+    assert tensor.dim == 24
+    if storage_kind == "numpy":
+        assert tensor.dtype == jnp.dtype(jnp.float32)
+    else:
+        with pytest.raises(TypeError, match="does not expose a dtype"):
+            _ = tensor.dtype
+
+    for operation in (
+        lambda: tensor.block(()),
+        tensor.blocks,
+        lambda: to_dense(tensor),
+        lambda: tensor.subblock(pair),
+    ):
+        with pytest.raises(TypeError, match="requires JAX-backed storage"):
+            operation()
+
+
+def test_nontrivial_numerical_access_rejects_non_jax_storage_at_public_boundary():
+    target = _u1_hom()
+    tensor = TensorMap(target, InaccessibleVectorData(storage_dim(target)))
+    pair = get_sectorstructure(target).fusiontree_pairs[0]
+    operations = (
+        ("subblock", lambda: tensor.subblock(pair)),
+        ("subblocks", lambda: tensor.subblocks()[0]),
+        ("inner", lambda: tensor.inner(tensor)),
+        ("tr", tensor.tr),
+    )
+
+    for operation_name, operation in operations:
+        with pytest.raises(
+            TypeError,
+            match=rf"^{operation_name}\(\) requires JAX-backed storage",
+        ):
+            operation()
 
 
 def test_trivial_storage_dimension_uses_platform_usize_overflow_contract():

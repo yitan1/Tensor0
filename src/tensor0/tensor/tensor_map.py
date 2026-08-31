@@ -11,6 +11,7 @@ from jax import tree_util as _tree_util
 from jax.typing import DTypeLike
 
 from .. import _native
+from .._stride import StridedView, materialize
 from ..structure.layout import (
     _blockstructure_items,
     _find_blockstructure,
@@ -26,13 +27,16 @@ from ..structure.spaces import (
     storage_dim,
 )
 from ._blocks import (
-    get_subblock as _get_subblock,
     normalize_fusiontree_pair_key as _normalize_fusiontree_pair_key,
     pack_blocks as _pack_blocks,
     pack_complete_blocks as _pack_complete_blocks,
 )
 from .diagonal import DiagonalTensorMap
-from .storage import VectorStorage, _validate_vector_storage_data
+from .storage import (
+    VectorStorage,
+    _require_jax_storage_data,
+    _validate_vector_storage_data,
+)
 
 _FusionTreePair: TypeAlias = tuple[_native.FusionTree, _native.FusionTree]
 _VisibleSectorTuple: TypeAlias = tuple[SectorKey, ...]
@@ -71,10 +75,12 @@ class TensorMap:
         )
 
     def copy(self) -> TensorMap:
-        return TensorMap(self.space, jnp.array(self.storage.data, copy=True))
+        data = _require_jax_storage_data(self.storage.data, "copy()")
+        return TensorMap(self.space, jnp.array(data, copy=True))
 
     def astype(self, dtype: DTypeLike) -> TensorMap:
-        return TensorMap(self.space, self.storage.data.astype(dtype))
+        data = _require_jax_storage_data(self.storage.data, "astype()")
+        return TensorMap(self.space, data.astype(dtype))
 
     def similar(
         self,
@@ -147,7 +153,10 @@ class TensorMap:
 
     @property
     def dtype(self) -> jnp.dtype:
-        return jnp.asarray(self.storage.data).dtype
+        dtype = getattr(self.storage.data, "dtype", None)
+        if dtype is None:
+            raise TypeError("storage data does not expose a dtype")
+        return jnp.dtype(dtype)
 
     @property
     def blocksectors(self) -> tuple[tuple[int, ...], ...]:
@@ -225,7 +234,8 @@ class TensorMap:
         block = _find_blockstructure(self.space, key)
         if block is None:
             raise KeyError(key) from None
-        return self.storage.data[block.start : block.stop].reshape(
+        data = _require_jax_storage_data(self.storage.data, "block()")
+        return data[block.start : block.stop].reshape(
             (block.row_dim, block.col_dim),
         )
 
@@ -240,10 +250,11 @@ class TensorMap:
             col_dim = math.prod(value.shape[self.numout :])
             return (((), value.reshape((row_dim, col_dim))),)
 
+        data = _require_jax_storage_data(self.storage.data, "blocks()")
         return tuple(
             (
                 coupled,
-                self.storage.data[block.start : block.stop].reshape(
+                data[block.start : block.stop].reshape(
                     (block.row_dim, block.col_dim),
                 ),
             )
@@ -289,7 +300,15 @@ class TensorMap:
         subblock = get_degeneracystructure(self.space).subblock_at(index)
         if subblock is None:
             raise KeyError(index)
-        return _get_subblock(self.storage.data, subblock)
+        data = _require_jax_storage_data(self.storage.data, "subblock()")
+        return materialize(
+            StridedView(
+                data,
+                tuple(subblock.sizes),
+                tuple(subblock.strides),
+                subblock.offset,
+            )
+        )
 
     def subblocks(
         self,
@@ -314,7 +333,8 @@ class TensorMap:
     def scalar(self) -> Array:
         if self.space.numind != 0:
             raise ValueError("scalar() requires a TensorMap with no visible indices")
-        return self.storage.data[0]
+        data = _require_jax_storage_data(self.storage.data, "scalar()")
+        return data[0]
 
     def permute(self, p: tuple[tuple[int, ...], tuple[int, ...]]) -> TensorMap:
         from ..operations.transforms import permute
@@ -387,14 +407,14 @@ class TensorMap:
         return removeunit(self, index)
 
     def zero_like(self) -> TensorMap:
-        return TensorMap(self.space, jnp.zeros_like(self.storage.data))
+        data = _require_jax_storage_data(self.storage.data, "zero_like()")
+        return TensorMap(self.space, jnp.zeros_like(data))
 
     def scale(self, alpha: object) -> TensorMap:
+        data = _require_jax_storage_data(self.storage.data, "scale()")
         scalar = _as_scalar_array(alpha, "alpha")
-        dtype = jnp.result_type(self.storage.data, scalar)
-        return TensorMap(
-            self.space, jnp.asarray(self.storage.data * scalar, dtype=dtype)
-        )
+        dtype = jnp.result_type(data, scalar)
+        return TensorMap(self.space, jnp.asarray(data * scalar, dtype=dtype))
 
     def add(
         self,
@@ -406,15 +426,17 @@ class TensorMap:
         if self.space != other.space:
             raise ValueError("TensorMap spaces are not compatible for add")
 
+        left = _require_jax_storage_data(self.storage.data, "add()")
+        right = _require_jax_storage_data(other.storage.data, "add()")
         alpha_scalar = _as_scalar_array(alpha, "alpha")
         beta_scalar = _as_scalar_array(beta, "beta")
         dtype = jnp.result_type(
-            self.storage.data,
-            other.storage.data,
+            left,
+            right,
             alpha_scalar,
             beta_scalar,
         )
-        data = alpha_scalar * self.storage.data + beta_scalar * other.storage.data
+        data = alpha_scalar * left + beta_scalar * right
         return TensorMap(self.space, jnp.asarray(data, dtype=dtype))
 
     def inner(self, other: TensorMap) -> Array:
@@ -422,9 +444,9 @@ class TensorMap:
         if self.space != other.space:
             raise ValueError("TensorMap spaces are not compatible for inner")
 
-        total = jnp.asarray(
-            0, dtype=jnp.result_type(self.storage.data, other.storage.data)
-        )
+        left_data = _require_jax_storage_data(self.storage.data, "inner()")
+        right_data = _require_jax_storage_data(other.storage.data, "inner()")
+        total = jnp.asarray(0, dtype=jnp.result_type(left_data, right_data))
         sector_type = self.space.sector_spec
         for (coupled, left), (_other_coupled, right) in zip(
             self.blocks(),
@@ -449,10 +471,8 @@ class TensorMap:
         if p_value == 2.0:
             return jnp.sqrt(jnp.real(self.inner(self)))
 
-        total = jnp.asarray(
-            0,
-            dtype=jnp.abs(jnp.asarray(self.storage.data).reshape(-1)[:0]).dtype,
-        )
+        data = _require_jax_storage_data(self.storage.data, "norm()")
+        total = jnp.asarray(0, dtype=jnp.abs(data.reshape(-1)[:0]).dtype)
         sector_type = self.space.sector_spec
         for coupled, block in self.blocks():
             weight = sector_type.quantum_dim(coupled)
@@ -480,21 +500,24 @@ class TensorMap:
         )
 
     def real(self) -> TensorMap:
-        if not jnp.issubdtype(self.storage.data.dtype, jnp.complexfloating):
+        data = _require_jax_storage_data(self.storage.data, "real()")
+        if not jnp.issubdtype(data.dtype, jnp.complexfloating):
             return self
-        return TensorMap(self.space, jnp.real(self.storage.data))
+        return TensorMap(self.space, jnp.real(data))
 
     def imag(self) -> TensorMap:
-        if not jnp.issubdtype(self.storage.data.dtype, jnp.complexfloating):
+        data = _require_jax_storage_data(self.storage.data, "imag()")
+        if not jnp.issubdtype(data.dtype, jnp.complexfloating):
             return self.zero_like()
-        return TensorMap(self.space, jnp.imag(self.storage.data))
+        return TensorMap(self.space, jnp.imag(data))
 
     def complex(self) -> TensorMap:
-        if jnp.issubdtype(self.storage.data.dtype, jnp.complexfloating):
+        data = _require_jax_storage_data(self.storage.data, "complex()")
+        if jnp.issubdtype(data.dtype, jnp.complexfloating):
             return self
         return TensorMap(
             self.space,
-            self.storage.data.astype(jnp.result_type(self.storage.data, 1j)),
+            data.astype(jnp.result_type(data, 1j)),
         )
 
     def trace(self) -> Array:
@@ -506,7 +529,8 @@ class TensorMap:
                 "trace requires a square TensorMap with equal domain and codomain"
             )
 
-        total = jnp.asarray(0, dtype=self.storage.data.dtype)
+        data = _require_jax_storage_data(self.storage.data, "tr()")
+        total = jnp.asarray(0, dtype=data.dtype)
         sector_type = self.space.sector_spec
         for coupled, block in self.blocks():
             weight = sector_type.quantum_dim(coupled)
@@ -626,7 +650,18 @@ class _SubblocksView:
         subblock = self._degeneracystructure.subblock_at(index)
         if pair is None or subblock is None:
             raise RuntimeError("sector and degeneracy structures are inconsistent")
-        return pair, _get_subblock(self.tensor.storage.data, subblock)
+        data = _require_jax_storage_data(
+            self.tensor.storage.data,
+            "subblocks()",
+        )
+        return pair, materialize(
+            StridedView(
+                data,
+                tuple(subblock.sizes),
+                tuple(subblock.strides),
+                subblock.offset,
+            )
+        )
 
     def __iter__(
         self,
@@ -699,9 +734,10 @@ def _as_scalar_array(value: object, argument_name: str) -> Array:
 
 
 def _max_abs_block_entry(tensor: TensorMap) -> Array:
+    data = _require_jax_storage_data(tensor.storage.data, "norm()")
     max_value = jnp.asarray(
         0,
-        dtype=jnp.abs(jnp.asarray(tensor.storage.data).reshape(-1)[:0]).dtype,
+        dtype=jnp.abs(data.reshape(-1)[:0]).dtype,
     )
     for _coupled, block in tensor.blocks():
         block_abs = jnp.max(jnp.abs(block))

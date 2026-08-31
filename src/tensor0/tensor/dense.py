@@ -7,13 +7,11 @@ import jax.numpy as jnp
 from jax import Array
 
 from .. import _native
+from .._stride import StridedView, materialize, strided_accumulate
 from ..structure.layout import get_degeneracystructure, get_sectorstructure
-from ._blocks import (
-    add_to_subblock as _add_to_subblock,
-    get_subblock as _get_subblock,
-)
 from ._tolerances import nonnegative_tolerance
 from .tensor_map import TensorMap
+from .storage import _require_jax_storage_data
 
 
 def to_dense(tensor: TensorMap) -> jnp.ndarray:
@@ -23,7 +21,7 @@ def to_dense(tensor: TensorMap) -> jnp.ndarray:
         return _trivial_dense_array(tensor)
 
     dense_shape = _dense_shape(tensor.space)
-    storage = jnp.asarray(tensor.storage.data)
+    storage = _require_jax_storage_data(tensor.storage.data, "to_dense()")
     dense = jnp.zeros(dense_shape, dtype=storage.dtype)
     sectorstructure = get_sectorstructure(tensor.space)
     degeneracystructure = get_degeneracystructure(tensor.space)
@@ -34,7 +32,14 @@ def to_dense(tensor: TensorMap) -> jnp.ndarray:
     ):
         axes = _tree_pair_axes(tensor.space, row_tree, col_tree)
         coeff = _pair_coeff(row_tree, col_tree, storage)
-        reduced = _get_subblock(storage, subblock)
+        reduced = materialize(
+            StridedView(
+                storage,
+                tuple(subblock.sizes),
+                tuple(subblock.strides),
+                subblock.offset,
+            )
+        )
         dense_block = _interleaved_product(reduced, coeff, axes)
         dense = dense.at[_dense_slices(axes)].add(dense_block)
 
@@ -73,7 +78,15 @@ def from_dense(
         dense_slice = dense[_dense_slices(axes)]
         reduced = _project_interleaved(dense_slice, coeff, axes)
         reduced = reduced / space.sector_spec.quantum_dim(row_tree.coupled)
-        storage = _add_to_subblock(storage, subblock, reduced)
+        storage = strided_accumulate(
+            StridedView(
+                storage,
+                tuple(subblock.sizes),
+                tuple(subblock.strides),
+                subblock.offset,
+            ),
+            StridedView.from_dense(reduced, tuple(subblock.sizes)),
+        )
 
     result = TensorMap(space, storage)
     if not bool(jnp.allclose(to_dense(result), dense, rtol=tolerance, atol=tolerance)):
@@ -82,11 +95,11 @@ def from_dense(
 
 
 def _trivial_dense_array(tensor: TensorMap) -> Array:
-    data = tensor.storage.data
-    shape = tensor.dims
-    if isinstance(data, Array):
-        return jnp.reshape(data, shape)
-    return jnp.asarray(data[0 : prod(shape)]).reshape(shape)
+    data = _require_jax_storage_data(
+        tensor.storage.data,
+        "dense TensorMap access",
+    )
+    return jnp.reshape(data, tensor.dims)
 
 
 def _dense_shape(space: _native.HomSpace) -> tuple[int, ...]:
