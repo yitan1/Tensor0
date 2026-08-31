@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import jax.numpy as jnp
 
-from tensor0.tensor import _blocks as block_module
-
 from .._specs import (
     EXPLICIT,
     PreparedOperation,
@@ -11,6 +9,20 @@ from .._specs import (
     WorkloadSpec,
     raw_execution,
 )
+
+
+def _build_strided_indices(
+    sizes: tuple[int, ...],
+    strides: tuple[int, ...],
+    offset: int,
+    index_dtype: jnp.dtype,
+) -> object:
+    indices = jnp.zeros(sizes, dtype=index_dtype)
+    for axis, (size, stride) in enumerate(zip(sizes, strides, strict=True)):
+        shape = (1,) * axis + (size,) + (1,) * (len(sizes) - axis - 1)
+        indices = indices + jnp.arange(size, dtype=index_dtype).reshape(shape) * stride
+    return (indices + offset).reshape(-1)
+
 
 def _strided_indices_prepared(
     *,
@@ -21,7 +33,7 @@ def _strided_indices_prepared(
     index_dtype = jnp.result_type(offset)
 
     def run() -> object:
-        return block_module._build_strided_indices(
+        return _build_strided_indices(
             sizes,
             strides,
             offset,
