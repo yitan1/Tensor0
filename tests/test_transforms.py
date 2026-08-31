@@ -38,6 +38,12 @@ from tensor0 import (
     to_dense,
     twist,
 )
+from tensor0._stride import StridedView, materialize, strided_accumulate
+from tensor0._stride._ffi import (
+    _native_call_count_for_tests,
+    _reset_native_call_count_for_tests,
+    native_available,
+)
 from tensor0.structure import get_degeneracystructure, get_sectorstructure
 from tests.cases import (
     InaccessibleVectorData,
@@ -69,6 +75,168 @@ def _odd_odd_fermion_tensor():
 def _data_for(target):
     size = get_degeneracystructure(target).total_dim
     return jnp.arange(1, size + 1, dtype=jnp.float32)
+
+
+def _large_u1_permute_case():
+    left = space(U1Irrep, {0: 16, 1: 16})
+    right = space(U1Irrep, {0: 12, 1: 12})
+    incoming = space(U1Irrep, {0: 8, 1: 8})
+    target = hom((left, right), (incoming,))
+    permutation = ((1,), (0, 2))
+    data = _data_for(target) / get_degeneracystructure(target).total_dim
+    return TensorMap(target, data), permutation
+
+
+def _large_su2_permute_case():
+    factor = space(SU2Irrep, {0: 8, 1: 8})
+    target = hom((factor, factor), (factor, factor))
+    permutation = ((1, 0), (3, 2))
+    data = _data_for(target) / get_degeneracystructure(target).total_dim
+    return TensorMap(target, data), permutation
+
+
+def _transpose_reference_block(block, permutation):
+    if not permutation:
+        return block
+    return jnp.transpose(block, permutation)
+
+
+def _apply_abelian_reference(
+    result,
+    source,
+    permutation,
+    data,
+    source_subblocks,
+    destination_subblocks,
+):
+    for entry in data:
+        source_subblock = source_subblocks[entry.src]
+        source_view = StridedView(
+            source,
+            tuple(source_subblock.sizes),
+            tuple(source_subblock.strides),
+            source_subblock.offset,
+        )
+        block = materialize(
+            source_view,
+            result_dtype=result.dtype,
+        )
+        block = _transpose_reference_block(block, permutation)
+        destination_subblock = destination_subblocks[entry.dst]
+        destination_view = StridedView(
+            result,
+            tuple(destination_subblock.sizes),
+            tuple(destination_subblock.strides),
+            destination_subblock.offset,
+        )
+        result = strided_accumulate(
+            destination_view,
+            StridedView.from_dense(
+                jnp.asarray(entry.coeff, dtype=result.dtype) * block,
+                destination_view.sizes,
+            ),
+        )
+    return result
+
+
+def _apply_generic_reference(
+    result,
+    source,
+    permutation,
+    data,
+    source_subblocks,
+    destination_subblocks,
+):
+    for entry in data:
+        transform = jnp.asarray(entry.transform, dtype=result.dtype)
+        source_indices = entry.src_indices
+        destination_indices = entry.dst_indices
+        if (
+            transform.size == 1
+            and len(source_indices) == 1
+            and len(destination_indices) == 1
+        ):
+            source_subblock = source_subblocks[source_indices[0]]
+            block = materialize(
+                StridedView(
+                    source,
+                    tuple(source_subblock.sizes),
+                    tuple(source_subblock.strides),
+                    source_subblock.offset,
+                ),
+                result_dtype=result.dtype,
+            )
+            block = _transpose_reference_block(block, permutation)
+            destination_subblock = destination_subblocks[destination_indices[0]]
+            destination_view = StridedView(
+                result,
+                tuple(destination_subblock.sizes),
+                tuple(destination_subblock.strides),
+                destination_subblock.offset,
+            )
+            result = strided_accumulate(
+                destination_view,
+                StridedView.from_dense(
+                    transform.reshape(()) * block,
+                    destination_view.sizes,
+                ),
+            )
+            continue
+
+        source_sizes = tuple(source_subblocks[source_indices[0]].sizes)
+        source_rows = tuple(
+            materialize(
+                StridedView(
+                    source,
+                    tuple(source_subblocks[index].sizes),
+                    tuple(source_subblocks[index].strides),
+                    source_subblocks[index].offset,
+                ),
+                result_dtype=result.dtype,
+            ).reshape(-1)
+            for index in source_indices
+        )
+        destination_rows = transform @ jnp.stack(source_rows, axis=0)
+
+        for row, destination_index in enumerate(destination_indices):
+            block = destination_rows[row, :].reshape(source_sizes)
+            block = _transpose_reference_block(block, permutation)
+            destination_subblock = destination_subblocks[destination_index]
+            destination_view = StridedView(
+                result,
+                tuple(destination_subblock.sizes),
+                tuple(destination_subblock.strides),
+                destination_subblock.offset,
+            )
+            result = strided_accumulate(
+                destination_view,
+                StridedView.from_dense(block, destination_view.sizes),
+            )
+    return result
+
+
+@pytest.mark.parametrize(
+    "factory",
+    [_large_u1_permute_case, _large_su2_permute_case],
+    ids=["abelian", "generic"],
+)
+def test_tree_transform_lowers_portably_on_tpu(factory):
+    tensor, permutation = factory()
+    run = jax.jit(
+        lambda source: (
+            permute(
+                TensorMap(tensor.space, source),
+                permutation,
+            ).storage.data
+        )
+    )
+
+    lowered = run.trace(tensor.storage.data).lower(lowering_platforms=("tpu",))
+    stablehlo = str(lowered.compiler_ir(dialect="stablehlo"))
+
+    assert "stablehlo.custom_call" not in stablehlo
+    assert "stablehlo.gather" not in stablehlo
+    assert "stablehlo.scatter" not in stablehlo
 
 
 def test_native_transform_payloads_use_canonical_indices():
@@ -125,6 +293,228 @@ def test_native_transform_payloads_use_canonical_indices():
     )
 
     assert su2_flip == ((0, 1.0), (1, 1.0))
+
+
+@pytest.mark.skipif(not native_available(), reason="native CPU stride is unavailable")
+def test_large_abelian_permute_uses_one_native_stride_call_without_indices():
+    tensor, permutation = _large_u1_permute_case()
+    destination = tensor.space.permute(*permutation)
+
+    run = jax.jit(
+        lambda source: (
+            permute(
+                TensorMap(tensor.space, source),
+                permutation,
+            ).storage.data
+        )
+    )
+    lowered = run.lower(tensor.storage.data)
+    stablehlo = str(lowered.compiler_ir(dialect="stablehlo"))
+    _reset_native_call_count_for_tests()
+    actual = run(tensor.storage.data)
+    actual.block_until_ready()
+
+    assert _native_call_count_for_tests() == 1
+
+    _assert_dense_transpose(
+        TensorMap(destination, actual),
+        tensor,
+        destination,
+        (1, 0, 2),
+    )
+    assert stablehlo.count("stablehlo.custom_call") == 1
+    assert "signed_permutation" not in stablehlo
+    assert "stablehlo.gather" not in stablehlo
+    assert "stablehlo.scatter" not in stablehlo
+
+def test_large_abelian_permute_preserves_jvp_vjp_and_batching():
+    tensor, permutation = _large_u1_permute_case()
+    destination = tensor.space.permute(*permutation)
+    transformer = transforms._treepermuter(
+        tensor.space,
+        destination,
+        *permutation,
+    )
+    source_layout = get_degeneracystructure(tensor.space)
+    destination_layout = get_degeneracystructure(destination)
+    p = permutation[0] + permutation[1]
+
+    def run(source):
+        return permute(TensorMap(tensor.space, source), permutation).storage.data
+
+    def baseline(source):
+        result = jnp.zeros(
+            (destination_layout.total_dim,),
+            dtype=transforms._transform_result_dtype(source, transformer),
+        )
+        return _apply_abelian_reference(
+            result,
+            source,
+            p,
+            transformer.abelian_data,
+            source_layout.subblockstructure,
+            destination_layout.subblockstructure,
+        )
+
+    source = tensor.storage.data
+    tangent = jnp.linspace(0.0, 1.0, source.size, dtype=source.dtype)
+    primal, actual_tangent = jax.jvp(run, (source,), (tangent,))
+    expected = baseline(source)
+    expected_tangent = baseline(tangent)
+    _, pullback = jax.vjp(run, source)
+    cotangent = jnp.linspace(-1.0, 1.0, primal.size, dtype=primal.dtype)
+    actual_cotangent = pullback(cotangent)[0]
+    _, baseline_pullback = jax.vjp(baseline, source)
+    expected_cotangent = baseline_pullback(cotangent)[0]
+    batch = jnp.stack((source, 2 * source))
+
+    assert_allclose(primal, expected)
+    assert_allclose(actual_tangent, expected_tangent)
+    assert_allclose(actual_cotangent, expected_cotangent)
+    assert_allclose(jax.jit(jax.vmap(run))(batch), jnp.stack((expected, 2 * expected)))
+
+
+@pytest.mark.skipif(not native_available(), reason="native CPU stride is unavailable")
+def test_large_su2_permute_uses_pack_matmul_unpack_without_indices():
+    tensor, permutation = _large_su2_permute_case()
+    destination = tensor.space.permute(*permutation)
+    transformer = transforms._treepermuter(
+        tensor.space,
+        destination,
+        *permutation,
+    )
+    source_layout = get_degeneracystructure(tensor.space)
+    destination_layout = get_degeneracystructure(destination)
+    p = permutation[0] + permutation[1]
+
+    def baseline(source):
+        result = jnp.zeros(
+            (destination_layout.total_dim,),
+            dtype=transforms._transform_result_dtype(source, transformer),
+        )
+        return _apply_generic_reference(
+            result,
+            source,
+            p,
+            transformer.generic_data,
+            source_layout.subblockstructure,
+            destination_layout.subblockstructure,
+        )
+
+    run = jax.jit(
+        lambda source: (
+            permute(
+                TensorMap(tensor.space, source),
+                permutation,
+            ).storage.data
+        )
+    )
+    lowered = run.lower(tensor.storage.data)
+    stablehlo = str(lowered.compiler_ir(dialect="stablehlo"))
+    expected = baseline(tensor.storage.data)
+    expected.block_until_ready()
+    _reset_native_call_count_for_tests()
+    actual = run(tensor.storage.data)
+    actual.block_until_ready()
+
+    assert_allclose(actual, expected)
+    assert _native_call_count_for_tests() == 2
+    assert stablehlo.count("stablehlo.custom_call") == 2
+    assert "signed_permutation" not in stablehlo
+    expected_dots = sum(
+        len(entry.src_indices) > 1 or len(entry.dst_indices) > 1
+        for entry in transformer.generic_data
+    )
+    assert stablehlo.count("stablehlo.dot_general") == expected_dots
+    assert "stablehlo.gather" not in stablehlo
+    assert "stablehlo.scatter" not in stablehlo
+
+
+def test_large_su2_permute_preserves_jvp_vjp_and_batching():
+    tensor, permutation = _large_su2_permute_case()
+    destination = tensor.space.permute(*permutation)
+    transformer = transforms._treepermuter(
+        tensor.space,
+        destination,
+        *permutation,
+    )
+    source_layout = get_degeneracystructure(tensor.space)
+    destination_layout = get_degeneracystructure(destination)
+    p = permutation[0] + permutation[1]
+
+    def run(source):
+        return permute(TensorMap(tensor.space, source), permutation).storage.data
+
+    def baseline(source):
+        result = jnp.zeros(
+            (destination_layout.total_dim,),
+            dtype=transforms._transform_result_dtype(source, transformer),
+        )
+        return _apply_generic_reference(
+            result,
+            source,
+            p,
+            transformer.generic_data,
+            source_layout.subblockstructure,
+            destination_layout.subblockstructure,
+        )
+
+    source = tensor.storage.data
+    tangent = jnp.linspace(0.0, 1.0, source.size, dtype=source.dtype)
+    primal, actual_tangent = jax.jvp(run, (source,), (tangent,))
+    expected, expected_tangent = jax.jvp(
+        baseline,
+        (source,),
+        (tangent,),
+    )
+    cotangent = jnp.linspace(-1.0, 1.0, primal.size, dtype=primal.dtype)
+    _, pullback = jax.vjp(run, source)
+    _, baseline_pullback = jax.vjp(baseline, source)
+    batch = jnp.stack((source, 2 * source))
+
+    assert_allclose(primal, expected)
+    assert_allclose(actual_tangent, expected_tangent)
+    assert_allclose(pullback(cotangent)[0], baseline_pullback(cotangent)[0])
+    assert_allclose(jax.jit(jax.vmap(run))(batch), jnp.stack((expected, 2 * expected)))
+
+
+def test_large_complex_su2_permute_matches_pack_matmul_unpack_reference():
+    real_tensor, permutation = _large_su2_permute_case()
+    source = real_tensor.storage.data.astype(jnp.complex64) * (1.0 + 0.25j)
+    tensor = TensorMap(real_tensor.space, source)
+    destination = tensor.space.permute(*permutation)
+    transformer = transforms._treepermuter(
+        tensor.space,
+        destination,
+        *permutation,
+    )
+    source_layout = get_degeneracystructure(tensor.space)
+    destination_layout = get_degeneracystructure(destination)
+    p = permutation[0] + permutation[1]
+    expected = _apply_generic_reference(
+        jnp.zeros((destination_layout.total_dim,), dtype=source.dtype),
+        source,
+        p,
+        transformer.generic_data,
+        source_layout.subblockstructure,
+        destination_layout.subblockstructure,
+    )
+    expected.block_until_ready()
+    run = jax.jit(
+        lambda value: (
+            permute(
+                TensorMap(tensor.space, value),
+                permutation,
+            ).storage.data
+        )
+    )
+    stablehlo = str(run.lower(source).compiler_ir(dialect="stablehlo"))
+    actual = run(source)
+    actual.block_until_ready()
+
+    assert "stablehlo.gather" not in stablehlo
+    assert "stablehlo.scatter" not in stablehlo
+    assert_allclose(actual, expected)
 
 
 def test_permute_rejects_non_tensormap_input():
@@ -247,8 +637,7 @@ def test_u1_index_transform_resolves_strided_source_and_destination_subblocks():
     destination_indices = tuple(entry.dst for entry in transformer.abelian_data)
 
     assert any(
-        not is_contiguous_subblock(source_subblocks[index])
-        for index in source_indices
+        not is_contiguous_subblock(source_subblocks[index]) for index in source_indices
     )
     assert any(
         not is_contiguous_subblock(destination_subblocks[index])
@@ -383,32 +772,70 @@ def test_twist_reweights_parity_endomorphism_without_changing_space_or_dtype():
     assert bool(jnp.array_equal(tensor.storage.data, original))
 
 
-def test_twist_only_materializes_nontrivial_subblock_metadata(monkeypatch):
+def test_nontrivial_twist_requires_jax_backed_storage():
     factor = space(FermionParity, {0: 1, 1: 1})
     target = hom((factor,), (factor,))
-    tensor = TensorMap(target, _data_for(target))
-    degeneracystructure = get_degeneracystructure(target)
-    accessed = []
-
-    class DegeneracyStructureProxy:
-        @property
-        def subblockstructure(self):
-            raise AssertionError("twist must not materialize all subblock metadata")
-
-        def subblock_at(self, index):
-            accessed.append(index)
-            return degeneracystructure.subblock_at(index)
-
-    monkeypatch.setattr(
-        transforms,
-        "get_degeneracystructure",
-        lambda _space: DegeneracyStructureProxy(),
+    tensor = TensorMap(
+        target,
+        InaccessibleVectorData(get_degeneracystructure(target).total_dim),
     )
 
-    result = twist(tensor, 0)
+    with pytest.raises(TypeError, match=r"^twist\(\) requires JAX-backed storage"):
+        twist(tensor, 0)
 
-    assert accessed == [1]
-    assert bool(jnp.array_equal(result.storage.data, jnp.array([1.0, -2.0])))
+
+@pytest.mark.skipif(
+    not native_available(),
+    reason="native CPU stride is unavailable",
+)
+def test_twist_and_flip_each_lower_as_one_complete_native_map():
+    factor = space(FermionParity, {0: 2, 1: 1})
+    target = hom((factor, factor), (factor, factor))
+    source = _data_for(target)
+    operations = (
+        jax.jit(
+            lambda data: twist(TensorMap(target, data), 0).storage.data
+        ),
+        jax.jit(
+            lambda data: flip(TensorMap(target, data), (0, 2)).storage.data
+        ),
+    )
+
+    for operation in operations:
+        stablehlo = str(operation.lower(source).compiler_ir("stablehlo"))
+        _reset_native_call_count_for_tests()
+        result = operation(source)
+        result.block_until_ready()
+
+        assert stablehlo.count("stablehlo.custom_call") == 1
+        assert _native_call_count_for_tests() == 1
+
+
+def test_twist_and_flip_complete_maps_support_jax_transformations():
+    factor = space(FermionParity, {0: 2, 1: 1})
+    target = hom((factor, factor), (factor, factor))
+    source = _data_for(target)
+    tangent = jnp.linspace(-1.0, 1.0, source.size, dtype=source.dtype)
+    cotangent = jnp.linspace(1.0, -1.0, source.size, dtype=source.dtype)
+    operations = (
+        lambda data: twist(TensorMap(target, data), 0).storage.data,
+        lambda data: flip(TensorMap(target, data), (0, 2)).storage.data,
+    )
+
+    for operation in operations:
+        primal, actual_tangent = jax.jvp(operation, (source,), (tangent,))
+        pullback = jax.vjp(operation, source)[1]
+        source_cotangent = pullback(cotangent)[0]
+
+        assert_allclose(actual_tangent, operation(tangent))
+        assert_allclose(
+            jnp.vdot(primal, cotangent),
+            jnp.vdot(source, source_cotangent),
+        )
+        assert_allclose(
+            jax.vmap(operation)(jnp.stack((source, 2 * source))),
+            jnp.stack((primal, 2 * primal)),
+        )
 
 
 def test_twist_reweights_multielement_strided_subblocks_and_is_involutive():
@@ -524,6 +951,20 @@ def test_index_transform_rejects_invalid_tensor_and_inv_inputs(operation):
     )
     with pytest.raises(TypeError, match=r"inv.*bool"):
         operation(tensor, 0, inv=1)
+
+
+def test_data_transform_rejects_non_jax_storage_after_metadata_validation():
+    factor = space(U1Irrep, {0: 2})
+    target = hom((factor,), (factor,))
+    tensor = TensorMap(
+        target,
+        InaccessibleVectorData(get_degeneracystructure(target).total_dim),
+    )
+
+    with pytest.raises(TypeError, match="flip.*JAX-backed storage"):
+        flip(tensor, 0)
+    with pytest.raises(TypeError, match="tree transform.*JAX-backed storage"):
+        transpose(tensor)
 
 
 def test_space_flip_preserves_visible_sectors_and_differs_from_dual():
@@ -928,10 +1369,7 @@ def test_trivial_index_transforms_match_direct_dense_oracle_with_dual_legs(
         (ComplexSpace(2), ComplexSpace(3, dual=True)),
         (ComplexSpace(4), ComplexSpace(5, dual=True)),
     )
-    dense = (
-        jnp.arange(120, dtype=jnp.float32).reshape(2, 3, 4, 5)
-        * (1.0 + 0.25j)
-    )
+    dense = jnp.arange(120, dtype=jnp.float32).reshape(2, 3, 4, 5) * (1.0 + 0.25j)
     tensor = from_dense(target, dense)
     permutation = ((1, 3), (0, 2))
 
@@ -1162,11 +1600,13 @@ def test_apply_trivial_index_transform_jaxpr_is_transpose_and_reshape_only():
     primitives = {
         equation.primitive.name
         for equation in jax.make_jaxpr(
-            lambda value: transforms._apply_trivial_index_transform(
-                TensorMap(target, value),
-                destination,
-                *permutation,
-            ).storage.data,
+            lambda value: (
+                transforms._apply_trivial_index_transform(
+                    TensorMap(target, value),
+                    destination,
+                    *permutation,
+                ).storage.data
+            ),
         )(data).jaxpr.eqns
     }
 

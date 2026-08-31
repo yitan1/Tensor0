@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from collections.abc import Callable
+from math import prod
 import sys
 from typing import TypeAlias
 
@@ -9,18 +10,18 @@ from jax import Array
 import jax.numpy as jnp
 
 from .. import _native
+from .._stride import (
+    StridedCopyRecord,
+    strided_copy,
+)
+from .._stride._plan import _contiguous_strides
 from ..structure.layout import (
     _sectorstructure_key,
     get_degeneracystructure,
     get_sectorstructure,
 )
-from ..tensor._blocks import (
-    add_to_subblock as _add_to_subblock,
-    get_subblock as _get_subblock,
-    scale_subblock as _scale_subblock,
-    set_subblock as _set_subblock,
-)
 from ..tensor.dense import _trivial_dense_array
+from ..tensor.storage import _require_jax_storage_data
 from ..tensor.tensor_map import TensorMap
 
 Permutation: TypeAlias = tuple[tuple[int, ...], tuple[int, ...]]
@@ -157,9 +158,7 @@ def _validate_cyclic_transpose_permutation(
         permutation[(index + 1) % rank] != (value + 1) % rank
         for index, value in enumerate(permutation)
     ):
-        raise ValueError(
-            "fusion tree transpose requires a cyclic planar permutation"
-        )
+        raise ValueError("fusion tree transpose requires a cyclic planar permutation")
 
 
 def _apply_tree_transform(
@@ -169,35 +168,36 @@ def _apply_tree_transform(
     p_domain: tuple[int, ...],
     transformer: _native.TreeTransformer,
 ) -> TensorMap:
-    source = jnp.asarray(tensor.storage.data)
+    source = _require_jax_storage_data(
+        tensor.storage.data,
+        "tree transform",
+    )
     result_dtype = _transform_result_dtype(source, transformer)
     src_degeneracy = get_degeneracystructure(tensor.space)
     dst_degeneracy = get_degeneracystructure(dst_space)
-    dst_data = jnp.zeros(
-        (dst_degeneracy.total_dim,),
-        dtype=result_dtype,
-    )
     p = p_codomain + p_domain
-    src_subblocks = src_degeneracy.subblockstructure
-    dst_subblocks = dst_degeneracy.subblockstructure
     kind = transformer.kind
     if kind == "abelian":
-        dst_data = _add_abelian_transform(
-            dst_data,
-            source,
+        records = _build_abelian_stride_records(
+            src_degeneracy,
+            dst_degeneracy,
             p,
             transformer.abelian_data,
-            src_subblocks,
-            dst_subblocks,
+        )
+        dst_data = strided_copy(
+            source,
+            records=records,
+            output_size=dst_degeneracy.total_dim,
+            result_dtype=result_dtype,
         )
     elif kind == "generic":
-        dst_data = _add_generic_transform(
-            dst_data,
+        dst_data = _apply_generic_transform(
             source,
+            src_degeneracy,
+            dst_degeneracy,
+            result_dtype,
             p,
             transformer.generic_data,
-            src_subblocks,
-            dst_subblocks,
         )
     else:
         raise ValueError(f"unsupported tree transformer kind {kind!r}")
@@ -243,16 +243,30 @@ def twist(
         return tensor
 
     degeneracystructure = get_degeneracystructure(tensor.space)
-    data = tensor.storage.data
-    for index, factor in enumerate(factors):
-        if factor == 1:
-            continue
-        subblock = degeneracystructure.subblock_at(index)
-        if subblock is None:
-            raise RuntimeError("twist factors and degeneracy structure are inconsistent")
-        coefficient = jnp.asarray(factor, dtype=data.dtype)
-        data = _scale_subblock(data, subblock, coefficient)
-    return TensorMap(tensor.space, data)
+    subblocks = degeneracystructure.subblockstructure
+    if len(factors) != len(subblocks):
+        raise RuntimeError("twist factors and degeneracy structure are inconsistent")
+    data = _require_jax_storage_data(tensor.storage.data, "twist()")
+    records = tuple(
+        StridedCopyRecord(
+            logical_shape=tuple(subblock.sizes),
+            source_strides=tuple(subblock.strides),
+            source_offset=subblock.offset,
+            destination_strides=tuple(subblock.strides),
+            destination_offset=subblock.offset,
+            scale=factor,
+        )
+        for subblock, factor in zip(subblocks, factors, strict=True)
+    )
+    return TensorMap(
+        tensor.space,
+        strided_copy(
+            data,
+            records=records,
+            output_size=degeneracystructure.total_dim,
+            result_dtype=data.dtype,
+        ),
+    )
 
 
 def flip(
@@ -277,7 +291,7 @@ def flip(
         normalized,
         inv,
     )
-    source = jnp.asarray(tensor.storage.data)
+    source = _require_jax_storage_data(tensor.storage.data, "flip()")
     result_dtype = (
         source.dtype
         if all(coeff == 1.0 or coeff == -1.0 for _, coeff in entries)
@@ -285,19 +299,35 @@ def flip(
     )
     src_subblocks = get_degeneracystructure(tensor.space).subblockstructure
     dst_degeneracy = get_degeneracystructure(dst_space)
-    dst_data = jnp.zeros((dst_degeneracy.total_dim,), dtype=result_dtype)
     dst_subblocks = dst_degeneracy.subblockstructure
     # Toggling a fixed set of duality flags is bijective, so each destination
     # subblock is written exactly once.
+    records: list[StridedCopyRecord] = []
     for src_index, (dst_index, coeff) in enumerate(entries):
-        block = _get_subblock(source, src_subblocks[src_index], result_dtype)
-        coefficient = jnp.asarray(coeff, dtype=result_dtype)
-        dst_data = _set_subblock(
-            dst_data,
-            dst_subblocks[dst_index],
-            coefficient * block,
+        src_subblock = src_subblocks[src_index]
+        dst_subblock = dst_subblocks[dst_index]
+        logical_shape = tuple(src_subblock.sizes)
+        if logical_shape != tuple(dst_subblock.sizes):
+            raise ValueError("flip source and destination subblock shapes differ")
+        records.append(
+            StridedCopyRecord(
+                logical_shape=logical_shape,
+                source_strides=tuple(src_subblock.strides),
+                source_offset=src_subblock.offset,
+                destination_strides=tuple(dst_subblock.strides),
+                destination_offset=dst_subblock.offset,
+                scale=coeff,
+            )
         )
-    return TensorMap(dst_space, dst_data)
+    return TensorMap(
+        dst_space,
+        strided_copy(
+            source,
+            records=tuple(records),
+            output_size=dst_degeneracy.total_dim,
+            result_dtype=result_dtype,
+        ),
+    )
 
 
 def insertleftunit(
@@ -338,9 +368,7 @@ def removeunit(tensor: TensorMap, index: int) -> TensorMap:
     if isinstance(index, bool) or not isinstance(index, int):
         raise TypeError("removeunit() requires index to be an int")
     if index < 0 or index >= tensor.numind:
-        raise ValueError(
-            f"removeunit index is out of range for rank {tensor.numind}"
-        )
+        raise ValueError(f"removeunit index is out of range for rank {tensor.numind}")
 
     dst_space = tensor.space.remove_unit(index)
     return TensorMap(dst_space, tensor.storage)
@@ -442,81 +470,130 @@ def _transform_result_dtype(
     src_data: Array,
     transformer: _native.TreeTransformer,
 ) -> jnp.dtype:
-    if (
-        transformer.kind == "abelian"
-        and transformer.has_only_unit_coefficients
-    ):
+    if transformer.kind == "abelian" and transformer.has_only_unit_coefficients:
         return src_data.dtype
     return jnp.result_type(src_data, jnp.float32)
 
 
-def _add_abelian_transform(
-    result: Array,
-    source: Array,
-    p: tuple[int, ...],
+def _build_abelian_stride_records(
+    src_layout: _native.DegeneracyStructure,
+    dst_layout: _native.DegeneracyStructure,
+    permutation: tuple[int, ...],
     data: tuple[_native.AbelianTransformData, ...],
-    src_subblocks: tuple[_native.SubblockStructure, ...],
-    dst_subblocks: tuple[_native.SubblockStructure, ...],
-) -> Array:
+) -> tuple[StridedCopyRecord, ...]:
+    records: list[StridedCopyRecord] = []
     for entry in data:
-        block = _get_subblock(source, src_subblocks[entry.src], result.dtype)
-        block = _transpose_block(block, p)
-        coeff = jnp.asarray(entry.coeff, dtype=result.dtype)
-        result = _add_to_subblock(
-            result,
-            dst_subblocks[entry.dst],
-            coeff * block,
+        src_subblock = src_layout.subblockstructure[entry.src]
+        dst_subblock = dst_layout.subblockstructure[entry.dst]
+        logical_shape = tuple(src_subblock.sizes[index] for index in permutation)
+        if logical_shape != tuple(dst_subblock.sizes):
+            raise ValueError("Abelian tree transform subblock shapes are inconsistent")
+        records.append(
+            StridedCopyRecord(
+                logical_shape=logical_shape,
+                source_strides=tuple(
+                    src_subblock.strides[index] for index in permutation
+                ),
+                source_offset=src_subblock.offset,
+                destination_strides=tuple(dst_subblock.strides),
+                destination_offset=dst_subblock.offset,
+                scale=entry.coeff,
+            )
         )
-    return result
+    return tuple(records)
 
 
-def _add_generic_transform(
-    result: Array,
+def _apply_generic_transform(
     source: Array,
-    p: tuple[int, ...],
+    src_layout: _native.DegeneracyStructure,
+    dst_layout: _native.DegeneracyStructure,
+    result_dtype: jnp.dtype,
+    permutation: tuple[int, ...],
     data: tuple[_native.GenericTransformData, ...],
-    src_subblocks: tuple[_native.SubblockStructure, ...],
-    dst_subblocks: tuple[_native.SubblockStructure, ...],
 ) -> Array:
+    source_subblocks = src_layout.subblockstructure
+    destination_subblocks = dst_layout.subblockstructure
+    pack_records: list[StridedCopyRecord] = []
+    unpack_records: list[StridedCopyRecord] = []
+    groups: list[tuple[int, int, Array]] = []
+    pack_offset = 0
+    unpack_offset = 0
     for entry in data:
-        transform = jnp.asarray(entry.transform, dtype=result.dtype)
-        src_indices = entry.src_indices
-        dst_indices = entry.dst_indices
-        if (
-            transform.size == 1
-            and len(src_indices) == 1
-            and len(dst_indices) == 1
-        ):
-            block = _get_subblock(
-                source,
-                src_subblocks[src_indices[0]],
-                result.dtype,
+        src_indices = tuple(entry.src_indices)
+        dst_indices = tuple(entry.dst_indices)
+        src_sizes = tuple(source_subblocks[src_indices[0]].sizes)
+        block_size = prod(src_sizes)
+        group_pack_offset = pack_offset
+        contiguous_strides = _contiguous_strides(src_sizes)
+        for src_index in src_indices:
+            subblock = source_subblocks[src_index]
+            if tuple(subblock.sizes) != src_sizes:
+                raise ValueError(
+                    "generic tree transform source subblock shapes are inconsistent"
+                )
+            pack_records.append(
+                StridedCopyRecord(
+                    logical_shape=src_sizes,
+                    source_strides=tuple(subblock.strides),
+                    source_offset=subblock.offset,
+                    destination_strides=contiguous_strides,
+                    destination_offset=pack_offset,
+                )
             )
-            block = _transpose_block(block, p)
-            result = _add_to_subblock(
-                result,
-                dst_subblocks[dst_indices[0]],
-                transform.reshape(()) * block,
-            )
-            continue
+            pack_offset += block_size
 
-        src_sizes = tuple(src_subblocks[src_indices[0]].sizes)
-        src_rows = tuple(
-            _get_subblock(source, src_subblocks[index], result.dtype).reshape(-1)
-            for index in src_indices
+        transform = jnp.asarray(entry.transform, dtype=result_dtype)
+        logical_shape = tuple(src_sizes[index] for index in permutation)
+        permuted_strides = tuple(contiguous_strides[index] for index in permutation)
+        for dst_index in dst_indices:
+            subblock = destination_subblocks[dst_index]
+            if tuple(subblock.sizes) != logical_shape:
+                raise ValueError(
+                    "generic tree transform destination subblock shapes are inconsistent"
+                )
+            unpack_records.append(
+                StridedCopyRecord(
+                    logical_shape=logical_shape,
+                    source_strides=permuted_strides,
+                    source_offset=unpack_offset,
+                    destination_strides=tuple(subblock.strides),
+                    destination_offset=subblock.offset,
+                )
+            )
+            unpack_offset += block_size
+        groups.append((group_pack_offset, block_size, transform))
+
+    packed = strided_copy(
+        source,
+        records=tuple(pack_records),
+        output_size=pack_offset,
+        result_dtype=result_dtype,
+    )
+    batch_shape = packed.shape[:-1]
+    pieces: list[Array] = []
+    for source_offset, block_size, transform in groups:
+        destination_row_count, source_row_count = transform.shape
+        start = source_offset
+        stop = start + source_row_count * block_size
+        source_rows = packed[..., start:stop].reshape(
+            (*batch_shape, source_row_count, block_size)
         )
-        buffer_src = jnp.stack(src_rows, axis=0)
-        buffer_dst = transform @ buffer_src
-
-        for row, destination_index in enumerate(dst_indices):
-            block = buffer_dst[row, :].reshape(src_sizes)
-            block = _transpose_block(block, p)
-            result = _add_to_subblock(
-                result,
-                dst_subblocks[destination_index],
-                block,
-            )
-    return result
+        if source_row_count == 1 and destination_row_count == 1:
+            destination_rows = transform.reshape(()) * source_rows
+        else:
+            destination_rows = transform @ source_rows
+        pieces.append(destination_rows.reshape((*batch_shape, -1)))
+    arena = (
+        jnp.concatenate(pieces, axis=-1)
+        if pieces
+        else jnp.zeros((*batch_shape, 0), dtype=result_dtype)
+    )
+    return strided_copy(
+        arena,
+        records=tuple(unpack_records),
+        output_size=dst_layout.total_dim,
+        result_dtype=result_dtype,
+    )
 
 
 def _clear_tree_transformer_caches_for_tests() -> None:
@@ -534,7 +611,9 @@ def _normalize_p(space: _native.HomSpace, p: object, op_name: str) -> Permutatio
     expected = set(range(space.numind))
 
     if len(visible_indices) != space.numind or set(visible_indices) != expected:
-        raise ValueError("visible index permutation must include each visible index exactly once")
+        raise ValueError(
+            "visible index permutation must include each visible index exactly once"
+        )
 
     return p_codomain, p_domain
 
@@ -585,7 +664,9 @@ def _normalize_axis_tuple(value: object, op_name: str) -> tuple[int, ...]:
     indices: list[int] = []
     for index in value:
         if isinstance(index, bool) or not isinstance(index, int):
-            raise TypeError(f"{op_name}() requires p to contain integer visible indices")
+            raise TypeError(
+                f"{op_name}() requires p to contain integer visible indices"
+            )
         indices.append(index)
     return tuple(indices)
 
@@ -600,9 +681,7 @@ def _normalize_visible_indices(
     if isinstance(indices, int):
         indices = (indices,)
     elif not isinstance(indices, tuple):
-        raise TypeError(
-            f"{operation}() requires one integer or a tuple of integers"
-        )
+        raise TypeError(f"{operation}() requires one integer or a tuple of integers")
 
     if any(isinstance(index, bool) or not isinstance(index, int) for index in indices):
         raise TypeError(f"{operation}() requires integer visible indices")
@@ -651,7 +730,9 @@ def _normalize_levels(space: _native.HomSpace, levels: object) -> tuple[int, ...
         if level < 0:
             raise ValueError("braid levels must be non-negative")
         if level > _USIZE_MAX:
-            raise OverflowError("braid level is too large for a platform unsigned integer")
+            raise OverflowError(
+                "braid level is too large for a platform unsigned integer"
+            )
         normalized.append(int(level))
     return tuple(normalized)
 
@@ -672,9 +753,3 @@ def _is_identity_permutation(
     return p_codomain == tuple(range(space.numout)) and p_domain == tuple(
         range(space.numout, space.numind),
     )
-
-
-def _transpose_block(block: Array, p: tuple[int, ...]) -> Array:
-    if not p:
-        return block
-    return jnp.transpose(block, p)
