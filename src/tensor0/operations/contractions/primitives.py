@@ -1,25 +1,28 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass
-from typing import TypeAlias
+from typing import TypeAlias, cast
 
 import jax.numpy as jnp
 
 from ... import _native
 from ...structure.layout import get_degeneracystructure, get_sectorstructure
 from ...structure.spaces import hom, sector_spec, storage_dim
-from ...tensor._blocks import (
-    add_to_subblock as _add_to_subblock,
-    get_subblock as _get_subblock,
-)
 from ...tensor.dense import _trivial_dense_array
 from ...tensor.linalg import _compose
+from ...tensor.storage import _require_jax_storage_data
 from ...tensor.tensor_map import TensorMap
 from ..transforms import (
     _is_identity_permutation,
     _treepermuter,
     permute,
     twist,
+)
+from .._strided import (
+    _TraceCoefficient,
+    _TraceEntry,
+    _strided_tensortrace,
 )
 
 AxisRef: TypeAlias = tuple[int, int]
@@ -497,97 +500,52 @@ def tensortrace(
     source_degeneracystructure = get_degeneracystructure(source_space)
     destination_degeneracystructure = get_degeneracystructure(destination_space)
 
-    source_data = jnp.asarray(source_value.storage.data)
-    result_dtype = _trace_result_dtype(source_data, transformer)
-    destination_data = jnp.zeros(
-        (destination_degeneracystructure.total_dim,),
-        dtype=result_dtype,
+    source_data = _require_jax_storage_data(
+        source_value.storage.data,
+        "tensortrace()",
     )
-
+    result_dtype = _trace_result_dtype(source_data, transformer)
     source_subblocks = source_degeneracystructure.subblockstructure
     destination_subblocks = destination_degeneracystructure.subblockstructure
     trace_count = len(trace_axes[0])
     flat_permutation = canonical_permutation[0] + canonical_permutation[1]
     if flat_permutation == tuple(range(rank)):
         flat_permutation = ()
-    pending: dict[int, jnp.ndarray] = {}
-
-    if transformer.kind == "abelian":
-        for entry in transformer.abelian_data:
-            value = _trace_source_subblock(
-                source_data,
-                source_subblocks[entry.src],
-                result_dtype,
-                flat_permutation,
-                num_open_out,
-                trace_count,
-            )
-            value = jnp.asarray(entry.coeff, dtype=result_dtype) * value
-            pending[entry.dst] = (
-                pending[entry.dst] + value
-                if entry.dst in pending
-                else value
-            )
-    elif transformer.kind == "generic":
-        for group in transformer.generic_data:
-            group_transform = group.transform
-            if group_transform.size == 1:
-                value = _trace_source_subblock(
-                    source_data,
-                    source_subblocks[group.src_indices[0]],
-                    result_dtype,
-                    flat_permutation,
-                    num_open_out,
-                    trace_count,
-                )
-                value = jnp.asarray(
-                    group_transform.reshape(()),
-                    dtype=result_dtype,
-                ) * value
-                destination_index = group.dst_indices[0]
-                pending[destination_index] = (
-                    pending[destination_index] + value
-                    if destination_index in pending
-                    else value
-                )
-                continue
-
-            traced_rows = tuple(
-                _trace_source_subblock(
-                    source_data,
-                    source_subblocks[source_index],
-                    result_dtype,
-                    flat_permutation,
-                    num_open_out,
-                    trace_count,
-                ).reshape(-1)
-                for source_index in group.src_indices
-            )
-            source_matrix = jnp.stack(traced_rows, axis=0)
-            destination_matrix = (
-                jnp.asarray(group_transform, dtype=result_dtype) @ source_matrix
-            )
-            for row, destination_index in enumerate(group.dst_indices):
-                destination_subblock = destination_subblocks[destination_index]
-                value = destination_matrix[row].reshape(
-                    tuple(destination_subblock.sizes)
-                )
-                pending[destination_index] = (
-                    pending[destination_index] + value
-                    if destination_index in pending
-                    else value
-                )
-    else:
-        raise ValueError(f"unsupported trace transformer kind {transformer.kind!r}")
-
-    for destination_index in sorted(pending):
-        destination_data = _add_to_subblock(
-            destination_data,
-            destination_subblocks[destination_index],
-            pending[destination_index],
-        )
+    destination_data = _strided_tensortrace(
+        source_data,
+        destination_size=destination_degeneracystructure.total_dim,
+        source_subblocks=source_subblocks,
+        destination_subblocks=destination_subblocks,
+        entries=_iter_trace_entries(transformer),
+        result_dtype=result_dtype,
+        permutation=flat_permutation,
+        num_open_out=num_open_out,
+        num_open_in=num_open_in,
+        trace_count=trace_count,
+    )
 
     return TensorMap(destination_space, destination_data)
+
+
+def _iter_trace_entries(
+    transformer: _native.TreeTransformer,
+) -> Iterator[_TraceEntry]:
+    if transformer.kind == "abelian":
+        for entry in transformer.abelian_data:
+            yield entry.src, entry.dst, entry.coeff
+        return
+    if transformer.kind != "generic":
+        raise ValueError(f"unsupported trace transformer kind {transformer.kind!r}")
+    for group in transformer.generic_data:
+        transform = group.transform
+        for source_column, source_index in enumerate(group.src_indices):
+            for destination_row, destination_index in enumerate(group.dst_indices):
+                coefficient = cast(
+                    _TraceCoefficient,
+                    transform[destination_row, source_column],
+                )
+                if coefficient != 0:
+                    yield source_index, destination_index, coefficient
 
 
 def _trivial_tensortrace_validated(
@@ -633,23 +591,3 @@ def _trace_result_dtype(
         if transformer.has_only_unit_coefficients
         else jnp.result_type(dtype, jnp.float32)
     )
-
-
-def _trace_source_subblock(
-    source_data: object,
-    source_subblock: _native.SubblockStructure,
-    result_dtype: jnp.dtype,
-    permutation: tuple[int, ...],
-    num_open_out: int,
-    trace_count: int,
-) -> jnp.ndarray:
-    value = _get_subblock(source_data, source_subblock, result_dtype)
-    if permutation:
-        value = jnp.transpose(value, permutation)
-    for trace_index in reversed(range(trace_count)):
-        value = jnp.trace(
-            value,
-            axis1=num_open_out + trace_index,
-            axis2=value.ndim - 1,
-        )
-    return value

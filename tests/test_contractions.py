@@ -6,6 +6,11 @@ import pytest
 
 import tensor0.operations.contractions.primitives as contractions
 import tensor0.operations.transforms as transforms
+from tensor0._stride._ffi import (
+    _native_call_count_for_tests,
+    _reset_native_call_count_for_tests,
+    native_available,
+)
 from tensor0 import (
     ComplexSpace,
     FermionNumber,
@@ -553,6 +558,13 @@ def test_tensortrace_rejects_non_dual_trace_spaces_before_storage_access():
         tensortrace(tensor, axes=((0,), (1,)), output=((), ()))
 
 
+def test_tensortrace_rejects_non_jax_storage_after_metadata_validation():
+    tensor = _neutral_endomorphism()
+
+    with pytest.raises(TypeError, match="tensortrace.*JAX-backed storage"):
+        tensortrace(tensor, axes=((0,), (1,)), output=((), ()))
+
+
 def test_tensortrace_empty_trace_accepts_output_permutation():
     first = space(U1Irrep, {0: 2})
     second = space(U1Irrep, {0: 3})
@@ -786,6 +798,60 @@ def test_tensortrace_su2_grouped_transform_is_jittable_and_differentiable():
 
     assert_allclose(value, jnp.dot(expected_gradient, jnp.asarray([1.0, 2.0])))
     assert_allclose(gradient, expected_gradient)
+
+
+@pytest.mark.skipif(not native_available(), reason="native CPU stride unavailable")
+def test_tensortrace_su2_grouped_transform_is_one_native_reduction() -> None:
+    half = space(SU2Irrep, {1: 1})
+    source = hom((half, half, half, half.dual()), ())
+    tensor = _tensor(source)
+
+    def run(data):
+        return tensortrace(
+            TensorMap(source, data),
+            axes=((3,), (0,)),
+            output=((1, 2), ()),
+        ).storage.data
+
+    compiled = jax.jit(run)
+    lowered = compiled.lower(tensor.storage.data)
+    stablehlo = str(lowered.compiler_ir(dialect="stablehlo")).lower()
+    _reset_native_call_count_for_tests()
+    result = compiled(tensor.storage.data)
+    result.block_until_ready()
+
+    assert _native_call_count_for_tests() == 1
+    assert stablehlo.count("stablehlo.custom_call") == 1
+    assert "structured_reduction" in stablehlo
+    assert "dot_general" not in stablehlo
+    assert "gather" not in stablehlo
+    assert "scatter" not in stablehlo
+
+
+def test_tensortrace_su2_grouped_transform_nested_transpose_is_closed() -> None:
+    half = space(SU2Irrep, {1: 1})
+    unit = space(SU2Irrep, {0: 1})
+    source = hom(
+        (half, half, half, half, unit, unit.dual()),
+        (),
+    )
+    tensor = _tensor(source)
+
+    def run(data):
+        return tensortrace(
+            TensorMap(source, data),
+            axes=((4,), (5,)),
+            output=((1, 2, 3, 0), ()),
+        ).storage.data
+
+    value = run(tensor.storage.data)
+    pullback = jax.vjp(run, tensor.storage.data)[1]
+    roundtrip = jax.linear_transpose(
+        pullback,
+        jnp.zeros_like(value),
+    )((tensor.storage.data,))[0]
+
+    assert_allclose(roundtrip, value)
 
 
 def test_tensortrace_dual_fermion_orientation_matches_trace():
@@ -2424,8 +2490,7 @@ def test_trivial_multiple_trace_matches_generic_small_integer_dtype(
         "sector_spec",
         lambda _space: U1Irrep,
     )
-    with pytest.warns(FutureWarning, match="scatter inputs have incompatible types"):
-        generic = tensortrace(tensor, **arguments)
+    generic = tensortrace(tensor, **arguments)
 
     assert direct.storage.data.dtype == generic.storage.data.dtype == dtype
     assert jnp.array_equal(direct.storage.data, generic.storage.data)

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from collections.abc import Callable
-from math import prod
 import sys
 from typing import TypeAlias
 
@@ -10,11 +9,6 @@ from jax import Array
 import jax.numpy as jnp
 
 from .. import _native
-from .._stride import (
-    StridedCopyRecord,
-    strided_copy,
-)
-from .._stride._plan import _contiguous_strides
 from ..structure.layout import (
     _sectorstructure_key,
     get_degeneracystructure,
@@ -23,6 +17,7 @@ from ..structure.layout import (
 from ..tensor.dense import _trivial_dense_array
 from ..tensor.storage import _require_jax_storage_data
 from ..tensor.tensor_map import TensorMap
+from ._strided import _strided_affine_transform, _strided_tree_transform
 
 Permutation: TypeAlias = tuple[tuple[int, ...], tuple[int, ...]]
 _TransformerCache: TypeAlias = OrderedDict[object, _native.TreeTransformer]
@@ -175,32 +170,14 @@ def _apply_tree_transform(
     result_dtype = _transform_result_dtype(source, transformer)
     src_degeneracy = get_degeneracystructure(tensor.space)
     dst_degeneracy = get_degeneracystructure(dst_space)
-    p = p_codomain + p_domain
-    kind = transformer.kind
-    if kind == "abelian":
-        records = _build_abelian_stride_records(
-            src_degeneracy,
-            dst_degeneracy,
-            p,
-            transformer.abelian_data,
-        )
-        dst_data = strided_copy(
-            source,
-            records=records,
-            output_size=dst_degeneracy.total_dim,
-            result_dtype=result_dtype,
-        )
-    elif kind == "generic":
-        dst_data = _apply_generic_transform(
-            source,
-            src_degeneracy,
-            dst_degeneracy,
-            result_dtype,
-            p,
-            transformer.generic_data,
-        )
-    else:
-        raise ValueError(f"unsupported tree transformer kind {kind!r}")
+    dst_data = _strided_tree_transform(
+        source,
+        source_layout=src_degeneracy,
+        destination_layout=dst_degeneracy,
+        result_dtype=result_dtype,
+        permutation=p_codomain + p_domain,
+        transformer=transformer,
+    )
     return TensorMap(dst_space, dst_data)
 
 
@@ -247,24 +224,20 @@ def twist(
     if len(factors) != len(subblocks):
         raise RuntimeError("twist factors and degeneracy structure are inconsistent")
     data = _require_jax_storage_data(tensor.storage.data, "twist()")
-    records = tuple(
-        StridedCopyRecord(
-            logical_shape=tuple(subblock.sizes),
-            source_strides=tuple(subblock.strides),
-            source_offset=subblock.offset,
-            destination_strides=tuple(subblock.strides),
-            destination_offset=subblock.offset,
-            scale=factor,
-        )
-        for subblock, factor in zip(subblocks, factors, strict=True)
-    )
     return TensorMap(
         tensor.space,
-        strided_copy(
+        _strided_affine_transform(
             data,
-            records=records,
+            source_subblocks=subblocks,
+            destination_subblocks=subblocks,
+            entries=(
+                (index, index, factor)
+                for index, factor in enumerate(factors)
+            ),
+            permutation=(),
             output_size=degeneracystructure.total_dim,
             result_dtype=data.dtype,
+            shape_error="twist source and destination subblock shapes differ",
         ),
     )
 
@@ -297,35 +270,24 @@ def flip(
         if all(coeff == 1.0 or coeff == -1.0 for _, coeff in entries)
         else jnp.result_type(source, jnp.float32)
     )
-    src_subblocks = get_degeneracystructure(tensor.space).subblockstructure
+    source_subblocks = get_degeneracystructure(tensor.space).subblockstructure
     dst_degeneracy = get_degeneracystructure(dst_space)
-    dst_subblocks = dst_degeneracy.subblockstructure
     # Toggling a fixed set of duality flags is bijective, so each destination
     # subblock is written exactly once.
-    records: list[StridedCopyRecord] = []
-    for src_index, (dst_index, coeff) in enumerate(entries):
-        src_subblock = src_subblocks[src_index]
-        dst_subblock = dst_subblocks[dst_index]
-        logical_shape = tuple(src_subblock.sizes)
-        if logical_shape != tuple(dst_subblock.sizes):
-            raise ValueError("flip source and destination subblock shapes differ")
-        records.append(
-            StridedCopyRecord(
-                logical_shape=logical_shape,
-                source_strides=tuple(src_subblock.strides),
-                source_offset=src_subblock.offset,
-                destination_strides=tuple(dst_subblock.strides),
-                destination_offset=dst_subblock.offset,
-                scale=coeff,
-            )
-        )
     return TensorMap(
         dst_space,
-        strided_copy(
+        _strided_affine_transform(
             source,
-            records=tuple(records),
+            source_subblocks=source_subblocks,
+            destination_subblocks=dst_degeneracy.subblockstructure,
+            entries=(
+                (source_index, destination_index, coefficient)
+                for source_index, (destination_index, coefficient) in enumerate(entries)
+            ),
+            permutation=(),
             output_size=dst_degeneracy.total_dim,
             result_dtype=result_dtype,
+            shape_error="flip source and destination subblock shapes differ",
         ),
     )
 
@@ -473,127 +435,6 @@ def _transform_result_dtype(
     if transformer.kind == "abelian" and transformer.has_only_unit_coefficients:
         return src_data.dtype
     return jnp.result_type(src_data, jnp.float32)
-
-
-def _build_abelian_stride_records(
-    src_layout: _native.DegeneracyStructure,
-    dst_layout: _native.DegeneracyStructure,
-    permutation: tuple[int, ...],
-    data: tuple[_native.AbelianTransformData, ...],
-) -> tuple[StridedCopyRecord, ...]:
-    records: list[StridedCopyRecord] = []
-    for entry in data:
-        src_subblock = src_layout.subblockstructure[entry.src]
-        dst_subblock = dst_layout.subblockstructure[entry.dst]
-        logical_shape = tuple(src_subblock.sizes[index] for index in permutation)
-        if logical_shape != tuple(dst_subblock.sizes):
-            raise ValueError("Abelian tree transform subblock shapes are inconsistent")
-        records.append(
-            StridedCopyRecord(
-                logical_shape=logical_shape,
-                source_strides=tuple(
-                    src_subblock.strides[index] for index in permutation
-                ),
-                source_offset=src_subblock.offset,
-                destination_strides=tuple(dst_subblock.strides),
-                destination_offset=dst_subblock.offset,
-                scale=entry.coeff,
-            )
-        )
-    return tuple(records)
-
-
-def _apply_generic_transform(
-    source: Array,
-    src_layout: _native.DegeneracyStructure,
-    dst_layout: _native.DegeneracyStructure,
-    result_dtype: jnp.dtype,
-    permutation: tuple[int, ...],
-    data: tuple[_native.GenericTransformData, ...],
-) -> Array:
-    source_subblocks = src_layout.subblockstructure
-    destination_subblocks = dst_layout.subblockstructure
-    pack_records: list[StridedCopyRecord] = []
-    unpack_records: list[StridedCopyRecord] = []
-    groups: list[tuple[int, int, Array]] = []
-    pack_offset = 0
-    unpack_offset = 0
-    for entry in data:
-        src_indices = tuple(entry.src_indices)
-        dst_indices = tuple(entry.dst_indices)
-        src_sizes = tuple(source_subblocks[src_indices[0]].sizes)
-        block_size = prod(src_sizes)
-        group_pack_offset = pack_offset
-        contiguous_strides = _contiguous_strides(src_sizes)
-        for src_index in src_indices:
-            subblock = source_subblocks[src_index]
-            if tuple(subblock.sizes) != src_sizes:
-                raise ValueError(
-                    "generic tree transform source subblock shapes are inconsistent"
-                )
-            pack_records.append(
-                StridedCopyRecord(
-                    logical_shape=src_sizes,
-                    source_strides=tuple(subblock.strides),
-                    source_offset=subblock.offset,
-                    destination_strides=contiguous_strides,
-                    destination_offset=pack_offset,
-                )
-            )
-            pack_offset += block_size
-
-        transform = jnp.asarray(entry.transform, dtype=result_dtype)
-        logical_shape = tuple(src_sizes[index] for index in permutation)
-        permuted_strides = tuple(contiguous_strides[index] for index in permutation)
-        for dst_index in dst_indices:
-            subblock = destination_subblocks[dst_index]
-            if tuple(subblock.sizes) != logical_shape:
-                raise ValueError(
-                    "generic tree transform destination subblock shapes are inconsistent"
-                )
-            unpack_records.append(
-                StridedCopyRecord(
-                    logical_shape=logical_shape,
-                    source_strides=permuted_strides,
-                    source_offset=unpack_offset,
-                    destination_strides=tuple(subblock.strides),
-                    destination_offset=subblock.offset,
-                )
-            )
-            unpack_offset += block_size
-        groups.append((group_pack_offset, block_size, transform))
-
-    packed = strided_copy(
-        source,
-        records=tuple(pack_records),
-        output_size=pack_offset,
-        result_dtype=result_dtype,
-    )
-    batch_shape = packed.shape[:-1]
-    pieces: list[Array] = []
-    for source_offset, block_size, transform in groups:
-        destination_row_count, source_row_count = transform.shape
-        start = source_offset
-        stop = start + source_row_count * block_size
-        source_rows = packed[..., start:stop].reshape(
-            (*batch_shape, source_row_count, block_size)
-        )
-        if source_row_count == 1 and destination_row_count == 1:
-            destination_rows = transform.reshape(()) * source_rows
-        else:
-            destination_rows = transform @ source_rows
-        pieces.append(destination_rows.reshape((*batch_shape, -1)))
-    arena = (
-        jnp.concatenate(pieces, axis=-1)
-        if pieces
-        else jnp.zeros((*batch_shape, 0), dtype=result_dtype)
-    )
-    return strided_copy(
-        arena,
-        records=tuple(unpack_records),
-        output_size=dst_layout.total_dim,
-        result_dtype=result_dtype,
-    )
 
 
 def _clear_tree_transformer_caches_for_tests() -> None:
