@@ -12,34 +12,30 @@ from typing import Any
 import jax.numpy as jnp
 import pytest
 
-from tensor0._stride import (
+from tensor0._stride._plan import (
     CompleteMode,
-    StridedCopyPlan,
-    StridedCopyRecord,
+    AffinePlan,
+    AffineRecord,
     StridedOutputInit,
     StridedReductionKind,
     StridedScalarKind,
     StridedWriteKind,
-    strided_copy,
 )
-from tensor0._stride._compiler import (
-    COMPILED_DESCRIPTOR_MAGIC,
-    COMPILED_DESCRIPTOR_VERSION,
-    compile_plan,
+from tensor0._stride._map import _execute_map
+from tensor0._stride._native_descriptor import (
+    AFFINE_DESCRIPTOR_MAGIC,
+    AFFINE_DESCRIPTOR_VERSION,
+    lower_plan,
 )
-from tensor0._stride._native_lowering import lower_plan
 from tensor0._stride._plan import (
     PlanValidationError,
     _DTYPE_C64,
     _DTYPE_F32,
-    build_strided_copy_plan,
+    build_affine_plan,
     transpose_plan,
 )
-from tensor0._stride._selected_scale import compile_selected_scale_plan
-from tensor0._stride._update import (
-    compile_base_accumulate_plan,
-    compile_base_assign_plan,
-)
+from tensor0._stride._ops._selected_scale import build_selected_scale_plan
+from tensor0._stride._ops._update_support import build_base_accumulate_plan, build_base_assign_plan
 
 from ._fixtures import (
     contiguous_dtype_plan,
@@ -83,9 +79,9 @@ def _single_plan(
     shape: tuple[int, ...],
     source_order: tuple[int, ...],
     destination_order: tuple[int, ...],
-) -> StridedCopyPlan:
+) -> AffinePlan:
     size = prod(shape)
-    record = StridedCopyRecord(
+    record = AffineRecord(
         shape,
         _compact_strides(shape, source_order),
         0,
@@ -93,7 +89,7 @@ def _single_plan(
         0,
         -1.25,
     )
-    return build_strided_copy_plan(
+    return build_affine_plan(
         records=(record,),
         output_size=size,
         coverage=CompleteMode.COMPLETE_UNIQUE,
@@ -109,50 +105,49 @@ def test_noncompact_multi_record_plan_binds_and_lowers_compactly() -> None:
 
     assert bound.source_size == 16
     assert bound.output_size == 16
-    assert bound.copied_elements == 16
+    assert bound.mapped_elements == 16
     assert len(lowered.descriptor) < 1_024
     assert len(lowered.descriptor) == 8 * len(lowered.words)
 
 
-def test_lowering_emits_one_current_descriptor_with_semantic_witness() -> None:
+def test_lowering_emits_one_semantic_affine_descriptor() -> None:
     bound = contiguous_dtype_plan(jnp.float32, 1.25, size=6)
 
     lowered = lower_plan(bound)
 
-    assert lowered.words[0] == COMPILED_DESCRIPTOR_MAGIC
-    assert lowered.words[1] == COMPILED_DESCRIPTOR_VERSION
-    assert lowered.words[11:14] == (1, 1, 1)
-    raw_word_count = lowered.words[5]
-    semantic_words = lowered.words[14 : 14 + raw_word_count]
-    expected_semantic_words = (
-        0x3150444952543054,
-        5,
-        18,
+    expected_words = (
+        AFFINE_DESCRIPTOR_MAGIC,
+        AFFINE_DESCRIPTOR_VERSION,
+        22,
         6,
         6,
         6,
         1,
         1,
         1,
+        1,
+        1,
+        0,
         1,
         0,
         0,
         0x3FA00000,
         0,
         0,
+        1,
         6,
         1,
         1,
     )
-    assert semantic_words == expected_semantic_words
+    assert lowered.words == expected_words
     assert lowered.descriptor == b"".join(
         word.to_bytes(8, "little") for word in lowered.words
     )
 
 
 def test_mixed_lowering_encodes_true_operand_and_scalar_policies() -> None:
-    forward = build_strided_copy_plan(
-        records=(StridedCopyRecord((4,), (1,), 0, (1,), 0, 1.0 + 2.0j),),
+    forward = build_affine_plan(
+        records=(AffineRecord((4,), (1,), 0, (1,), 0, 1.0 + 2.0j),),
         output_size=4,
         coverage=CompleteMode.COMPLETE_UNIQUE,
         source_size=4,
@@ -164,12 +159,40 @@ def test_mixed_lowering_encodes_true_operand_and_scalar_policies() -> None:
     forward_execution = lower_plan(forward)
     reverse_execution = lower_plan(reverse)
 
-    assert forward_execution.bound is forward
-    assert forward_execution.words[11:14] == (_DTYPE_F32, _DTYPE_C64, 1)
-    assert forward_execution.words[14 + 8] == _DTYPE_C64
-    assert reverse_execution.bound is reverse
-    assert reverse_execution.words[11:14] == (_DTYPE_C64, _DTYPE_F32, 2)
-    assert reverse_execution.words[14 + 8] == _DTYPE_C64
+    assert forward_execution.semantic is forward
+    assert forward_execution.words[8:12] == (_DTYPE_F32, _DTYPE_C64, 1, 0)
+    assert reverse_execution.semantic is reverse
+    assert reverse_execution.words[8:12] == (_DTYPE_C64, _DTYPE_F32, 2, 0)
+
+
+@pytest.mark.parametrize("dtype", [
+    "bool", "int8", "uint8", "int16", "uint16", "int32", "uint32",
+    "int64", "uint64", "float16", "bfloat16", "float32", "float64",
+    "complex64", "complex128",
+])
+def test_scalar_descriptor_words_preserve_width_and_component_order(dtype):
+    from tensor0._stride._native_descriptor import _descriptor_scale_words
+
+    scalar_dtype = jnp.dtype(dtype)
+    payload = bytes(range(scalar_dtype.itemsize))
+    first, second = _descriptor_scale_words(payload, scalar_dtype)
+    if jnp.issubdtype(scalar_dtype, jnp.complexfloating):
+        width = scalar_dtype.itemsize // 2
+        actual = first.to_bytes(width, "little") + second.to_bytes(width, "little")
+    else:
+        actual = first.to_bytes(scalar_dtype.itemsize, "little")
+        assert second == 0
+    assert actual == payload
+    for invalid in (payload[:-1], payload + b"\x00"):
+        with pytest.raises(ValueError, match="scale must contain"):
+            _descriptor_scale_words(invalid, scalar_dtype)
+
+
+def test_scalar_descriptor_words_reject_unsupported_dtype():
+    from tensor0._stride._native_descriptor import _descriptor_scale_words
+
+    with pytest.raises(ValueError, match="does not support"):
+        _descriptor_scale_words(bytes(4), jnp.dtype("V4"))
 
 
 def test_vendored_ffi_headers_and_license_match_frozen_hashes() -> None:
@@ -233,7 +256,7 @@ def test_descriptor_size_depends_on_rank_not_logical_elements() -> None:
     assert lower_plan(small) == small_lowered
 
 
-def test_bound_and_lowered_plan_keys_exclude_array_identity() -> None:
+def test_semantic_and_native_call_keys_exclude_array_identity() -> None:
     first = _single_plan((2, 3, 2), (2, 0, 1), (1, 2, 0))
     second = _single_plan((2, 3, 2), (2, 0, 1), (1, 2, 0))
 
@@ -244,10 +267,10 @@ def test_bound_and_lowered_plan_keys_exclude_array_identity() -> None:
 
 
 def test_operation_policy_is_semantic_but_not_affine_execution_identity() -> None:
-    fresh = contiguous_dtype_plan(jnp.float32, 1, size=6)
-    assign = compile_base_assign_plan(fresh)
-    accumulate = compile_base_accumulate_plan(fresh)
-    dynamic_scale = compile_selected_scale_plan(fresh)
+    fresh = contiguous_dtype_plan(jnp.float32, None, size=6)
+    assign = build_base_assign_plan(fresh)
+    accumulate = build_base_accumulate_plan(fresh)
+    dynamic_scale = build_selected_scale_plan(fresh)
 
     assert fresh.output_init is StridedOutputInit.UNINITIALIZED
     assert fresh.write_kind is StridedWriteKind.ASSIGN
@@ -270,16 +293,13 @@ def test_operation_policy_is_semantic_but_not_affine_execution_identity() -> Non
         == 4
     )
     assert len(
-        {
-            compile_plan(plan).canonical_execution_key
-            for plan in (fresh, assign, accumulate, dynamic_scale)
-        }
+        {lower_plan(plan).descriptor for plan in (fresh, assign, accumulate)}
     ) == 1
 
 
 def test_partial_fresh_map_defaults_to_zero_initialization() -> None:
-    plan = build_strided_copy_plan(
-        records=(StridedCopyRecord((2,), (1,), 0, (1,), 1),),
+    plan = build_affine_plan(
+        records=(AffineRecord((2,), (1,), 0, (1,), 1),),
         output_size=4,
         coverage=CompleteMode.PARTIAL_UNIQUE_ZERO_FILL,
         source_size=2,
@@ -292,8 +312,8 @@ def test_partial_fresh_map_defaults_to_zero_initialization() -> None:
 
 def test_uninitialized_output_requires_complete_coverage() -> None:
     with pytest.raises(PlanValidationError, match="uninitialized output"):
-        build_strided_copy_plan(
-            records=(StridedCopyRecord((2,), (1,), 0, (1,), 1),),
+        build_affine_plan(
+            records=(AffineRecord((2,), (1,), 0, (1,), 1),),
             output_size=4,
             coverage=CompleteMode.PARTIAL_UNIQUE_ZERO_FILL,
             source_size=2,
@@ -303,10 +323,10 @@ def test_uninitialized_output_requires_complete_coverage() -> None:
         )
 
 
-def test_structured_sum_compiles_map_and_reduction_axes_from_one_plan() -> None:
-    bound = build_strided_copy_plan(
+def test_structured_sum_sets_zero_initialization_from_one_plan() -> None:
+    bound = build_affine_plan(
         records=(
-            StridedCopyRecord(
+            AffineRecord(
                 logical_shape=(4, 3),
                 source_strides=(3, 1),
                 source_offset=0,
@@ -323,60 +343,14 @@ def test_structured_sum_compiles_map_and_reduction_axes_from_one_plan() -> None:
         reduction_kind=StridedReductionKind.SUM,
     )
 
-    compiled = compile_plan(bound)
-    record = compiled.records[0]
     assert bound.output_init is StridedOutputInit.ZERO
-    assert record.reduction_axes == (0,)
-    assert record.map_loop_order == (1,)
-    assert record.reduction_loop_order == (0,)
-    assert record.output_count == 3
-    assert record.reduction_count == 4
-    assert record.accumulator_dtype == "float32"
+    assert bound.records[0].reduction_axes == (0,)
 
 
-@pytest.mark.parametrize(
-    ("source_dtype", "result_dtype", "scalar_kind"),
-    (
-        (jnp.bool_, jnp.bool_, StridedScalarKind.STATIC_SCALE_CAST),
-        (jnp.int8, jnp.int8, StridedScalarKind.STATIC_SCALE_CAST),
-        (jnp.float16, jnp.float16, StridedScalarKind.STATIC_SCALE_CAST),
-        (jnp.float32, jnp.float16, StridedScalarKind.JAX_TRANSPOSE),
-    ),
-)
-def test_structured_sum_accumulates_in_result_dtype(
-    source_dtype: Any,
-    result_dtype: Any,
-    scalar_kind: StridedScalarKind,
-) -> None:
-    plan = build_strided_copy_plan(
+def test_empty_structured_sum_retains_semantic_reduction_axis() -> None:
+    plan = build_affine_plan(
         records=(
-            StridedCopyRecord(
-                (4, 3),
-                (3, 1),
-                0,
-                (0, 1),
-                0,
-                reduction_axes=(0,),
-            ),
-        ),
-        output_size=3,
-        coverage=CompleteMode.COMPLETE_UNIQUE,
-        source_size=12,
-        source_dtype=source_dtype,
-        result_dtype=result_dtype,
-        scalar_kind=scalar_kind,
-        reduction_kind=StridedReductionKind.SUM,
-    )
-
-    assert compile_plan(plan).records[0].accumulator_dtype == jnp.dtype(
-        result_dtype
-    ).name
-
-
-def test_empty_structured_sum_retains_explicit_fiber_counts() -> None:
-    plan = build_strided_copy_plan(
-        records=(
-            StridedCopyRecord(
+            AffineRecord(
                 (0, 3),
                 (3, 1),
                 0,
@@ -393,33 +367,31 @@ def test_empty_structured_sum_retains_explicit_fiber_counts() -> None:
         reduction_kind=StridedReductionKind.SUM,
     )
 
-    record = compile_plan(plan).records[0]
-    assert record.output_count == 3
-    assert record.reduction_count == 0
+    assert plan.records[0].reduction_axes == (0,)
 
 
 @pytest.mark.parametrize(
     ("record", "output_size", "message"),
     (
         (
-            StridedCopyRecord((4, 3), (3, 1), 0, (1, 1), 0, reduction_axes=(0,)),
+            AffineRecord((4, 3), (3, 1), 0, (1, 1), 0, reduction_axes=(0,)),
             3,
             "destination depends on reduction axis",
         ),
         (
-            StridedCopyRecord((4, 3), (3, 1), 0, (3, 1), 0),
+            AffineRecord((4, 3), (3, 1), 0, (3, 1), 0),
             12,
             "requires a reduction axis",
         ),
     ),
 )
 def test_structured_sum_rejects_unstructured_output_collisions(
-    record: StridedCopyRecord,
+    record: AffineRecord,
     output_size: int,
     message: str,
 ) -> None:
     with pytest.raises(PlanValidationError, match=message):
-        build_strided_copy_plan(
+        build_affine_plan(
             records=(record,),
             output_size=output_size,
             coverage=CompleteMode.COMPLETE_UNIQUE,
@@ -432,7 +404,7 @@ def test_structured_sum_rejects_unstructured_output_collisions(
 
 def test_multi_record_structured_sum_requires_explicit_accumulation() -> None:
     records = tuple(
-        StridedCopyRecord(
+        AffineRecord(
             logical_shape=(4, 3),
             source_strides=(3, 1),
             source_offset=offset,
@@ -453,19 +425,19 @@ def test_multi_record_structured_sum_requires_explicit_accumulation() -> None:
     )
 
     with pytest.raises(PlanValidationError, match="requires accumulate"):
-        build_strided_copy_plan(**arguments)
+        build_affine_plan(**arguments)
 
-    plan = build_strided_copy_plan(
+    plan = build_affine_plan(
         **arguments,
         write_kind=StridedWriteKind.ACCUMULATE,
     )
-    assert len(compile_plan(plan).records) == 2
+    assert len(plan.records) == 2
 
 
 def test_fresh_map_executor_rejects_reduction_operation_plan() -> None:
-    plan = build_strided_copy_plan(
+    plan = build_affine_plan(
         records=(
-            StridedCopyRecord(
+            AffineRecord(
                 (4, 3),
                 (3, 1),
                 0,
@@ -483,7 +455,7 @@ def test_fresh_map_executor_rejects_reduction_operation_plan() -> None:
     )
 
     with pytest.raises(ValueError, match="fresh affine map"):
-        strided_copy(jnp.arange(12, dtype=jnp.float32), plan=plan)
+        _execute_map(jnp.arange(12, dtype=jnp.float32), plan=plan)
 
 
 @pytest.mark.parametrize(
@@ -494,7 +466,7 @@ def test_fresh_map_executor_rejects_reduction_operation_plan() -> None:
     ],
 )
 def test_frozen_u1_address_fixtures_validate(
-    factory: Callable[[], StridedCopyPlan],
+    factory: Callable[[], AffinePlan],
     record_count: int,
     size: int,
 ) -> None:
@@ -517,11 +489,26 @@ def test_frozen_u1_address_fixtures_validate(
     assert sorted(destination_addresses) == list(range(size))
 
 
-def test_positive_strides_that_alias_are_rejected() -> None:
-    record = StridedCopyRecord((5, 5), (2, 2), 0, (5, 1), 0)
+def test_positive_strides_that_repeat_source_addresses_are_allowed() -> None:
+    record = AffineRecord((5, 5), (2, 2), 0, (5, 1), 0)
+
+    plan = build_affine_plan(
+        records=(record,),
+        output_size=25,
+        coverage=CompleteMode.COMPLETE_UNIQUE,
+        source_size=25,
+        source_dtype=jnp.float32,
+        result_dtype=jnp.float32,
+    )
+
+    assert plan.required_source_size == 17
+
+
+def test_positive_destination_strides_that_alias_are_rejected() -> None:
+    record = AffineRecord((5, 5), (5, 1), 0, (2, 2), 0)
 
     with pytest.raises(PlanValidationError, match="noninjective_view"):
-        build_strided_copy_plan(
+        build_affine_plan(
             records=(record,),
             output_size=25,
             coverage=CompleteMode.COMPLETE_UNIQUE,
@@ -533,10 +520,10 @@ def test_positive_strides_that_alias_are_rejected() -> None:
 
 def test_host_pointer_domain_is_checked_when_binding() -> None:
     extent = sys.maxsize // jnp.dtype(jnp.float32).itemsize + 2
-    record = StridedCopyRecord((extent,), (1,), 0, (1,), 0)
+    record = AffineRecord((extent,), (1,), 0, (1,), 0)
 
     with pytest.raises(PlanValidationError, match="host_address_overflow"):
-        build_strided_copy_plan(
+        build_affine_plan(
             records=(record,),
             output_size=extent,
             coverage=CompleteMode.COMPLETE_UNIQUE,

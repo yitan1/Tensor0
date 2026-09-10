@@ -1,7 +1,7 @@
 # Tensor0 Standard Benchmarks
 
 This suite contains reproducible Tensor0 performance-regression benchmarks.
-`python -m benchmarks.standard` is its only command-line entry point; workload
+`python -m benchmarks.standard` is its scenario-runner entry point; workload
 ownership follows Tensor0 operation domains:
 
 - `linalg/` owns TensorMap composition, compact SVD, and their focused JAX and
@@ -123,3 +123,19 @@ allocation remains inside the timed region.
 
 Benchmark results are local profiling and regression evidence. They are not
 cross-library or hardware-independent performance claims.
+
+## Focused Affine Update Check
+
+Run `uv run python -m benchmarks.standard.diagnostics.stride_update --size 512 --repeats 30`
+to compare contiguous and transposed conversion, assignment, accumulation,
+weighted update, scaling, and JVP execution. It also compares fresh maps and
+updates across contiguous, transposed, broadcast, and rank-4 layouts with
+complete and partial coverage, identity mappings, and explicit static factors.
+The layout matrix covers float16, float32, and complex64. Compare a fresh
+static single scale with an identity-mapped dynamic scale to check equivalent
+kernel performance; the leaf-dispatch tests separately observe actual kernel
+selection, including zero/one factors and non-aligned tile tails.
+The JSON output includes native
+call counts and compiled allocation statistics; compare timing on the same
+idle machine after warming both builds. This diagnostic is independent of the
+standard scenario runner.

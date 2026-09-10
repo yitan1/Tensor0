@@ -75,6 +75,21 @@ Unlike `tr(matrix)`, the general trace operation deliberately preserves the
 rank-zero TensorMap representation. `conjugate=True` traces the tensor after
 applying its adjoint orientation.
 
+On the supported native CPU path, a long `float32` or `complex64` trace with
+too few independent outputs may use parallel partial sums. As with JAX/XLA
+floating reductions, changing the worker count can change the association and
+therefore the numerical error. For ill-conditioned or strongly cancelling
+sums, the relative difference need not be confined to the lowest bits. Signed
+zero, overflow classification, and NaN payload may also vary. Repeated
+execution with the same compiled program and worker count is reproducible;
+integer reductions retain exact results.
+
+This numerical contract also applies to floating-point and complex reductions
+introduced by automatic differentiation, such as a scalar scale-factor
+cotangent. Elementwise maps and non-reduction cotangents keep their stricter
+value contract, while reduction results are compared numerically rather than
+by requiring one particular XLA association tree.
+
 ## Named-Label Networks
 
 `idx` binds comma-separated Python identifiers to visible axes in codomain-

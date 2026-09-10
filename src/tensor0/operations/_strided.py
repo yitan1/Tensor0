@@ -10,17 +10,17 @@ from jax import Array
 import jax.numpy as jnp
 
 from .. import _native
-from .._stride import (
+from .._stride._plan import (
     CompleteMode,
-    StridedCopyPlan,
-    StridedCopyRecord,
+    AffinePlan,
+    AffineRecord,
     StridedReductionKind,
     StridedWriteKind,
-    build_strided_copy_plan,
-    strided_copy,
-    strided_reduce,
+    build_affine_plan,
+    contiguous_strides,
 )
-from .._stride._plan import _contiguous_strides
+from .._stride._map import _execute_map
+from .._stride._ops._reduction import _execute_reduction
 
 _StridedCoefficient: TypeAlias = int | float | complex
 _StridedEntry: TypeAlias = tuple[int, int, _StridedCoefficient]
@@ -41,7 +41,7 @@ def _strided_affine_transform(
 ) -> Array:
     """Execute one complete affine transform over packed subblocks."""
 
-    records: list[StridedCopyRecord] = []
+    records: list[AffineRecord] = []
     for source_index, destination_index, coefficient in entries:
         source_subblock = source_subblocks[source_index]
         destination_subblock = destination_subblocks[destination_index]
@@ -58,7 +58,7 @@ def _strided_affine_transform(
         if logical_shape != tuple(destination_subblock.sizes):
             raise ValueError(shape_error)
         records.append(
-            StridedCopyRecord(
+            AffineRecord(
                 logical_shape=logical_shape,
                 source_strides=source_strides,
                 source_offset=source_subblock.offset,
@@ -67,12 +67,15 @@ def _strided_affine_transform(
                 scale=coefficient,
             )
         )
-    return strided_copy(
-        source,
+    plan = build_affine_plan(
         records=tuple(records),
         output_size=output_size,
+        coverage=CompleteMode.COMPLETE_UNIQUE,
+        source_size=source.shape[-1],
+        source_dtype=source.dtype,
         result_dtype=result_dtype,
     )
+    return _execute_map(source, plan=plan)
 
 
 def _strided_tree_transform(
@@ -122,8 +125,8 @@ def _strided_grouped_transform(
 ) -> Array:
     source_subblocks = source_layout.subblockstructure
     destination_subblocks = destination_layout.subblockstructure
-    pack_records: list[StridedCopyRecord] = []
-    unpack_records: list[StridedCopyRecord] = []
+    pack_records: list[AffineRecord] = []
+    unpack_records: list[AffineRecord] = []
     groups: list[tuple[int, int, Array]] = []
     pack_offset = 0
     unpack_offset = 0
@@ -133,7 +136,7 @@ def _strided_grouped_transform(
         source_sizes = tuple(source_subblocks[source_indices[0]].sizes)
         block_size = prod(source_sizes)
         group_pack_offset = pack_offset
-        contiguous_strides = _contiguous_strides(source_sizes)
+        source_contiguous_strides = contiguous_strides(source_sizes)
         for source_index in source_indices:
             subblock = source_subblocks[source_index]
             if tuple(subblock.sizes) != source_sizes:
@@ -141,11 +144,11 @@ def _strided_grouped_transform(
                     "generic tree transform source subblock shapes are inconsistent"
                 )
             pack_records.append(
-                StridedCopyRecord(
+                AffineRecord(
                     logical_shape=source_sizes,
                     source_strides=tuple(subblock.strides),
                     source_offset=subblock.offset,
-                    destination_strides=contiguous_strides,
+                    destination_strides=source_contiguous_strides,
                     destination_offset=pack_offset,
                 )
             )
@@ -154,7 +157,7 @@ def _strided_grouped_transform(
         transform = jnp.asarray(entry.transform, dtype=result_dtype)
         logical_shape = tuple(source_sizes[index] for index in permutation)
         permuted_strides = tuple(
-            contiguous_strides[index] for index in permutation
+            source_contiguous_strides[index] for index in permutation
         )
         for destination_index in destination_indices:
             subblock = destination_subblocks[destination_index]
@@ -164,7 +167,7 @@ def _strided_grouped_transform(
                     "are inconsistent"
                 )
             unpack_records.append(
-                StridedCopyRecord(
+                AffineRecord(
                     logical_shape=logical_shape,
                     source_strides=permuted_strides,
                     source_offset=unpack_offset,
@@ -175,12 +178,15 @@ def _strided_grouped_transform(
             unpack_offset += block_size
         groups.append((group_pack_offset, block_size, transform))
 
-    packed = strided_copy(
-        source,
+    pack_plan = build_affine_plan(
         records=tuple(pack_records),
         output_size=pack_offset,
+        coverage=CompleteMode.COMPLETE_UNIQUE,
+        source_size=source.shape[-1],
+        source_dtype=source.dtype,
         result_dtype=result_dtype,
     )
+    packed = _execute_map(source, plan=pack_plan)
     batch_shape = packed.shape[:-1]
     pieces: list[Array] = []
     for source_offset, block_size, transform in groups:
@@ -200,12 +206,15 @@ def _strided_grouped_transform(
         if pieces
         else jnp.zeros((*batch_shape, 0), dtype=result_dtype)
     )
-    return strided_copy(
-        arena,
+    unpack_plan = build_affine_plan(
         records=tuple(unpack_records),
         output_size=destination_layout.total_dim,
+        coverage=CompleteMode.COMPLETE_UNIQUE,
+        source_size=arena.shape[-1],
+        source_dtype=arena.dtype,
         result_dtype=result_dtype,
     )
+    return _execute_map(arena, plan=unpack_plan)
 
 
 def _strided_tensortrace(
@@ -237,7 +246,7 @@ def _strided_tensortrace(
     )
     if plan is None:
         return jnp.zeros((destination_size,), dtype=result_dtype)
-    return strided_reduce(source, plan=plan)
+    return _execute_reduction(source, plan=plan)
 
 
 def _build_strided_trace_plan(
@@ -251,8 +260,8 @@ def _build_strided_trace_plan(
     num_open_out: int,
     num_open_in: int,
     trace_count: int,
-) -> StridedCopyPlan | None:
-    records: list[StridedCopyRecord] = []
+) -> AffinePlan | None:
+    records: list[AffineRecord] = []
     for source_index, destination_index, coefficient in entries:
         source_subblock = source_subblocks[source_index]
         destination_subblock = destination_subblocks[destination_index]
@@ -286,7 +295,7 @@ def _build_strided_trace_plan(
             raise ValueError("trace destination subblock shape is inconsistent")
         reduction_axes = tuple(range(open_rank, open_rank + trace_count))
         records.append(
-            StridedCopyRecord(
+            AffineRecord(
                 logical_shape=logical_shape,
                 source_strides=logical_source_strides,
                 source_offset=source_subblock.offset,
@@ -301,7 +310,7 @@ def _build_strided_trace_plan(
         )
     if not records:
         return None
-    return build_strided_copy_plan(
+    return build_affine_plan(
         records=tuple(records),
         output_size=destination_size,
         coverage=CompleteMode.PARTIAL_UNIQUE_ZERO_FILL,

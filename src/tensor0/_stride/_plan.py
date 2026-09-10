@@ -12,7 +12,9 @@ import jax.numpy as jnp
 from jax.typing import DTypeLike
 import numpy as np
 
-ADDRESS_PLAN_KEY_VERSION = 4
+from ._scalar import mapping_dtype, scalar_key
+
+AFFINE_PLAN_KEY_VERSION = 5
 MAXIMUM_RANK = 8
 UINT64_MAX = (1 << 64) - 1
 INT64_MIN = -(1 << 63)
@@ -36,7 +38,7 @@ _DTYPE_U16 = 13
 _DTYPE_U32 = 14
 _DTYPE_U64 = 15
 
-Scalar: TypeAlias = int | float | complex
+Scalar: TypeAlias = int | float | complex | np.number | np.bool_
 
 
 def _stable_key_bytes(domain: str, *values: object) -> bytes:
@@ -111,7 +113,7 @@ class StridedReductionKind(str, Enum):
 
 
 class PlanValidationError(ValueError):
-    """A deterministic address-plan validation failure."""
+    """A deterministic affine-plan validation failure."""
 
     def __init__(self, code: str, message: str) -> None:
         self.code = code
@@ -119,32 +121,31 @@ class PlanValidationError(ValueError):
 
 
 @dataclass(frozen=True, slots=True)
-class StridedCopyRecord:
-    """One affine copy record in destination coordinate order."""
+class AffineRecord:
+    """One affine map/reduce record in destination coordinate order."""
 
     logical_shape: tuple[int, ...]
     source_strides: tuple[int, ...]
     source_offset: int
     destination_strides: tuple[int, ...]
     destination_offset: int
-    scale: Scalar = 1
+    scale: Scalar | None = None
     source_broadcast_axes: tuple[int, ...] = ()
     reduction_axes: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True, slots=True, eq=False)
-class StridedCopyPlan:
+class AffinePlan:
     """Per-record-validated affine metadata bound to array contracts."""
 
-    records: tuple[StridedCopyRecord, ...]
+    records: tuple[AffineRecord, ...]
     output_size: int
     coverage: CompleteMode
     required_source_size: int
-    copied_elements: int
+    mapped_elements: int
     source_size: int
     source_dtype: str
     result_dtype: str
-    promoted_scale_dtype: str
     output_init: StridedOutputInit
     write_kind: StridedWriteKind
     scalar_kind: StridedScalarKind
@@ -152,7 +153,7 @@ class StridedCopyPlan:
     semantic_key: bytes = field(repr=False)
 
     def __eq__(self, other: object) -> bool:
-        if not isinstance(other, StridedCopyPlan):
+        if not isinstance(other, AffinePlan):
             return NotImplemented
         return self.semantic_key == other.semantic_key
 
@@ -205,7 +206,7 @@ def _checked_product(values: tuple[int, ...], field: str) -> int:
     return result
 
 
-def _record_count(record: StridedCopyRecord, record_index: int) -> int:
+def _record_count(record: AffineRecord, record_index: int) -> int:
     return _checked_product(
         record.logical_shape,
         f"record[{record_index}] logical element count",
@@ -213,7 +214,7 @@ def _record_count(record: StridedCopyRecord, record_index: int) -> int:
 
 
 def _view(
-    record: StridedCopyRecord,
+    record: AffineRecord,
     side: str,
 ) -> tuple[tuple[int, ...], tuple[int, ...], int]:
     if side == "source":
@@ -227,7 +228,7 @@ def _view(
     raise AssertionError(f"unknown view side {side!r}")
 
 
-def _contiguous_strides(shape: tuple[int, ...]) -> tuple[int, ...]:
+def contiguous_strides(shape: tuple[int, ...]) -> tuple[int, ...]:
     """Return row-major strides while preserving empty-axis metadata."""
 
     stride = 1
@@ -239,7 +240,7 @@ def _contiguous_strides(shape: tuple[int, ...]) -> tuple[int, ...]:
 
 
 def _address_bounds(
-    record: StridedCopyRecord,
+    record: AffineRecord,
     record_index: int,
     side: str,
 ) -> tuple[int, int] | None:
@@ -268,7 +269,7 @@ def _address_bounds(
 
 
 def _validate_injective_view(
-    record: StridedCopyRecord,
+    record: AffineRecord,
     record_index: int,
     side: str,
     *,
@@ -310,7 +311,7 @@ def _validate_injective_view(
 
 
 def _validate_address_spec(
-    records: tuple[StridedCopyRecord, ...],
+    records: tuple[AffineRecord, ...],
     output_size: int,
     coverage: CompleteMode,
     write_kind: StridedWriteKind,
@@ -323,7 +324,7 @@ def _validate_address_spec(
         _fail("coverage_mode", "coverage must be a CompleteMode")
 
     required_source_size = 0
-    copied_elements = 0
+    mapped_elements = 0
     mapped_output_elements = 0
     has_reduction_axis = False
     for record_index, record in enumerate(records):
@@ -380,11 +381,6 @@ def _validate_address_spec(
                     f"record[{record_index}] map record cannot carry reduction axes",
                 )
         else:
-            if any(axis in reduction_axes for axis in broadcast_axes):
-                _fail(
-                    "reduction_source_broadcast",
-                    "structured reduction axes cannot also broadcast the input",
-                )
             has_reduction_axis = has_reduction_axis or bool(reduction_axes)
         for side, strides, offset in (
             ("source", record.source_strides, record.source_offset),
@@ -412,22 +408,22 @@ def _validate_address_spec(
                             "zero_stride",
                             f"record[{record_index}] map axis[{axis}] aliases",
                         )
-            injective_axes = (
-                tuple(axis for axis in range(rank) if axis not in reduction_axes)
-                if side == "destination"
-                and reduction_kind is StridedReductionKind.SUM
-                else None
-            )
-            _validate_injective_view(
-                record,
-                record_index,
-                side,
-                axes=injective_axes,
-            )
+            if side == "destination":
+                injective_axes = (
+                    tuple(axis for axis in range(rank) if axis not in reduction_axes)
+                    if reduction_kind is StridedReductionKind.SUM
+                    else None
+                )
+                _validate_injective_view(
+                    record,
+                    record_index,
+                    side,
+                    axes=injective_axes,
+                )
 
         logical_count = _record_count(record, record_index)
-        copied_elements = _checked_add(
-            copied_elements,
+        mapped_elements = _checked_add(
+            mapped_elements,
             logical_count,
             "plan copied element count",
         )
@@ -491,7 +487,7 @@ def _validate_address_spec(
                 "reduction_write_kind",
                 "multi-record structured reduction requires accumulate writes",
             )
-        return required_source_size, copied_elements
+        return required_source_size, mapped_elements
     if coverage is CompleteMode.COMPLETE_UNIQUE and mapped_output_elements != output_size:
         _fail(
             "incomplete_destination",
@@ -505,7 +501,7 @@ def _validate_address_spec(
             "destination_coverage",
             "PartialUnique copied element count exceeds output_size",
         )
-    return required_source_size, copied_elements
+    return required_source_size, mapped_elements
 
 
 def _validate_host_storage(size: int, dtype: jnp.dtype, field: str) -> None:
@@ -520,16 +516,16 @@ def _validate_host_storage(size: int, dtype: jnp.dtype, field: str) -> None:
 def _exact_scalar_bytes(value: object, dtype: jnp.dtype) -> bytes:
     """Return one scalar's exact result-dtype representation in little endian."""
 
-    scalar = np.asarray(value, dtype=dtype)
+    scalar = np.asarray(1 if value is None else value, dtype=dtype)
     if scalar.shape != ():
         _fail("scale_shape", "record scale must be scalar")
     little_endian_dtype = dtype.newbyteorder("<")
     return scalar.astype(little_endian_dtype, copy=False).tobytes()
 
 
-def build_strided_copy_plan(
+def build_affine_plan(
     *,
-    records: tuple[StridedCopyRecord, ...],
+    records: tuple[AffineRecord, ...],
     output_size: int,
     coverage: CompleteMode,
     source_size: int,
@@ -539,7 +535,7 @@ def build_strided_copy_plan(
     write_kind: StridedWriteKind = StridedWriteKind.ASSIGN,
     scalar_kind: StridedScalarKind = StridedScalarKind.STATIC_SCALE_CAST,
     reduction_kind: StridedReductionKind = StridedReductionKind.NONE,
-) -> StridedCopyPlan:
+) -> AffinePlan:
     """Validate each record and bind metadata to flat array contracts."""
 
     if output_init is None:
@@ -576,7 +572,7 @@ def build_strided_copy_plan(
                 "structured sum does not support dynamic scale",
             )
 
-    required_source_size, copied_elements = _validate_address_spec(
+    required_source_size, mapped_elements = _validate_address_spec(
         records,
         output_size,
         coverage,
@@ -599,49 +595,37 @@ def build_strided_copy_plan(
         "destination",
     )
 
-    scale_dtype = (
-        source_dtype_value
-        if scalar_kind is StridedScalarKind.JAX_TRANSPOSE
-        else result_dtype_value
-    )
-    scale_dtypes = tuple(jnp.asarray(record.scale).dtype for record in records)
-    promoted = jnp.result_type(source_dtype_value, *scale_dtypes)
     for record_index, record in enumerate(records):
         try:
-            scalar = jnp.asarray(record.scale, dtype=scale_dtype)
-        except (TypeError, ValueError, OverflowError) as exc:
-            _fail(
-                "scale_dtype",
-                f"record[{record_index}] scale cannot be represented: {exc}",
+            scalar_key(record.scale)
+            mapping_dtype(
+                result_dtype_value if scalar_kind is StridedScalarKind.JAX_TRANSPOSE
+                else source_dtype_value, record.scale,
             )
-        if scalar.shape != ():
-            _fail("scale_shape", f"record[{record_index}] scale must be scalar")
-    promoted_name = jnp.dtype(promoted).name
-    return StridedCopyPlan(
+        except (TypeError, ValueError, OverflowError) as exc:
+            _fail("scale_dtype", f"record[{record_index}] invalid scalar mapping: {exc}")
+    return AffinePlan(
         records=records,
         output_size=output_size,
         coverage=coverage,
         required_source_size=required_source_size,
-        copied_elements=copied_elements,
+        mapped_elements=mapped_elements,
         source_size=actual_source_size,
         source_dtype=source_dtype_value.name,
         result_dtype=result_dtype_value.name,
-        promoted_scale_dtype=promoted_name,
         output_init=output_init,
         write_kind=write_kind,
         scalar_kind=scalar_kind,
         reduction_kind=reduction_kind,
-        semantic_key=_bound_static_key(
+        semantic_key=_semantic_static_key(
             records=records,
             output_size=output_size,
             coverage=coverage,
             required_source_size=required_source_size,
-            copied_elements=copied_elements,
+            mapped_elements=mapped_elements,
             source_size=actual_source_size,
             source_dtype=source_dtype_value,
             result_dtype=result_dtype_value,
-            scale_dtype=scale_dtype,
-            promoted_scale_dtype=promoted_name,
             output_init=output_init,
             write_kind=write_kind,
             scalar_kind=scalar_kind,
@@ -650,11 +634,11 @@ def build_strided_copy_plan(
     )
 
 
-def transpose_plan(bound: StridedCopyPlan) -> StridedCopyPlan:
+def transpose_plan(plan: AffinePlan) -> AffinePlan:
     """Build the JAX linear transpose of one static affine map or sum."""
 
-    source_dtype = jnp.dtype(bound.source_dtype)
-    result_dtype = jnp.dtype(bound.result_dtype)
+    source_dtype = jnp.dtype(plan.source_dtype)
+    result_dtype = jnp.dtype(plan.result_dtype)
     if not (
         jnp.issubdtype(source_dtype, jnp.inexact)
         and jnp.issubdtype(result_dtype, jnp.inexact)
@@ -663,9 +647,9 @@ def transpose_plan(bound: StridedCopyPlan) -> StridedCopyPlan:
             "transpose_dtype_fallback",
             "integer and boolean plans do not have a JAX linear transpose",
         )
-    if bound.scalar_kind is StridedScalarKind.STATIC_SCALE_CAST:
+    if plan.scalar_kind is StridedScalarKind.STATIC_SCALE_CAST:
         scalar_kind = StridedScalarKind.JAX_TRANSPOSE
-    elif bound.scalar_kind is StridedScalarKind.JAX_TRANSPOSE:
+    elif plan.scalar_kind is StridedScalarKind.JAX_TRANSPOSE:
         scalar_kind = StridedScalarKind.STATIC_SCALE_CAST
     else:
         _fail(
@@ -673,9 +657,9 @@ def transpose_plan(bound: StridedCopyPlan) -> StridedCopyPlan:
             "dynamic-scale plans require a dedicated multi-operand transpose",
         )
 
-    if bound.reduction_kind is StridedReductionKind.SUM:
+    if plan.reduction_kind is StridedReductionKind.SUM:
         records = tuple(
-            StridedCopyRecord(
+            AffineRecord(
                 logical_shape=record.logical_shape,
                 source_strides=record.destination_strides,
                 source_offset=record.destination_offset,
@@ -689,26 +673,26 @@ def transpose_plan(bound: StridedCopyPlan) -> StridedCopyPlan:
                 ),
                 reduction_axes=record.source_broadcast_axes,
             )
-            for record in bound.records
+            for record in plan.records
         )
         reduction_kind = (
             StridedReductionKind.SUM
             if len(records) > 1 or any(record.reduction_axes for record in records)
             else StridedReductionKind.NONE
         )
-        destination_complete = bound.copied_elements == bound.source_size
-        return build_strided_copy_plan(
+        destination_complete = plan.mapped_elements == plan.source_size
+        return build_affine_plan(
             records=records,
-            output_size=bound.source_size,
+            output_size=plan.source_size,
             coverage=(
                 CompleteMode.COMPLETE_UNIQUE
                 if reduction_kind is StridedReductionKind.NONE
                 and destination_complete
                 else CompleteMode.PARTIAL_UNIQUE_ZERO_FILL
             ),
-            source_size=bound.output_size,
-            source_dtype=bound.result_dtype,
-            result_dtype=bound.source_dtype,
+            source_size=plan.output_size,
+            source_dtype=plan.result_dtype,
+            result_dtype=plan.source_dtype,
             write_kind=(
                 StridedWriteKind.ACCUMULATE
                 if reduction_kind is StridedReductionKind.SUM
@@ -719,9 +703,9 @@ def transpose_plan(bound: StridedCopyPlan) -> StridedCopyPlan:
             reduction_kind=reduction_kind,
         )
 
-    if bound.has_source_broadcast:
+    if plan.has_source_broadcast:
         records = tuple(
-            StridedCopyRecord(
+            AffineRecord(
                 logical_shape=record.logical_shape,
                 source_strides=record.destination_strides,
                 source_offset=record.destination_offset,
@@ -730,15 +714,15 @@ def transpose_plan(bound: StridedCopyPlan) -> StridedCopyPlan:
                 scale=record.scale,
                 reduction_axes=record.source_broadcast_axes,
             )
-            for record in bound.records
+            for record in plan.records
         )
-        return build_strided_copy_plan(
+        return build_affine_plan(
             records=records,
-            output_size=bound.source_size,
+            output_size=plan.source_size,
             coverage=CompleteMode.PARTIAL_UNIQUE_ZERO_FILL,
-            source_size=bound.output_size,
-            source_dtype=bound.result_dtype,
-            result_dtype=bound.source_dtype,
+            source_size=plan.output_size,
+            source_dtype=plan.result_dtype,
+            result_dtype=plan.source_dtype,
             write_kind=(
                 StridedWriteKind.ACCUMULATE
                 if len(records) > 1
@@ -749,7 +733,7 @@ def transpose_plan(bound: StridedCopyPlan) -> StridedCopyPlan:
         )
 
     records = tuple(
-        StridedCopyRecord(
+        AffineRecord(
             logical_shape=record.logical_shape,
             source_strides=record.destination_strides,
             source_offset=record.destination_offset,
@@ -757,55 +741,53 @@ def transpose_plan(bound: StridedCopyPlan) -> StridedCopyPlan:
             destination_offset=record.source_offset,
             scale=record.scale,
         )
-        for record in bound.records
+        for record in plan.records
     )
-    destination_complete = bound.copied_elements == bound.source_size
-    return build_strided_copy_plan(
+    destination_complete = plan.mapped_elements == plan.source_size
+    return build_affine_plan(
         records=records,
-        output_size=bound.source_size,
+        output_size=plan.source_size,
         coverage=(
             CompleteMode.COMPLETE_UNIQUE
             if destination_complete
             else CompleteMode.PARTIAL_UNIQUE_ZERO_FILL
         ),
-        source_size=bound.output_size,
-        source_dtype=bound.result_dtype,
-        result_dtype=bound.source_dtype,
+        source_size=plan.output_size,
+        source_dtype=plan.result_dtype,
+        result_dtype=plan.source_dtype,
         scalar_kind=scalar_kind,
     )
 
 
 def transpose_same_dtype_plan(
-    bound: StridedCopyPlan,
-) -> StridedCopyPlan:
+    plan: AffinePlan,
+) -> AffinePlan:
     """Build one same-dtype transpose for retained internal callers."""
 
-    if bound.source_dtype != bound.result_dtype:
+    if plan.source_dtype != plan.result_dtype:
         _fail(
             "transpose_dtype_fallback",
             "mixed-dtype transpose requires typed native scalar dispatch",
         )
-    return transpose_plan(bound)
+    return transpose_plan(plan)
 
 
-def _bound_static_key(
+def _semantic_static_key(
     *,
-    records: tuple[StridedCopyRecord, ...],
+    records: tuple[AffineRecord, ...],
     output_size: int,
     coverage: CompleteMode,
     required_source_size: int,
-    copied_elements: int,
+    mapped_elements: int,
     source_size: int,
     source_dtype: jnp.dtype,
     result_dtype: jnp.dtype,
-    scale_dtype: jnp.dtype,
-    promoted_scale_dtype: str,
     output_init: StridedOutputInit,
     write_kind: StridedWriteKind,
     scalar_kind: StridedScalarKind,
     reduction_kind: StridedReductionKind,
 ) -> bytes:
-    """Build the raw bound-plan identity used by Python/JAX static arguments."""
+    """Build the semantic identity used by Python/JAX static arguments."""
 
     record_keys = tuple(
         (
@@ -814,23 +796,26 @@ def _bound_static_key(
             record.source_offset,
             record.destination_strides,
             record.destination_offset,
-            _exact_scalar_bytes(record.scale, scale_dtype),
+            scalar_key(record.scale),
+            mapping_dtype(
+                result_dtype if scalar_kind is StridedScalarKind.JAX_TRANSPOSE
+                else source_dtype, record.scale,
+            ).name,
             record.source_broadcast_axes,
             record.reduction_axes,
         )
         for record in records
     )
     return _stable_key_bytes(
-        "tensor0-stride-bound-static-v5",
-        ADDRESS_PLAN_KEY_VERSION,
+        "tensor0-stride-affine-semantic-v1",
+        AFFINE_PLAN_KEY_VERSION,
         source_size,
         required_source_size,
-        copied_elements,
+        mapped_elements,
         output_size,
         coverage.value,
         source_dtype.name,
         result_dtype.name,
-        promoted_scale_dtype,
         output_init.value,
         write_kind.value,
         scalar_kind.value,

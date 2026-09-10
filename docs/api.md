@@ -116,6 +116,11 @@ against these lists.
 - `contract`
 - `ncon`
 
+### Automatic Differentiation
+
+- `grad`
+- `value_and_grad`
+
 ### Factorizations and Truncation
 
 - `qr_compact`

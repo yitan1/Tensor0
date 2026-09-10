@@ -36,7 +36,9 @@ runtime versions exactly.
 Other platforms and JAX/JAXLIB versions are not currently supported execution
 targets. Tensor0 does not silently replace unavailable native stride operations
 with element-address gather/scatter implementations; affected operations fail
-with an explicit no-route diagnostic.
+with an explicit no-route diagnostic. Native FFI calls still appear as
+`stablehlo.custom_call` operations in JAX compiler IR, but Tensor0 does not ship
+a separate pure-StableHLO stride execution backend.
 
 The recommended setup is to install Tensor0 into a virtual environment:
 

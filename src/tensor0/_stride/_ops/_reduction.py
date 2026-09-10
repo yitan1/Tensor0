@@ -1,4 +1,4 @@
-"""Native output-owner structured sums for affine maps and transposes."""
+"""Structured affine reduction semantics and native execution boundary."""
 
 from __future__ import annotations
 
@@ -10,20 +10,25 @@ import jax
 from jax import Array
 import jax.numpy as jnp
 
-from . import _ffi as ffi_module
-from ._compiler import (
-    CompiledStridePlan,
+from .._native_descriptor import (
+    NativeCallKind,
+    NativeCallSpec,
     _descriptor_scale_words,
     _dtype_code,
-    _project_cpu_execution,
-    compile_plan,
 )
-from ._errors import raise_no_eligible_route
-from ._native_lowering import NativeExecutionKind, NativeExecutionPlan
-from ._plan import (
-    MAXIMUM_RANK,
+from .._scalar import mapping_dtype
+from .._errors import raise_no_eligible_route
+from .._jax import require_jax_array
+from .._map import _execute_map
+from .._native import (
+    _STRUCTURED_REDUCTION_FORWARD_SUFFIXES,
+    _STRUCTURED_REDUCTION_TRANSPOSE_SUFFIXES,
+    _structured_reduction_ffi_call,
+    native_available,
+)
+from .._plan import (
     UINT64_MAX,
-    StridedCopyPlan,
+    AffinePlan,
     StridedOutputInit,
     StridedReductionKind,
     StridedScalarKind,
@@ -33,30 +38,20 @@ from ._plan import (
 )
 
 
-NATIVE_REDUCTION_ABI_VERSION = 2
-NATIVE_REDUCTION_COMPILER_POLICY_VERSION = 3
+NATIVE_REDUCTION_ABI_VERSION = 4
 NATIVE_REDUCTION_DESCRIPTOR_MAGIC = 0x3152444952543054
 _SCALAR_POLICY_FORWARD_SCALE_CAST = 1
 _SCALAR_POLICY_JAX_TRANSPOSE = 2
-
-
-def _axis_mask(axes: tuple[int, ...]) -> int:
-    return sum(1 << axis for axis in axes)
-
-
 def _encode_descriptor(
-    semantic: StridedCopyPlan,
-    compiled: CompiledStridePlan,
-    preferred_chunk_bytes: int,
-    parallel_minimum_bytes: int,
+    semantic: AffinePlan,
 ) -> bytes:
     input_dtype = jnp.dtype(semantic.source_dtype)
     output_dtype = jnp.dtype(semantic.result_dtype)
     if semantic.scalar_kind is StridedScalarKind.STATIC_SCALE_CAST:
-        mapped_dtype = output_dtype
+        mapping_source_dtype = input_dtype
         scalar_policy = _SCALAR_POLICY_FORWARD_SCALE_CAST
     elif semantic.scalar_kind is StridedScalarKind.JAX_TRANSPOSE:
-        mapped_dtype = input_dtype
+        mapping_source_dtype = output_dtype
         scalar_policy = _SCALAR_POLICY_JAX_TRANSPOSE
     else:
         raise ValueError("native structured reduction scalar policy is unsupported")
@@ -64,31 +59,18 @@ def _encode_descriptor(
         NATIVE_REDUCTION_DESCRIPTOR_MAGIC,
         NATIVE_REDUCTION_ABI_VERSION,
         0,
-        NATIVE_REDUCTION_COMPILER_POLICY_VERSION,
         semantic.source_size,
         semantic.output_size,
-        len(compiled.records),
+        len(semantic.records),
         _dtype_code(input_dtype),
-        _dtype_code(mapped_dtype),
         _dtype_code(output_dtype),
         scalar_policy,
-        preferred_chunk_bytes,
-        parallel_minimum_bytes,
     ]
-    for raw_record, record in zip(
-        semantic.records,
-        compiled.records,
-        strict=True,
-    ):
-        rank = record.rank
-        input_order = tuple(
-            sorted(
-                range(rank),
-                key=lambda axis: (abs(record.source_strides[axis]), axis),
-            )
-        )
+    for record in semantic.records:
+        rank = len(record.logical_shape)
+        mapped_dtype = mapping_dtype(mapping_source_dtype, record.scale)
         scale_real, scale_imaginary = _descriptor_scale_words(
-            _exact_scalar_bytes(raw_record.scale, mapped_dtype),
+            _exact_scalar_bytes(record.scale, mapped_dtype),
             mapped_dtype,
         )
         words.extend(
@@ -98,18 +80,15 @@ def _encode_descriptor(
                 record.destination_offset,
                 scale_real,
                 scale_imaginary,
-                ((1 << rank) - 1) ^ _axis_mask(record.reduction_axes),
-                _axis_mask(record.reduction_axes),
-                record.output_count,
-                record.reduction_count,
+                int(record.scale is None),
+                _dtype_code(mapped_dtype),
                 *record.logical_shape,
                 *(stride & UINT64_MAX for stride in record.source_strides),
                 *(stride & UINT64_MAX for stride in record.destination_strides),
-                *input_order,
-                len(record.map_loop_order),
-                *record.map_loop_order,
-                len(record.reduction_loop_order),
-                *record.reduction_loop_order,
+                *(
+                    int(axis in record.reduction_axes)
+                    for axis in range(rank)
+                ),
             )
         )
     words[2] = len(words)
@@ -119,9 +98,9 @@ def _encode_descriptor(
 
 
 @lru_cache(maxsize=1_024)
-def compile_native_structured_reduction(
-    semantic: StridedCopyPlan,
-) -> NativeExecutionPlan:
+def lower_structured_reduction(
+    semantic: AffinePlan,
+) -> NativeCallSpec:
     """Project one semantic structured sum onto the retained CPU ABI."""
 
     if semantic.reduction_kind is not StridedReductionKind.SUM:
@@ -135,65 +114,41 @@ def compile_native_structured_reduction(
         raise ValueError("multi-record structured reduction requires accumulation")
     dtype_pair = (semantic.source_dtype, semantic.result_dtype)
     if semantic.scalar_kind is StridedScalarKind.JAX_TRANSPOSE:
-        supported = dtype_pair in ffi_module._STRUCTURED_REDUCTION_TRANSPOSE_SUFFIXES
+        supported = dtype_pair in _STRUCTURED_REDUCTION_TRANSPOSE_SUFFIXES
         reported_pair = tuple(reversed(dtype_pair))
     else:
-        supported = dtype_pair in ffi_module._STRUCTURED_REDUCTION_FORWARD_SUFFIXES
+        supported = dtype_pair in _STRUCTURED_REDUCTION_FORWARD_SUFFIXES
         reported_pair = dtype_pair
     if not supported:
         raise ValueError(f"unsupported structured reduction dtype pair {reported_pair!r}")
-    compiled = compile_plan(semantic)
-    for index, record in enumerate(compiled.records):
-        if record.rank > MAXIMUM_RANK:
-            raise ValueError(
-                f"record[{index}] rank exceeds native reduction limit {MAXIMUM_RANK}"
-            )
-    projection = _project_cpu_execution(compiled)
-    if projection is None:
-        raise ValueError("structured reduction has no native CPU projection")
-    (
-        cpu_records,
-        preferred_chunk_bytes,
-        parallel_minimum_bytes,
-        chunks_per_batch,
-    ) = projection
-    return NativeExecutionPlan(
-        kind=NativeExecutionKind.STRUCTURED_REDUCTION,
-        descriptor=_encode_descriptor(
-            semantic,
-            compiled,
-            preferred_chunk_bytes,
-            parallel_minimum_bytes,
-        ),
-        compiled=compiled,
-        records=cpu_records,
-        preferred_chunk_bytes=preferred_chunk_bytes,
-        parallel_minimum_bytes=parallel_minimum_bytes,
-        chunks_per_batch=chunks_per_batch,
+    return NativeCallSpec(
+        kind=NativeCallKind.STRUCTURED_REDUCTION,
+        descriptor=_encode_descriptor(semantic),
+        semantic=semantic,
     )
 
 
 @lru_cache(maxsize=1_024)
-def compile_native_broadcast_transpose(
-    forward: StridedCopyPlan,
-) -> NativeExecutionPlan:
-    """Compile the transpose of one explicit source-broadcast map."""
+def lower_broadcast_transpose(
+    forward: AffinePlan,
+) -> NativeCallSpec:
+    """Lower the transpose of one explicit source-broadcast map."""
 
     if not forward.has_source_broadcast:
         raise ValueError("native broadcast transpose requires source broadcast")
-    return compile_native_structured_reduction(transpose_plan(forward))
+    return lower_structured_reduction(transpose_plan(forward))
 
 
-def _abstract_eval(source_aval: Any, *, plan: NativeExecutionPlan) -> Any:
-    if plan.kind is not NativeExecutionKind.STRUCTURED_REDUCTION:
+def _abstract_eval(source_aval: Any, *, plan: NativeCallSpec) -> Any:
+    if plan.kind is not NativeCallKind.STRUCTURED_REDUCTION:
         raise ValueError("structured reduction primitive received an affine plan")
-    if source_aval.dtype != jnp.dtype(plan.bound.source_dtype):
+    if source_aval.dtype != jnp.dtype(plan.semantic.source_dtype):
         raise TypeError("structured reduction input dtype mismatch")
-    if not source_aval.shape or source_aval.shape[-1] != plan.bound.source_size:
+    if not source_aval.shape or source_aval.shape[-1] != plan.semantic.source_size:
         raise ValueError("structured reduction input size mismatch")
     return source_aval.update(
-        shape=(*source_aval.shape[:-1], plan.bound.output_size),
-        dtype=jnp.dtype(plan.bound.result_dtype),
+        shape=(*source_aval.shape[:-1], plan.semantic.output_size),
+        dtype=jnp.dtype(plan.semantic.result_dtype),
     )
 
 
@@ -201,21 +156,23 @@ def _lowering(
     context: Any,
     source: Any,
     *,
-    plan: NativeExecutionPlan,
+    plan: NativeCallSpec,
+    grouped_output_owner: bool = False,
 ) -> Any:
     from jax.interpreters import mlir
 
     device_count = getattr(context.module_context.axis_context, "num_devices", None)
     if device_count not in (None, 1):
         raise_no_eligible_route(("native_structured_reduction_sharded",))
-    if not ffi_module.native_available():
+    if not native_available():
         raise_no_eligible_route(("native_structured_reduction_unavailable",))
-    function = lambda value: ffi_module._structured_reduction_ffi_call_v2(
+    function = lambda value: _structured_reduction_ffi_call(
         value,
         descriptor=plan.descriptor,
-        output_size=plan.bound.output_size,
-        output_dtype=jnp.dtype(plan.bound.result_dtype),
-        scalar_kind=plan.bound.scalar_kind,
+        output_size=plan.semantic.output_size,
+        output_dtype=jnp.dtype(plan.semantic.result_dtype),
+        scalar_kind=plan.semantic.scalar_kind,
+        grouped_output_owner=grouped_output_owner,
     )
     return mlir.lower_fun(function, multiple_results=False)(context, source)
 
@@ -224,7 +181,7 @@ def _non_cpu_lowering(
     context: Any,
     source: Any,
     *,
-    plan: NativeExecutionPlan,
+    plan: NativeCallSpec,
 ) -> Any:
     del context, source, plan
     raise_no_eligible_route(("native_structured_reduction_non_cpu",))
@@ -234,22 +191,23 @@ def _jvp(
     primals: tuple[Array],
     tangents: tuple[Any],
     *,
-    plan: NativeExecutionPlan,
+    plan: NativeCallSpec,
+    primitive: Any,
 ) -> tuple[Array, Any]:
     from jax.interpreters import ad
 
     (source,), (tangent,) = primals, tangents
-    primal = _STRUCTURED_REDUCTION_PRIMITIVE.bind(source, plan=plan)
+    primal = primitive.bind(source, plan=plan)
     if isinstance(tangent, ad.Zero):
         return primal, ad.Zero(jax.typeof(primal).to_tangent_aval())
-    return primal, _STRUCTURED_REDUCTION_PRIMITIVE.bind(tangent, plan=plan)
+    return primal, primitive.bind(tangent, plan=plan)
 
 
 def _transpose(
     cotangent: Any,
     source: Any,
     *,
-    plan: NativeExecutionPlan,
+    plan: NativeCallSpec,
 ) -> list[Any]:
     from jax.interpreters import ad
 
@@ -257,11 +215,11 @@ def _transpose(
         return [None]
     if isinstance(cotangent, ad.Zero):
         return [ad.Zero(source.aval.to_ct_aval())]
-    reverse = transpose_plan(plan.bound)
+    reverse = transpose_plan(plan.semantic)
     if reverse.reduction_kind is StridedReductionKind.SUM:
         return [bind_native_structured_reduction(cotangent, reverse)]
     return [
-        ffi_module.strided_copy(cotangent, plan=reverse, native_required=True)
+        _execute_map(cotangent, plan=reverse)
     ]
 
 
@@ -269,46 +227,58 @@ def _batch(
     arguments: tuple[Array],
     dimensions: tuple[int | None],
     *,
-    plan: NativeExecutionPlan,
+    plan: NativeCallSpec,
+    primitive: Any,
 ) -> tuple[Array, int | None]:
     from jax.interpreters import batching
 
     (source,), (dimension,) = arguments, dimensions
     if dimension is None:
-        return _STRUCTURED_REDUCTION_PRIMITIVE.bind(source, plan=plan), None
+        return primitive.bind(source, plan=plan), None
     source = batching.bdim_at_front(source, dimension, source.shape[dimension])
-    return _STRUCTURED_REDUCTION_PRIMITIVE.bind(source, plan=plan), 0
+    return primitive.bind(source, plan=plan), 0
 
 
-def _create_primitive() -> Any:
+def _create_primitive(*, grouped_output_owner: bool = False) -> Any:
     from jax._src import dispatch
     from jax.extend import core
     from jax.interpreters import ad, batching, mlir, xla
 
-    primitive = core.Primitive("tensor0_stride_structured_reduction")
+    primitive = core.Primitive(
+        "tensor0_stride_structured_reduction"
+        f"{'_grouped' if grouped_output_owner else ''}"
+    )
     primitive.def_impl(partial(xla.apply_primitive, primitive))
     primitive.def_abstract_eval(_abstract_eval)
-    ad.primitive_jvps[primitive] = _jvp
+    ad.primitive_jvps[primitive] = partial(_jvp, primitive=primitive)
     ad.primitive_transposes[primitive] = _transpose
-    batching.primitive_batchers[primitive] = _batch
+    batching.primitive_batchers[primitive] = partial(
+        _batch,
+        primitive=primitive,
+    )
     mlir.register_lowering(primitive, _non_cpu_lowering)
-    mlir.register_lowering(primitive, _lowering, platform="cpu")
+    mlir.register_lowering(
+        primitive,
+        partial(_lowering, grouped_output_owner=grouped_output_owner),
+        platform="cpu",
+    )
     dispatch.prim_requires_devices_during_lowering.add(primitive)
     return primitive
 
 
 _STRUCTURED_REDUCTION_PRIMITIVE = _create_primitive()
+_GROUPED_REDUCTION_PRIMITIVE = _create_primitive(grouped_output_owner=True)
 
 
 def bind_native_broadcast_transpose(
     cotangent: Array,
-    forward: StridedCopyPlan,
+    forward: AffinePlan,
 ) -> Array:
     """Bind the native structured transpose of one broadcast-read plan."""
 
-    plan = compile_native_broadcast_transpose(forward)
-    data = ffi_module._require_jax_array(cotangent, "broadcast cotangent")
-    if data.dtype != jnp.dtype(plan.bound.source_dtype):
+    plan = lower_broadcast_transpose(forward)
+    data = require_jax_array(cotangent, "broadcast cotangent")
+    if data.dtype != jnp.dtype(plan.semantic.source_dtype):
         raise TypeError("broadcast cotangent dtype does not match the plan")
     if not data.shape or data.shape[-1] != forward.output_size:
         raise ValueError("broadcast cotangent storage size does not match the plan")
@@ -317,33 +287,66 @@ def bind_native_broadcast_transpose(
 
 def bind_native_structured_reduction(
     source: Array,
-    semantic: StridedCopyPlan,
+    semantic: AffinePlan,
 ) -> Array:
     """Bind one plan-owned native structured sum."""
 
-    plan = compile_native_structured_reduction(semantic)
-    data = ffi_module._require_jax_array(source, "structured reduction source")
-    if data.dtype != jnp.dtype(plan.bound.source_dtype):
+    plan = lower_structured_reduction(semantic)
+    data = require_jax_array(source, "structured reduction source")
+    if data.dtype != jnp.dtype(plan.semantic.source_dtype):
         raise TypeError("structured reduction source dtype does not match the plan")
     if not data.shape or data.shape[-1] != semantic.source_size:
         raise ValueError("structured reduction source size does not match the plan")
     return _STRUCTURED_REDUCTION_PRIMITIVE.bind(data, plan=plan)
 
 
-def strided_reduce(source: object, *, plan: StridedCopyPlan) -> Array:
+def _bind_sequential_native_structured_reduction(
+    source: Array,
+    semantic: AffinePlan,
+) -> Array:
+    """Bind the ungrouped reduction target used by serial test comparators.
+
+    The target itself does not force serial execution. Tests that require a
+    serial result must disable fiber parallelism until execution completes.
+    """
+
+    plan = lower_structured_reduction(semantic)
+    data = require_jax_array(source, "sequential reduction source")
+    if data.dtype != jnp.dtype(plan.semantic.source_dtype):
+        raise TypeError("sequential reduction source dtype does not match the plan")
+    if not data.shape or data.shape[-1] != semantic.source_size:
+        raise ValueError("sequential reduction source size does not match the plan")
+    return _STRUCTURED_REDUCTION_PRIMITIVE.bind(data, plan=plan)
+
+
+def _bind_grouped_native_structured_reduction(
+    source: Array,
+    semantic: AffinePlan,
+) -> Array:
+    """Bind the gated exact-output-map grouped reduction candidate."""
+
+    plan = lower_structured_reduction(semantic)
+    data = require_jax_array(source, "grouped reduction source")
+    if data.dtype != jnp.dtype(plan.semantic.source_dtype):
+        raise TypeError("grouped reduction source dtype does not match the plan")
+    if not data.shape or data.shape[-1] != semantic.source_size:
+        raise ValueError("grouped reduction source size does not match the plan")
+    return _GROUPED_REDUCTION_PRIMITIVE.bind(data, plan=plan)
+
+
+def _execute_reduction(source: object, *, plan: AffinePlan) -> Array:
     """Execute one statically proved structured sum on the native CPU path."""
 
-    data = ffi_module._require_jax_array(source, "strided_reduce source")
+    data = require_jax_array(source, "_execute_reduction source")
     return bind_native_structured_reduction(data, plan)
 
 
 __all__ = [
     "NATIVE_REDUCTION_ABI_VERSION",
-    "NATIVE_REDUCTION_COMPILER_POLICY_VERSION",
     "NATIVE_REDUCTION_DESCRIPTOR_MAGIC",
     "bind_native_broadcast_transpose",
     "bind_native_structured_reduction",
-    "compile_native_broadcast_transpose",
-    "compile_native_structured_reduction",
-    "strided_reduce",
+    "lower_broadcast_transpose",
+    "lower_structured_reduction",
+    "_execute_reduction",
 ]

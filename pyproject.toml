@@ -39,6 +39,15 @@ module-name = "tensor0._native"
 manifest-path = "crates/tensor0-py/Cargo.toml"
 python-source = "src"
 features = ["pyo3/extension-module"]
+include = [
+    { path = "crates/tensor0-py/native/stride_affine.inc", format = "sdist" },
+    { path = "crates/tensor0-py/native/stride_scalar.inc", format = "sdist" },
+    { path = "crates/tensor0-py/native/stride_bindings.inc", format = "sdist" },
+    { path = "crates/tensor0-py/native/stride_common.inc", format = "sdist" },
+    { path = "crates/tensor0-py/native/stride_reduction.inc", format = "sdist" },
+    { path = "crates/tensor0-py/native/stride_reduction_plan.inc", format = "sdist" },
+    { path = "crates/tensor0-py/native/stride_runtime.inc", format = "sdist" },
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

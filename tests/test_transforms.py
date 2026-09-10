@@ -38,10 +38,12 @@ from tensor0 import (
     to_dense,
     twist,
 )
-from tensor0._stride import StridedView, materialize, strided_accumulate
-from tensor0._stride._ffi import (
+from tensor0._stride import StridedView, materialize
+from tests.stride._fixtures import execute_view_accumulate
+from tensor0._stride._testing import (
     _native_call_count_for_tests,
     _reset_native_call_count_for_tests,
+    _set_native_disable_f16_f32_contiguous_simd_for_tests,
     native_available,
 )
 from tensor0.structure import get_degeneracystructure, get_sectorstructure
@@ -119,7 +121,7 @@ def _apply_abelian_reference(
         )
         block = materialize(
             source_view,
-            result_dtype=result.dtype,
+            dtype=result.dtype,
         )
         block = _transpose_reference_block(block, permutation)
         destination_subblock = destination_subblocks[entry.dst]
@@ -129,7 +131,7 @@ def _apply_abelian_reference(
             tuple(destination_subblock.strides),
             destination_subblock.offset,
         )
-        result = strided_accumulate(
+        result = execute_view_accumulate(
             destination_view,
             StridedView.from_dense(
                 jnp.asarray(entry.coeff, dtype=result.dtype) * block,
@@ -164,7 +166,7 @@ def _apply_generic_reference(
                     tuple(source_subblock.strides),
                     source_subblock.offset,
                 ),
-                result_dtype=result.dtype,
+                dtype=result.dtype,
             )
             block = _transpose_reference_block(block, permutation)
             destination_subblock = destination_subblocks[destination_indices[0]]
@@ -174,7 +176,7 @@ def _apply_generic_reference(
                 tuple(destination_subblock.strides),
                 destination_subblock.offset,
             )
-            result = strided_accumulate(
+            result = execute_view_accumulate(
                 destination_view,
                 StridedView.from_dense(
                     transform.reshape(()) * block,
@@ -192,7 +194,7 @@ def _apply_generic_reference(
                     tuple(source_subblocks[index].strides),
                     source_subblocks[index].offset,
                 ),
-                result_dtype=result.dtype,
+                dtype=result.dtype,
             ).reshape(-1)
             for index in source_indices
         )
@@ -208,7 +210,7 @@ def _apply_generic_reference(
                 tuple(destination_subblock.strides),
                 destination_subblock.offset,
             )
-            result = strided_accumulate(
+            result = execute_view_accumulate(
                 destination_view,
                 StridedView.from_dense(block, destination_view.sizes),
             )
@@ -220,7 +222,7 @@ def _apply_generic_reference(
     [_large_u1_permute_case, _large_su2_permute_case],
     ids=["abelian", "generic"],
 )
-def test_tree_transform_lowers_portably_on_tpu(factory):
+def test_tree_transform_rejects_unsupported_tpu_lowering(factory):
     tensor, permutation = factory()
     run = jax.jit(
         lambda source: (
@@ -231,12 +233,11 @@ def test_tree_transform_lowers_portably_on_tpu(factory):
         )
     )
 
-    lowered = run.trace(tensor.storage.data).lower(lowering_platforms=("tpu",))
-    stablehlo = str(lowered.compiler_ir(dialect="stablehlo"))
-
-    assert "stablehlo.custom_call" not in stablehlo
-    assert "stablehlo.gather" not in stablehlo
-    assert "stablehlo.scatter" not in stablehlo
+    with pytest.raises(
+        RuntimeError,
+        match="tensor0-stride no eligible route: native_device_executor_unavailable",
+    ):
+        run.trace(tensor.storage.data).lower(lowering_platforms=("tpu",))
 
 
 def test_native_transform_payloads_use_canonical_indices():
@@ -428,6 +429,35 @@ def test_large_su2_permute_uses_pack_matmul_unpack_without_indices():
     assert stablehlo.count("stablehlo.dot_general") == expected_dots
     assert "stablehlo.gather" not in stablehlo
     assert "stablehlo.scatter" not in stablehlo
+
+
+@pytest.mark.skipif(not native_available(), reason="native CPU stride is unavailable")
+def test_large_float16_su2_permute_is_real_mixed_contiguous_producer():
+    tensor, permutation = _large_su2_permute_case()
+    source = tensor.storage.data.astype(jnp.float16)
+    lowered = jax.jit(
+        lambda value: permute(
+            TensorMap(tensor.space, value),
+            permutation,
+        ).storage.data
+    ).lower(source)
+    stablehlo = str(lowered.compiler_ir(dialect="stablehlo"))
+    run = lowered.compile()
+
+    _set_native_disable_f16_f32_contiguous_simd_for_tests(True)
+    try:
+        expected = run(source)
+        expected.block_until_ready()
+    finally:
+        _set_native_disable_f16_f32_contiguous_simd_for_tests(False)
+    actual = run(source)
+    actual.block_until_ready()
+
+    assert actual.dtype == jnp.float32
+    assert stablehlo.count("stablehlo.custom_call") == 2
+    assert "stablehlo.gather" not in stablehlo
+    assert "stablehlo.scatter" not in stablehlo
+    assert_allclose(actual, expected)
 
 
 def test_large_su2_permute_preserves_jvp_vjp_and_batching():

@@ -5,10 +5,10 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from tensor0._stride import (
+from tensor0._stride._plan import (
     CompleteMode,
-    StridedCopyRecord,
-    build_strided_copy_plan,
+    AffineRecord,
+    build_affine_plan,
 )
 
 from ._fixtures import (
@@ -88,10 +88,10 @@ def test_oracle_resource_policy_bounds_materialized_addresses() -> None:
 
     record_count = REFERENCE_RECORD_CAP + 1
     records = tuple(
-        StridedCopyRecord((1,), (1,), index, (1,), index)
+        AffineRecord((1,), (1,), index, (1,), index)
         for index in range(record_count)
     )
-    too_many_records = build_strided_copy_plan(
+    too_many_records = build_affine_plan(
         records=records,
         output_size=record_count,
         coverage=CompleteMode.COMPLETE_UNIQUE,
@@ -103,8 +103,8 @@ def test_oracle_resource_policy_bounds_materialized_addresses() -> None:
         "reference_record_cap",
     )
 
-    wide_address = build_strided_copy_plan(
-        records=(StridedCopyRecord((1,), (1,), 2**31, (1,), 0),),
+    wide_address = build_affine_plan(
+        records=(AffineRecord((1,), (1,), 2**31, (1,), 0),),
         output_size=1,
         coverage=CompleteMode.COMPLETE_UNIQUE,
         source_size=2**31 + 1,

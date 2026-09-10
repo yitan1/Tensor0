@@ -14,9 +14,10 @@ import numpy as np
 
 from tensor0._stride._errors import raise_no_eligible_route
 from tensor0._stride._plan import (
-    StridedCopyPlan,
-    StridedCopyRecord,
+    AffinePlan,
+    AffineRecord,
     StridedWriteKind,
+    StridedScalarKind,
 )
 
 
@@ -37,7 +38,7 @@ def assert_bitwise_equal(actual: object, expected: object) -> None:
 
 
 def enumerate_addresses(
-    record: StridedCopyRecord,
+    record: AffineRecord,
     side: str,
 ) -> tuple[int, ...]:
     """Exhaustively enumerate one small affine record."""
@@ -124,17 +125,17 @@ def legacy_strided_scale(
 
 
 def reference_ineligibility_reasons(
-    bound: StridedCopyPlan,
+    bound: AffinePlan,
     *,
     source_shape: tuple[int, ...] | None = None,
 ) -> tuple[str, ...]:
     """Return bounded-resource reasons that forbid materialized indices."""
 
     reasons: list[str] = []
-    copied_elements = bound.copied_elements
+    mapped_elements = bound.mapped_elements
     index_width = 8 if bool(jax.config.read("jax_enable_x64")) else 4
-    logical_index_bytes = 2 * copied_elements * index_width
-    if 2 * copied_elements * 36 > REFERENCE_PYTHON_ADDRESS_BYTE_CAP:
+    logical_index_bytes = 2 * mapped_elements * index_width
+    if 2 * mapped_elements * 36 > REFERENCE_PYTHON_ADDRESS_BYTE_CAP:
         reasons.append("reference_python_address_byte_cap")
     if len(bound.records) > REFERENCE_RECORD_CAP:
         reasons.append("reference_record_cap")
@@ -147,7 +148,7 @@ def reference_ineligibility_reasons(
             batch_count * bound.output_size * jnp.dtype(bound.result_dtype).itemsize
         )
         update_bytes = (
-            batch_count * copied_elements * jnp.dtype(bound.result_dtype).itemsize
+            batch_count * mapped_elements * jnp.dtype(bound.result_dtype).itemsize
         )
         live_bytes = (
             source_bytes + 2 * result_bytes + update_bytes + logical_index_bytes
@@ -187,7 +188,7 @@ def reference_ineligibility_reasons(
 
 
 def _check_eligibility(
-    bound: StridedCopyPlan,
+    bound: AffinePlan,
     source_shape: tuple[int, ...],
 ) -> None:
     reasons = reference_ineligibility_reasons(bound, source_shape=source_shape)
@@ -216,7 +217,7 @@ def _single_projection_device(data: Array) -> Any | None:
 
 
 def _reference_index_arrays(
-    bound: StridedCopyPlan,
+    bound: AffinePlan,
     side: str,
     data: Array,
 ) -> tuple[Array, ...]:
@@ -229,11 +230,11 @@ def _reference_index_arrays(
     )
 
 
-def _is_partial_dense_destination(bound: StridedCopyPlan) -> bool:
-    if len(bound.records) != 1 or bound.copied_elements == bound.source_size:
+def _is_partial_dense_destination(bound: AffinePlan) -> bool:
+    if len(bound.records) != 1 or bound.mapped_elements == bound.source_size:
         return False
     record = bound.records[0]
-    if record.destination_offset != 0 or bound.copied_elements != bound.output_size:
+    if record.destination_offset != 0 or bound.mapped_elements != bound.output_size:
         return False
     expected_stride = 1
     for extent, stride in zip(
@@ -247,7 +248,19 @@ def _is_partial_dense_destination(bound: StridedCopyPlan) -> bool:
     return True
 
 
-def execute_reference(source: object, bound: StridedCopyPlan) -> Array:
+def _mapped_reference(values: Array, record: AffineRecord, bound: AffinePlan) -> Array:
+    def forward(source):
+        mapped = source if record.scale is None else jnp.multiply(record.scale, source)
+        dtype = (bound.source_dtype if bound.scalar_kind is StridedScalarKind.JAX_TRANSPOSE
+                 else bound.result_dtype)
+        return jnp.asarray(mapped, dtype=dtype)
+
+    if bound.scalar_kind is StridedScalarKind.JAX_TRANSPOSE:
+        return jax.linear_transpose(forward, jnp.zeros(values.shape, dtype=bound.result_dtype))(values)[0]
+    return forward(values)
+
+
+def execute_reference(source: object, bound: AffinePlan) -> Array:
     """Execute a validated plan using bounded explicit address arrays."""
 
     data = jnp.asarray(source)
@@ -263,17 +276,12 @@ def execute_reference(source: object, bound: StridedCopyPlan) -> Array:
     _check_eligibility(bound, tuple(data.shape))
 
     result_dtype = jnp.dtype(bound.result_dtype)
-    converted = jnp.asarray(data, dtype=result_dtype)
     if _is_partial_dense_destination(bound):
         record = bound.records[0]
         source_indices = _reference_index_arrays(bound, "source", data)[0]
         if source_indices.size == 0:
             return jnp.zeros((*data.shape[:-1], bound.output_size), dtype=result_dtype)
-        mapped = converted[..., source_indices]
-        scale_value = np.asarray(record.scale, dtype=result_dtype)
-        if bool(scale_value == np.asarray(1, dtype=result_dtype)):
-            return mapped
-        return jnp.asarray(record.scale, dtype=result_dtype) * mapped
+        return _mapped_reference(data[..., source_indices], record, bound)
 
     result = jnp.zeros((*data.shape[:-1], bound.output_size), dtype=result_dtype)
     source_indices_by_record = _reference_index_arrays(bound, "source", data)
@@ -290,8 +298,7 @@ def execute_reference(source: object, bound: StridedCopyPlan) -> Array:
     ):
         if source_indices.size == 0:
             continue
-        scale = jnp.asarray(record.scale, dtype=result.dtype)
-        values = scale * converted[..., source_indices]
+        values = _mapped_reference(data[..., source_indices], record, bound)
         result = result.at[..., destination_indices].set(
             values,
             unique_indices=True,
@@ -302,7 +309,7 @@ def execute_reference(source: object, bound: StridedCopyPlan) -> Array:
 def _validate_base_update_operands(
     base: Array,
     source: Array,
-    plan: StridedCopyPlan,
+    plan: AffinePlan,
 ) -> None:
     bound = plan
     if not base.shape or base.shape[-1] != bound.output_size:
@@ -323,88 +330,61 @@ def _validate_base_update_operands(
         )
 
 
-def _contiguous_strides(shape: tuple[int, ...]) -> tuple[int, ...]:
-    expected = 1
-    strides = [0] * len(shape)
-    for axis in reversed(range(len(shape))):
-        strides[axis] = expected
-        expected *= shape[axis]
-    return tuple(strides)
-
-
 def _execute_base_update_reference(
     base: object,
     source: object,
-    plan: StridedCopyPlan,
+    plan: AffinePlan,
 ) -> Array:
     base_data = jnp.asarray(base)
     source_data = jnp.asarray(source)
     _validate_base_update_operands(base_data, source_data, plan)
     _check_eligibility(plan, tuple(source_data.shape))
+    return execute_update_reference(
+        base_data, source_data, 1,
+        0 if plan.write_kind is StridedWriteKind.ASSIGN else 1, plan,
+    )
 
-    result = base_data
-    if jnp.issubdtype(source_data.dtype, jnp.complexfloating) and not jnp.issubdtype(
-        base_data.dtype,
-        jnp.complexfloating,
+
+def execute_update_reference(base, source, source_factor, base_factor, plan):
+    """Select actual expressions after each branch's final storage conversion."""
+    result = jnp.asarray(base)
+    source = jnp.asarray(source)
+    source_factor, base_factor = jnp.asarray(source_factor), jnp.asarray(base_factor)
+    source_indices = _reference_index_arrays(plan, "source", source)
+    destination_indices = _reference_index_arrays(plan, "destination", result)
+    for record, selected_source, selected_base in zip(
+        plan.records, source_indices, destination_indices, strict=True,
     ):
-        converted = jnp.real(source_data)
-    elif plan.write_kind is StridedWriteKind.ASSIGN:
-        converted = jnp.asarray(source_data, dtype=base_data.dtype)
-    else:
-        converted = source_data
-    destination_indices_by_record = _reference_index_arrays(
-        plan,
-        "destination",
-        base_data,
-    )
-    compact_source = False
-    if len(plan.records) == 1:
-        record = plan.records[0]
-        compact_source = (
-            record.source_offset == 0
-            and record.source_strides == _contiguous_strides(record.logical_shape)
-            and prod(record.logical_shape) == plan.source_size
+        coefficient = (source_factor if record.scale is None else
+                       jnp.multiply(source_factor, record.scale))
+        coefficient = coefficient if coefficient.ndim == 0 else coefficient[..., None]
+        beta = base_factor if base_factor.ndim == 0 else base_factor[..., None]
+        values, previous = source[..., selected_source], result[..., selected_base]
+        source_product = coefficient * values
+        base_product = beta * previous
+        source_only = jnp.where(coefficient == 1, values.astype(result.dtype),
+                                source_product.astype(result.dtype))
+        base_only = jnp.where(beta == 1, previous, base_product.astype(result.dtype))
+        combined = jnp.where(
+            coefficient == 1,
+            jnp.where(beta == 1, (values + previous).astype(result.dtype),
+                       (values + base_product).astype(result.dtype)),
+            jnp.where(beta == 1, (source_product + previous).astype(result.dtype),
+                       (source_product + base_product).astype(result.dtype)),
         )
-    source_indices_by_record = (
-        ()
-        if compact_source
-        else _reference_index_arrays(plan, "source", source_data)
-    )
-    for record_index, (record, destination_indices) in enumerate(
-        zip(plan.records, destination_indices_by_record, strict=True)
-    ):
-        source_indices = (
-            None if compact_source else source_indices_by_record[record_index]
+        combined = jnp.where(
+            coefficient == 0,
+            jnp.where(beta == 0, jnp.zeros_like(previous), base_only),
+            jnp.where(beta == 0, source_only, combined),
         )
-        if source_indices is not None and source_indices.size == 0:
-            continue
-        if destination_indices.size == 0:
-            continue
-        scale = jnp.asarray(record.scale, dtype=base_data.dtype)
-        mapped = converted if source_indices is None else converted[..., source_indices]
-        scale_value = np.asarray(record.scale, dtype=base_data.dtype)
-        values = (
-            mapped
-            if bool(scale_value == np.asarray(1, dtype=base_data.dtype))
-            else scale * mapped
-        )
-        if plan.write_kind is StridedWriteKind.ASSIGN:
-            result = result.at[..., destination_indices].set(
-                values,
-                unique_indices=True,
-            )
-        else:
-            result = result.at[..., destination_indices].add(
-                values,
-                unique_indices=True,
-            )
+        result = result.at[..., selected_base].set(combined, unique_indices=True)
     return result
 
 
 def execute_base_assign_reference(
     base: object,
     source: object,
-    plan: StridedCopyPlan,
+    plan: AffinePlan,
 ) -> Array:
     return _execute_base_update_reference(base, source, plan)
 
@@ -412,7 +392,7 @@ def execute_base_assign_reference(
 def execute_base_accumulate_reference(
     base: object,
     source: object,
-    plan: StridedCopyPlan,
+    plan: AffinePlan,
 ) -> Array:
     return _execute_base_update_reference(base, source, plan)
 
@@ -420,7 +400,7 @@ def execute_base_accumulate_reference(
 def _validate_selected_scale_operands(
     base: Array,
     factor: Array,
-    plan: StridedCopyPlan,
+    plan: AffinePlan,
 ) -> None:
     bound = plan
     if not base.shape or base.shape[-1] != bound.output_size:
@@ -429,21 +409,36 @@ def _validate_selected_scale_operands(
         )
     if base.dtype != jnp.dtype(bound.result_dtype):
         raise TypeError(f"expected base dtype {bound.result_dtype}, got {base.dtype.name}")
-    if factor.dtype != base.dtype:
-        raise TypeError("selected scale factor must use the base dtype")
     if factor.shape not in ((), base.shape[:-1]):
         raise ValueError(
             "selected scale factor must be scalar or match the base batch shape"
         )
 
 
+@jax.custom_jvp
+def _short_scale_reference(values: Array, factor: Array) -> Array:
+    dtype = jnp.result_type(values, factor)
+    values = jnp.asarray(values, dtype=dtype)
+    factor = jnp.asarray(factor, dtype=dtype)
+    return jnp.where(factor == 0, jnp.zeros_like(values),
+                     jnp.where(factor == 1, values, factor * values))
+
+
+@_short_scale_reference.defjvp
+def _short_scale_reference_jvp(primals, tangents):
+    values, factor = primals
+    values_tangent, factor_tangent = tangents
+    return (_short_scale_reference(values, factor),
+            factor * values_tangent + factor_tangent * values)
+
+
 def execute_selected_scale_reference(
     base: object,
     factor: object,
-    plan: StridedCopyPlan,
+    plan: AffinePlan,
 ) -> Array:
     base_data = jnp.asarray(base)
-    factor_data = jnp.asarray(factor, dtype=base_data.dtype)
+    factor_data = jnp.asarray(factor)
     _validate_selected_scale_operands(base_data, factor_data, plan)
     _check_eligibility(plan, tuple(base_data.shape))
 
@@ -457,6 +452,6 @@ def execute_selected_scale_reference(
     for indices in indices_by_record:
         if indices.size == 0:
             continue
-        values = expanded_factor * base_data[..., indices]
-        result = result.at[..., indices].set(values, unique_indices=True)
+        values = _short_scale_reference(base_data[..., indices], expanded_factor)
+        result = result.at[..., indices].set(values.astype(base_data.dtype), unique_indices=True)
     return result

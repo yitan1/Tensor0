@@ -5,6 +5,17 @@ use std::process::Command;
 const VENDORED_JAX_VERSION: &str = "0.10.1";
 const VENDORED_JAXLIB_VERSION: &str = "0.10.1";
 const FFI_HEADERS: [&str; 3] = ["api.h", "c_api.h", "ffi.h"];
+const STRIDE_NATIVE_SOURCES: [&str; 9] = [
+    "native/stride_descriptor.h",
+    "native/stride_ffi.cc",
+    "native/stride_common.inc",
+    "native/stride_affine.inc",
+    "native/stride_scalar.inc",
+    "native/stride_reduction_plan.inc",
+    "native/stride_runtime.inc",
+    "native/stride_reduction.inc",
+    "native/stride_bindings.inc",
+];
 
 struct JaxBuildInfo {
     include_dir: PathBuf,
@@ -33,8 +44,9 @@ fn jax_build_info(manifest_dir: &Path) -> Option<JaxBuildInfo> {
 fn main() {
     println!("cargo:rustc-check-cfg=cfg(tensor0_stride_ffi)");
     println!("cargo:rerun-if-env-changed=CXX");
-    println!("cargo:rerun-if-changed=native/stride_descriptor.h");
-    println!("cargo:rerun-if-changed=native/stride_ffi.cc");
+    for source in STRIDE_NATIVE_SOURCES {
+        println!("cargo:rerun-if-changed={source}");
+    }
 
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     if target_os != "linux" {

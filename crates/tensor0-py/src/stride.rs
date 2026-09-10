@@ -7,22 +7,22 @@ use pyo3::types::{PyAny, PyDict};
 
 #[cfg(tensor0_stride_ffi)]
 unsafe extern "C" {
-    fn Tensor0StrideR2PreparedF32V7InstantiateHandler() -> *mut c_void;
-    fn Tensor0StrideR2PreparedF32V7ExecuteHandler() -> *mut c_void;
-    fn Tensor0StrideR2PreparedF16V7ExecuteHandler() -> *mut c_void;
-    fn Tensor0StrideR2PreparedBF16V7ExecuteHandler() -> *mut c_void;
-    fn Tensor0StrideR2PreparedC64V7ExecuteHandler() -> *mut c_void;
-    fn Tensor0StrideR2PreparedS32V7ExecuteHandler() -> *mut c_void;
-    fn Tensor0StrideR2PreparedPredV7ExecuteHandler() -> *mut c_void;
-    fn Tensor0StrideR2PreparedS8V7ExecuteHandler() -> *mut c_void;
-    fn Tensor0StrideR2PreparedS16V7ExecuteHandler() -> *mut c_void;
-    fn Tensor0StrideR2PreparedS64V7ExecuteHandler() -> *mut c_void;
-    fn Tensor0StrideR2PreparedU8V7ExecuteHandler() -> *mut c_void;
-    fn Tensor0StrideR2PreparedU16V7ExecuteHandler() -> *mut c_void;
-    fn Tensor0StrideR2PreparedU32V7ExecuteHandler() -> *mut c_void;
-    fn Tensor0StrideR2PreparedU64V7ExecuteHandler() -> *mut c_void;
-    fn Tensor0StrideR2PreparedF64V7ExecuteHandler() -> *mut c_void;
-    fn Tensor0StrideR2PreparedC128V7ExecuteHandler() -> *mut c_void;
+    fn Tensor0StrideAffinePreparedF32V6InstantiateHandler() -> *mut c_void;
+    fn Tensor0StrideAffinePreparedF32V6ExecuteHandler() -> *mut c_void;
+    fn Tensor0StrideAffinePreparedF16V6ExecuteHandler() -> *mut c_void;
+    fn Tensor0StrideAffinePreparedBF16V6ExecuteHandler() -> *mut c_void;
+    fn Tensor0StrideAffinePreparedC64V6ExecuteHandler() -> *mut c_void;
+    fn Tensor0StrideAffinePreparedS32V6ExecuteHandler() -> *mut c_void;
+    fn Tensor0StrideAffinePreparedPredV6ExecuteHandler() -> *mut c_void;
+    fn Tensor0StrideAffinePreparedS8V6ExecuteHandler() -> *mut c_void;
+    fn Tensor0StrideAffinePreparedS16V6ExecuteHandler() -> *mut c_void;
+    fn Tensor0StrideAffinePreparedS64V6ExecuteHandler() -> *mut c_void;
+    fn Tensor0StrideAffinePreparedU8V6ExecuteHandler() -> *mut c_void;
+    fn Tensor0StrideAffinePreparedU16V6ExecuteHandler() -> *mut c_void;
+    fn Tensor0StrideAffinePreparedU32V6ExecuteHandler() -> *mut c_void;
+    fn Tensor0StrideAffinePreparedU64V6ExecuteHandler() -> *mut c_void;
+    fn Tensor0StrideAffinePreparedF64V6ExecuteHandler() -> *mut c_void;
+    fn Tensor0StrideAffinePreparedC128V6ExecuteHandler() -> *mut c_void;
     fn Tensor0StrideAffineF16F32ForwardV1ExecuteHandler() -> *mut c_void;
     fn Tensor0StrideAffineF32F16TransposeV1ExecuteHandler() -> *mut c_void;
     fn Tensor0StrideAffineF32C64ForwardV1ExecuteHandler() -> *mut c_void;
@@ -33,73 +33,53 @@ unsafe extern "C" {
     fn Tensor0StrideAffineC128F64TransposeV1ExecuteHandler() -> *mut c_void;
     fn Tensor0StrideAffineC128F64ForwardV1ExecuteHandler() -> *mut c_void;
     fn Tensor0StrideAffineF64C128TransposeV1ExecuteHandler() -> *mut c_void;
-    fn Tensor0StrideBaseAssignV1InstantiateHandler() -> *mut c_void;
-    fn Tensor0StrideBaseAccumulateV1InstantiateHandler() -> *mut c_void;
     fn Tensor0StrideSelectedScaleV1InstantiateHandler() -> *mut c_void;
-    fn Tensor0StrideBaseAssignF32V1ExecuteHandler() -> *mut c_void;
-    fn Tensor0StrideBaseAssignF16V1ExecuteHandler() -> *mut c_void;
-    fn Tensor0StrideBaseAssignBF16V1ExecuteHandler() -> *mut c_void;
-    fn Tensor0StrideBaseAssignC64V1ExecuteHandler() -> *mut c_void;
-    fn Tensor0StrideBaseAssignS32V1ExecuteHandler() -> *mut c_void;
-    fn Tensor0StrideBaseAssignPredV1ExecuteHandler() -> *mut c_void;
-    fn Tensor0StrideBaseAssignS8V1ExecuteHandler() -> *mut c_void;
-    fn Tensor0StrideBaseAssignS16V1ExecuteHandler() -> *mut c_void;
-    fn Tensor0StrideBaseAssignS64V1ExecuteHandler() -> *mut c_void;
-    fn Tensor0StrideBaseAssignU8V1ExecuteHandler() -> *mut c_void;
-    fn Tensor0StrideBaseAssignU16V1ExecuteHandler() -> *mut c_void;
-    fn Tensor0StrideBaseAssignU32V1ExecuteHandler() -> *mut c_void;
-    fn Tensor0StrideBaseAssignU64V1ExecuteHandler() -> *mut c_void;
-    fn Tensor0StrideBaseAssignF64V1ExecuteHandler() -> *mut c_void;
-    fn Tensor0StrideBaseAssignC128V1ExecuteHandler() -> *mut c_void;
-    fn Tensor0StrideBaseAssignF16F32V1ExecuteHandler() -> *mut c_void;
-    fn Tensor0StrideBaseAssignF32C64V1ExecuteHandler() -> *mut c_void;
-    fn Tensor0StrideBaseAssignC64F32V1ExecuteHandler() -> *mut c_void;
-    fn Tensor0StrideBaseAssignF64C128V1ExecuteHandler() -> *mut c_void;
-    fn Tensor0StrideBaseAssignC128F64V1ExecuteHandler() -> *mut c_void;
-    fn Tensor0StrideBaseAssignS32PredV1ExecuteHandler() -> *mut c_void;
-    fn Tensor0StrideBaseAssignS32S8V1ExecuteHandler() -> *mut c_void;
-    fn Tensor0StrideBaseAssignS32S16V1ExecuteHandler() -> *mut c_void;
-    fn Tensor0StrideBaseAssignU32U8V1ExecuteHandler() -> *mut c_void;
-    fn Tensor0StrideBaseAccumulateF32V1ExecuteHandler() -> *mut c_void;
-    fn Tensor0StrideBaseAccumulateF16V1ExecuteHandler() -> *mut c_void;
-    fn Tensor0StrideBaseAccumulateBF16V1ExecuteHandler() -> *mut c_void;
-    fn Tensor0StrideBaseAccumulateC64V1ExecuteHandler() -> *mut c_void;
-    fn Tensor0StrideBaseAccumulateS32V1ExecuteHandler() -> *mut c_void;
-    fn Tensor0StrideBaseAccumulatePredV1ExecuteHandler() -> *mut c_void;
-    fn Tensor0StrideBaseAccumulateS8V1ExecuteHandler() -> *mut c_void;
-    fn Tensor0StrideBaseAccumulateS16V1ExecuteHandler() -> *mut c_void;
-    fn Tensor0StrideBaseAccumulateS64V1ExecuteHandler() -> *mut c_void;
-    fn Tensor0StrideBaseAccumulateU8V1ExecuteHandler() -> *mut c_void;
-    fn Tensor0StrideBaseAccumulateU16V1ExecuteHandler() -> *mut c_void;
-    fn Tensor0StrideBaseAccumulateU32V1ExecuteHandler() -> *mut c_void;
-    fn Tensor0StrideBaseAccumulateU64V1ExecuteHandler() -> *mut c_void;
-    fn Tensor0StrideBaseAccumulateF64V1ExecuteHandler() -> *mut c_void;
-    fn Tensor0StrideBaseAccumulateC128V1ExecuteHandler() -> *mut c_void;
-    fn Tensor0StrideBaseAccumulateF16F32V1ExecuteHandler() -> *mut c_void;
-    fn Tensor0StrideBaseAccumulateF32C64V1ExecuteHandler() -> *mut c_void;
-    fn Tensor0StrideBaseAccumulateC64F32V1ExecuteHandler() -> *mut c_void;
-    fn Tensor0StrideBaseAccumulateF64C128V1ExecuteHandler() -> *mut c_void;
-    fn Tensor0StrideBaseAccumulateC128F64V1ExecuteHandler() -> *mut c_void;
-    fn Tensor0StrideBaseAccumulateS32PredV1ExecuteHandler() -> *mut c_void;
-    fn Tensor0StrideBaseAccumulateS32S8V1ExecuteHandler() -> *mut c_void;
-    fn Tensor0StrideBaseAccumulateS32S16V1ExecuteHandler() -> *mut c_void;
-    fn Tensor0StrideBaseAccumulateU32U8V1ExecuteHandler() -> *mut c_void;
-    fn Tensor0StrideSelectedScaleF32V1ExecuteHandler() -> *mut c_void;
-    fn Tensor0StrideSelectedScaleF16V1ExecuteHandler() -> *mut c_void;
-    fn Tensor0StrideSelectedScaleBF16V1ExecuteHandler() -> *mut c_void;
-    fn Tensor0StrideSelectedScaleC64V1ExecuteHandler() -> *mut c_void;
-    fn Tensor0StrideSelectedScaleS32V1ExecuteHandler() -> *mut c_void;
-    fn Tensor0StrideSelectedScalePredV1ExecuteHandler() -> *mut c_void;
-    fn Tensor0StrideSelectedScaleS8V1ExecuteHandler() -> *mut c_void;
-    fn Tensor0StrideSelectedScaleS16V1ExecuteHandler() -> *mut c_void;
-    fn Tensor0StrideSelectedScaleS64V1ExecuteHandler() -> *mut c_void;
-    fn Tensor0StrideSelectedScaleU8V1ExecuteHandler() -> *mut c_void;
-    fn Tensor0StrideSelectedScaleU16V1ExecuteHandler() -> *mut c_void;
-    fn Tensor0StrideSelectedScaleU32V1ExecuteHandler() -> *mut c_void;
-    fn Tensor0StrideSelectedScaleU64V1ExecuteHandler() -> *mut c_void;
-    fn Tensor0StrideSelectedScaleF64V1ExecuteHandler() -> *mut c_void;
-    fn Tensor0StrideSelectedScaleC128V1ExecuteHandler() -> *mut c_void;
+    fn Tensor0StrideUpdateV1InstantiateHandler() -> *mut c_void;
+    fn Tensor0StrideUpdateF32V1ExecuteHandler() -> *mut c_void;
+    fn Tensor0StrideUpdateF16V1ExecuteHandler() -> *mut c_void;
+    fn Tensor0StrideUpdateBF16V1ExecuteHandler() -> *mut c_void;
+    fn Tensor0StrideUpdateC64V1ExecuteHandler() -> *mut c_void;
+    fn Tensor0StrideUpdateS32V1ExecuteHandler() -> *mut c_void;
+    fn Tensor0StrideUpdatePredV1ExecuteHandler() -> *mut c_void;
+    fn Tensor0StrideUpdateS8V1ExecuteHandler() -> *mut c_void;
+    fn Tensor0StrideUpdateS16V1ExecuteHandler() -> *mut c_void;
+    fn Tensor0StrideUpdateS64V1ExecuteHandler() -> *mut c_void;
+    fn Tensor0StrideUpdateU8V1ExecuteHandler() -> *mut c_void;
+    fn Tensor0StrideUpdateU16V1ExecuteHandler() -> *mut c_void;
+    fn Tensor0StrideUpdateU32V1ExecuteHandler() -> *mut c_void;
+    fn Tensor0StrideUpdateU64V1ExecuteHandler() -> *mut c_void;
+    fn Tensor0StrideUpdateF64V1ExecuteHandler() -> *mut c_void;
+    fn Tensor0StrideUpdateC128V1ExecuteHandler() -> *mut c_void;
+    fn Tensor0StrideUpdateF16F32V1ExecuteHandler() -> *mut c_void;
+    fn Tensor0StrideUpdateF32C64V1ExecuteHandler() -> *mut c_void;
+    fn Tensor0StrideUpdateC64F32V1ExecuteHandler() -> *mut c_void;
+    fn Tensor0StrideUpdateF64C128V1ExecuteHandler() -> *mut c_void;
+    fn Tensor0StrideUpdateC128F64V1ExecuteHandler() -> *mut c_void;
+    fn Tensor0StrideUpdateS32PredV1ExecuteHandler() -> *mut c_void;
+    fn Tensor0StrideUpdateS32S8V1ExecuteHandler() -> *mut c_void;
+    fn Tensor0StrideUpdateS32S16V1ExecuteHandler() -> *mut c_void;
+    fn Tensor0StrideUpdateU32U8V1ExecuteHandler() -> *mut c_void;
+    fn Tensor0StrideAxpbyF16V1ExecuteHandler() -> *mut c_void;
+    fn Tensor0StrideAxpbyBF16V1ExecuteHandler() -> *mut c_void;
+    fn Tensor0StrideAxpbyF32V1ExecuteHandler() -> *mut c_void;
+    fn Tensor0StrideAxpbyF64V1ExecuteHandler() -> *mut c_void;
+    fn Tensor0StrideAxpbyC64V1ExecuteHandler() -> *mut c_void;
+    fn Tensor0StrideAxpbyC128V1ExecuteHandler() -> *mut c_void;
+    fn Tensor0StrideDotV1InstantiateHandler() -> *mut c_void;
+    fn Tensor0StrideDotuF32V1ExecuteHandler() -> *mut c_void;
+    fn Tensor0StrideDotcF32V1ExecuteHandler() -> *mut c_void;
+    fn Tensor0StrideDotuC64V1ExecuteHandler() -> *mut c_void;
+    fn Tensor0StrideDotcC64V1ExecuteHandler() -> *mut c_void;
+    fn Tensor0StrideScaleTangentF16V1ExecuteHandler() -> *mut c_void;
+    fn Tensor0StrideScaleTangentBF16V1ExecuteHandler() -> *mut c_void;
+    fn Tensor0StrideScaleTangentF32V1ExecuteHandler() -> *mut c_void;
+    fn Tensor0StrideScaleTangentF64V1ExecuteHandler() -> *mut c_void;
+    fn Tensor0StrideScaleTangentC64V1ExecuteHandler() -> *mut c_void;
+    fn Tensor0StrideScaleTangentC128V1ExecuteHandler() -> *mut c_void;
+    fn Tensor0StrideSelectedScaleAliasF32V1ExecuteHandler() -> *mut c_void;
+    fn Tensor0StrideSelectedScaleAliasC64V1ExecuteHandler() -> *mut c_void;
     fn Tensor0StrideStructuredReductionV1InstantiateHandler() -> *mut c_void;
+    fn Tensor0StrideGroupedReductionV1InstantiateHandler() -> *mut c_void;
     fn Tensor0StrideStructuredReductionF32V1ExecuteHandler() -> *mut c_void;
     fn Tensor0StrideStructuredReductionF16V1ExecuteHandler() -> *mut c_void;
     fn Tensor0StrideStructuredReductionBF16V1ExecuteHandler() -> *mut c_void;
@@ -142,10 +122,28 @@ unsafe extern "C" {
     fn Tensor0StridePreparedLastDescriptorBytes() -> u64;
     fn Tensor0StridePreparedResetMetrics() -> u64;
     fn Tensor0StrideNativeCallCount() -> u64;
+    fn Tensor0StrideObserveLeafKernelsForTests(enabled: u64);
+    fn Tensor0StrideLeafKernelMaskForTests() -> u64;
+    fn Tensor0StrideSupportedLeafKernelMaskForTests() -> u64;
     fn Tensor0StrideResetNativeCallCount();
     fn Tensor0StrideLastWorkerCount() -> u64;
     fn Tensor0StrideLastAvailableWorkerCount() -> u64;
-    fn Tensor0StrideSetWorkerLimitForTests(limit: u64);
+    fn Tensor0StrideLastReductionFiberChunks() -> u64;
+    fn Tensor0StrideLastGroupedOutputOwner() -> u64;
+    fn Tensor0StrideAliasLastBasePointer() -> u64;
+    fn Tensor0StrideAliasLastSourcePointer() -> u64;
+    fn Tensor0StrideAliasLastFactorPointer() -> u64;
+    fn Tensor0StrideAliasLastResultPointer() -> u64;
+    fn Tensor0StrideResetAliasPointers();
+    fn Tensor0StrideGetWorkerLimit() -> u64;
+    fn Tensor0StrideSetWorkerLimit(limit: u64);
+    fn Tensor0StrideSetForceGenericForTests(enabled: u64);
+    fn Tensor0StrideSetForceGeneratedBaselineForTests(enabled: u64);
+    fn Tensor0StrideSetReductionFiberParallelModeForTests(mode: u64);
+    fn Tensor0StrideSetDisableF16F16ContiguousSimdForTests(enabled: u64);
+    fn Tensor0StrideSetDisableF16F32ContiguousSimdForTests(enabled: u64);
+    fn Tensor0StrideSetDisableF32C64ContiguousSimdForTests(enabled: u64);
+    fn Tensor0StrideCpuSupportsF16ContiguousSimd() -> u64;
     fn Tensor0StrideBuiltJaxVersion() -> *const c_char;
     fn Tensor0StrideBuiltJaxlibVersion() -> *const c_char;
     fn Tensor0StrideAbiVersion() -> u64;
@@ -178,46 +176,80 @@ pub fn _stride_prepared_registration(py: Python<'_>) -> PyResult<Py<PyAny>> {
         registration.set_item(
             "instantiate",
             pointer_capsule(py, unsafe {
-                Tensor0StrideR2PreparedF32V7InstantiateHandler()
+                Tensor0StrideAffinePreparedF32V6InstantiateHandler()
             })?,
         )?;
         registration.set_item(
             "execute_f32",
-            pointer_capsule(py, unsafe { Tensor0StrideR2PreparedF32V7ExecuteHandler() })?,
+            pointer_capsule(py, unsafe {
+                Tensor0StrideAffinePreparedF32V6ExecuteHandler()
+            })?,
         )?;
         registration.set_item(
             "execute_f16",
-            pointer_capsule(py, unsafe { Tensor0StrideR2PreparedF16V7ExecuteHandler() })?,
+            pointer_capsule(py, unsafe {
+                Tensor0StrideAffinePreparedF16V6ExecuteHandler()
+            })?,
         )?;
         registration.set_item(
             "execute_bf16",
-            pointer_capsule(py, unsafe { Tensor0StrideR2PreparedBF16V7ExecuteHandler() })?,
+            pointer_capsule(py, unsafe {
+                Tensor0StrideAffinePreparedBF16V6ExecuteHandler()
+            })?,
         )?;
         registration.set_item(
             "execute_c64",
-            pointer_capsule(py, unsafe { Tensor0StrideR2PreparedC64V7ExecuteHandler() })?,
+            pointer_capsule(py, unsafe {
+                Tensor0StrideAffinePreparedC64V6ExecuteHandler()
+            })?,
         )?;
         registration.set_item(
             "execute_s32",
-            pointer_capsule(py, unsafe { Tensor0StrideR2PreparedS32V7ExecuteHandler() })?,
+            pointer_capsule(py, unsafe {
+                Tensor0StrideAffinePreparedS32V6ExecuteHandler()
+            })?,
         )?;
         let same_dtype_handlers = unsafe {
             [
                 (
                     "execute_pred",
-                    Tensor0StrideR2PreparedPredV7ExecuteHandler(),
+                    Tensor0StrideAffinePreparedPredV6ExecuteHandler(),
                 ),
-                ("execute_s8", Tensor0StrideR2PreparedS8V7ExecuteHandler()),
-                ("execute_s16", Tensor0StrideR2PreparedS16V7ExecuteHandler()),
-                ("execute_s64", Tensor0StrideR2PreparedS64V7ExecuteHandler()),
-                ("execute_u8", Tensor0StrideR2PreparedU8V7ExecuteHandler()),
-                ("execute_u16", Tensor0StrideR2PreparedU16V7ExecuteHandler()),
-                ("execute_u32", Tensor0StrideR2PreparedU32V7ExecuteHandler()),
-                ("execute_u64", Tensor0StrideR2PreparedU64V7ExecuteHandler()),
-                ("execute_f64", Tensor0StrideR2PreparedF64V7ExecuteHandler()),
+                (
+                    "execute_s8",
+                    Tensor0StrideAffinePreparedS8V6ExecuteHandler(),
+                ),
+                (
+                    "execute_s16",
+                    Tensor0StrideAffinePreparedS16V6ExecuteHandler(),
+                ),
+                (
+                    "execute_s64",
+                    Tensor0StrideAffinePreparedS64V6ExecuteHandler(),
+                ),
+                (
+                    "execute_u8",
+                    Tensor0StrideAffinePreparedU8V6ExecuteHandler(),
+                ),
+                (
+                    "execute_u16",
+                    Tensor0StrideAffinePreparedU16V6ExecuteHandler(),
+                ),
+                (
+                    "execute_u32",
+                    Tensor0StrideAffinePreparedU32V6ExecuteHandler(),
+                ),
+                (
+                    "execute_u64",
+                    Tensor0StrideAffinePreparedU64V6ExecuteHandler(),
+                ),
+                (
+                    "execute_f64",
+                    Tensor0StrideAffinePreparedF64V6ExecuteHandler(),
+                ),
                 (
                     "execute_c128",
-                    Tensor0StrideR2PreparedC128V7ExecuteHandler(),
+                    Tensor0StrideAffinePreparedC128V6ExecuteHandler(),
                 ),
             ]
         };
@@ -286,272 +318,159 @@ pub fn _stride_prepared_registration(py: Python<'_>) -> PyResult<Py<PyAny>> {
         let operation_handlers = unsafe {
             [
                 (
-                    "instantiate_base_assign",
-                    Tensor0StrideBaseAssignV1InstantiateHandler(),
-                ),
-                (
-                    "instantiate_base_accumulate",
-                    Tensor0StrideBaseAccumulateV1InstantiateHandler(),
-                ),
-                (
                     "instantiate_selected_scale",
                     Tensor0StrideSelectedScaleV1InstantiateHandler(),
                 ),
                 (
-                    "execute_base_assign_f32",
-                    Tensor0StrideBaseAssignF32V1ExecuteHandler(),
+                    "instantiate_update",
+                    Tensor0StrideUpdateV1InstantiateHandler(),
+                ),
+                ("instantiate_dot", Tensor0StrideDotV1InstantiateHandler()),
+                (
+                    "execute_scale_tangent_f16",
+                    Tensor0StrideScaleTangentF16V1ExecuteHandler(),
                 ),
                 (
-                    "execute_base_assign_f16",
-                    Tensor0StrideBaseAssignF16V1ExecuteHandler(),
+                    "execute_scale_tangent_bf16",
+                    Tensor0StrideScaleTangentBF16V1ExecuteHandler(),
                 ),
                 (
-                    "execute_base_assign_bf16",
-                    Tensor0StrideBaseAssignBF16V1ExecuteHandler(),
+                    "execute_scale_tangent_f32",
+                    Tensor0StrideScaleTangentF32V1ExecuteHandler(),
                 ),
                 (
-                    "execute_base_assign_c64",
-                    Tensor0StrideBaseAssignC64V1ExecuteHandler(),
+                    "execute_scale_tangent_f64",
+                    Tensor0StrideScaleTangentF64V1ExecuteHandler(),
                 ),
                 (
-                    "execute_base_assign_s32",
-                    Tensor0StrideBaseAssignS32V1ExecuteHandler(),
+                    "execute_scale_tangent_c64",
+                    Tensor0StrideScaleTangentC64V1ExecuteHandler(),
                 ),
                 (
-                    "execute_base_assign_pred",
-                    Tensor0StrideBaseAssignPredV1ExecuteHandler(),
+                    "execute_scale_tangent_c128",
+                    Tensor0StrideScaleTangentC128V1ExecuteHandler(),
+                ),
+                ("execute_axpby_f16", Tensor0StrideAxpbyF16V1ExecuteHandler()),
+                (
+                    "execute_update_f32",
+                    Tensor0StrideUpdateF32V1ExecuteHandler(),
                 ),
                 (
-                    "execute_base_assign_s8",
-                    Tensor0StrideBaseAssignS8V1ExecuteHandler(),
+                    "execute_update_f16",
+                    Tensor0StrideUpdateF16V1ExecuteHandler(),
                 ),
                 (
-                    "execute_base_assign_s16",
-                    Tensor0StrideBaseAssignS16V1ExecuteHandler(),
+                    "execute_update_bf16",
+                    Tensor0StrideUpdateBF16V1ExecuteHandler(),
                 ),
                 (
-                    "execute_base_assign_s64",
-                    Tensor0StrideBaseAssignS64V1ExecuteHandler(),
+                    "execute_update_c64",
+                    Tensor0StrideUpdateC64V1ExecuteHandler(),
                 ),
                 (
-                    "execute_base_assign_u8",
-                    Tensor0StrideBaseAssignU8V1ExecuteHandler(),
+                    "execute_update_s32",
+                    Tensor0StrideUpdateS32V1ExecuteHandler(),
                 ),
                 (
-                    "execute_base_assign_u16",
-                    Tensor0StrideBaseAssignU16V1ExecuteHandler(),
+                    "execute_update_pred",
+                    Tensor0StrideUpdatePredV1ExecuteHandler(),
+                ),
+                ("execute_update_s8", Tensor0StrideUpdateS8V1ExecuteHandler()),
+                (
+                    "execute_update_s16",
+                    Tensor0StrideUpdateS16V1ExecuteHandler(),
                 ),
                 (
-                    "execute_base_assign_u32",
-                    Tensor0StrideBaseAssignU32V1ExecuteHandler(),
+                    "execute_update_s64",
+                    Tensor0StrideUpdateS64V1ExecuteHandler(),
+                ),
+                ("execute_update_u8", Tensor0StrideUpdateU8V1ExecuteHandler()),
+                (
+                    "execute_update_u16",
+                    Tensor0StrideUpdateU16V1ExecuteHandler(),
                 ),
                 (
-                    "execute_base_assign_u64",
-                    Tensor0StrideBaseAssignU64V1ExecuteHandler(),
+                    "execute_update_u32",
+                    Tensor0StrideUpdateU32V1ExecuteHandler(),
                 ),
                 (
-                    "execute_base_assign_f64",
-                    Tensor0StrideBaseAssignF64V1ExecuteHandler(),
+                    "execute_update_u64",
+                    Tensor0StrideUpdateU64V1ExecuteHandler(),
                 ),
                 (
-                    "execute_base_assign_c128",
-                    Tensor0StrideBaseAssignC128V1ExecuteHandler(),
+                    "execute_update_f64",
+                    Tensor0StrideUpdateF64V1ExecuteHandler(),
                 ),
                 (
-                    "execute_base_assign_f16_f32",
-                    Tensor0StrideBaseAssignF16F32V1ExecuteHandler(),
+                    "execute_update_c128",
+                    Tensor0StrideUpdateC128V1ExecuteHandler(),
                 ),
                 (
-                    "execute_base_assign_f32_c64",
-                    Tensor0StrideBaseAssignF32C64V1ExecuteHandler(),
+                    "execute_update_f16_f32",
+                    Tensor0StrideUpdateF16F32V1ExecuteHandler(),
                 ),
                 (
-                    "execute_base_assign_c64_f32",
-                    Tensor0StrideBaseAssignC64F32V1ExecuteHandler(),
+                    "execute_update_f32_c64",
+                    Tensor0StrideUpdateF32C64V1ExecuteHandler(),
                 ),
                 (
-                    "execute_base_assign_f64_c128",
-                    Tensor0StrideBaseAssignF64C128V1ExecuteHandler(),
+                    "execute_update_c64_f32",
+                    Tensor0StrideUpdateC64F32V1ExecuteHandler(),
                 ),
                 (
-                    "execute_base_assign_c128_f64",
-                    Tensor0StrideBaseAssignC128F64V1ExecuteHandler(),
+                    "execute_update_f64_c128",
+                    Tensor0StrideUpdateF64C128V1ExecuteHandler(),
                 ),
                 (
-                    "execute_base_assign_s32_pred",
-                    Tensor0StrideBaseAssignS32PredV1ExecuteHandler(),
+                    "execute_update_c128_f64",
+                    Tensor0StrideUpdateC128F64V1ExecuteHandler(),
                 ),
                 (
-                    "execute_base_assign_s32_s8",
-                    Tensor0StrideBaseAssignS32S8V1ExecuteHandler(),
+                    "execute_update_s32_pred",
+                    Tensor0StrideUpdateS32PredV1ExecuteHandler(),
                 ),
                 (
-                    "execute_base_assign_s32_s16",
-                    Tensor0StrideBaseAssignS32S16V1ExecuteHandler(),
+                    "execute_update_s32_s8",
+                    Tensor0StrideUpdateS32S8V1ExecuteHandler(),
                 ),
                 (
-                    "execute_base_assign_u32_u8",
-                    Tensor0StrideBaseAssignU32U8V1ExecuteHandler(),
+                    "execute_update_s32_s16",
+                    Tensor0StrideUpdateS32S16V1ExecuteHandler(),
                 ),
                 (
-                    "execute_base_accumulate_f32",
-                    Tensor0StrideBaseAccumulateF32V1ExecuteHandler(),
+                    "execute_update_u32_u8",
+                    Tensor0StrideUpdateU32U8V1ExecuteHandler(),
                 ),
                 (
-                    "execute_base_accumulate_f16",
-                    Tensor0StrideBaseAccumulateF16V1ExecuteHandler(),
+                    "execute_axpby_bf16",
+                    Tensor0StrideAxpbyBF16V1ExecuteHandler(),
+                ),
+                ("execute_axpby_f32", Tensor0StrideAxpbyF32V1ExecuteHandler()),
+                ("execute_axpby_f64", Tensor0StrideAxpbyF64V1ExecuteHandler()),
+                ("execute_axpby_c64", Tensor0StrideAxpbyC64V1ExecuteHandler()),
+                (
+                    "execute_axpby_c128",
+                    Tensor0StrideAxpbyC128V1ExecuteHandler(),
+                ),
+                ("execute_dotu_f32", Tensor0StrideDotuF32V1ExecuteHandler()),
+                ("execute_dotc_f32", Tensor0StrideDotcF32V1ExecuteHandler()),
+                ("execute_dotu_c64", Tensor0StrideDotuC64V1ExecuteHandler()),
+                ("execute_dotc_c64", Tensor0StrideDotcC64V1ExecuteHandler()),
+                (
+                    "execute_selected_scale_alias_f32",
+                    Tensor0StrideSelectedScaleAliasF32V1ExecuteHandler(),
                 ),
                 (
-                    "execute_base_accumulate_bf16",
-                    Tensor0StrideBaseAccumulateBF16V1ExecuteHandler(),
-                ),
-                (
-                    "execute_base_accumulate_c64",
-                    Tensor0StrideBaseAccumulateC64V1ExecuteHandler(),
-                ),
-                (
-                    "execute_base_accumulate_s32",
-                    Tensor0StrideBaseAccumulateS32V1ExecuteHandler(),
-                ),
-                (
-                    "execute_base_accumulate_pred",
-                    Tensor0StrideBaseAccumulatePredV1ExecuteHandler(),
-                ),
-                (
-                    "execute_base_accumulate_s8",
-                    Tensor0StrideBaseAccumulateS8V1ExecuteHandler(),
-                ),
-                (
-                    "execute_base_accumulate_s16",
-                    Tensor0StrideBaseAccumulateS16V1ExecuteHandler(),
-                ),
-                (
-                    "execute_base_accumulate_s64",
-                    Tensor0StrideBaseAccumulateS64V1ExecuteHandler(),
-                ),
-                (
-                    "execute_base_accumulate_u8",
-                    Tensor0StrideBaseAccumulateU8V1ExecuteHandler(),
-                ),
-                (
-                    "execute_base_accumulate_u16",
-                    Tensor0StrideBaseAccumulateU16V1ExecuteHandler(),
-                ),
-                (
-                    "execute_base_accumulate_u32",
-                    Tensor0StrideBaseAccumulateU32V1ExecuteHandler(),
-                ),
-                (
-                    "execute_base_accumulate_u64",
-                    Tensor0StrideBaseAccumulateU64V1ExecuteHandler(),
-                ),
-                (
-                    "execute_base_accumulate_f64",
-                    Tensor0StrideBaseAccumulateF64V1ExecuteHandler(),
-                ),
-                (
-                    "execute_base_accumulate_c128",
-                    Tensor0StrideBaseAccumulateC128V1ExecuteHandler(),
-                ),
-                (
-                    "execute_base_accumulate_f16_f32",
-                    Tensor0StrideBaseAccumulateF16F32V1ExecuteHandler(),
-                ),
-                (
-                    "execute_base_accumulate_f32_c64",
-                    Tensor0StrideBaseAccumulateF32C64V1ExecuteHandler(),
-                ),
-                (
-                    "execute_base_accumulate_c64_f32",
-                    Tensor0StrideBaseAccumulateC64F32V1ExecuteHandler(),
-                ),
-                (
-                    "execute_base_accumulate_f64_c128",
-                    Tensor0StrideBaseAccumulateF64C128V1ExecuteHandler(),
-                ),
-                (
-                    "execute_base_accumulate_c128_f64",
-                    Tensor0StrideBaseAccumulateC128F64V1ExecuteHandler(),
-                ),
-                (
-                    "execute_base_accumulate_s32_pred",
-                    Tensor0StrideBaseAccumulateS32PredV1ExecuteHandler(),
-                ),
-                (
-                    "execute_base_accumulate_s32_s8",
-                    Tensor0StrideBaseAccumulateS32S8V1ExecuteHandler(),
-                ),
-                (
-                    "execute_base_accumulate_s32_s16",
-                    Tensor0StrideBaseAccumulateS32S16V1ExecuteHandler(),
-                ),
-                (
-                    "execute_base_accumulate_u32_u8",
-                    Tensor0StrideBaseAccumulateU32U8V1ExecuteHandler(),
-                ),
-                (
-                    "execute_selected_scale_f32",
-                    Tensor0StrideSelectedScaleF32V1ExecuteHandler(),
-                ),
-                (
-                    "execute_selected_scale_f16",
-                    Tensor0StrideSelectedScaleF16V1ExecuteHandler(),
-                ),
-                (
-                    "execute_selected_scale_bf16",
-                    Tensor0StrideSelectedScaleBF16V1ExecuteHandler(),
-                ),
-                (
-                    "execute_selected_scale_c64",
-                    Tensor0StrideSelectedScaleC64V1ExecuteHandler(),
-                ),
-                (
-                    "execute_selected_scale_s32",
-                    Tensor0StrideSelectedScaleS32V1ExecuteHandler(),
-                ),
-                (
-                    "execute_selected_scale_pred",
-                    Tensor0StrideSelectedScalePredV1ExecuteHandler(),
-                ),
-                (
-                    "execute_selected_scale_s8",
-                    Tensor0StrideSelectedScaleS8V1ExecuteHandler(),
-                ),
-                (
-                    "execute_selected_scale_s16",
-                    Tensor0StrideSelectedScaleS16V1ExecuteHandler(),
-                ),
-                (
-                    "execute_selected_scale_s64",
-                    Tensor0StrideSelectedScaleS64V1ExecuteHandler(),
-                ),
-                (
-                    "execute_selected_scale_u8",
-                    Tensor0StrideSelectedScaleU8V1ExecuteHandler(),
-                ),
-                (
-                    "execute_selected_scale_u16",
-                    Tensor0StrideSelectedScaleU16V1ExecuteHandler(),
-                ),
-                (
-                    "execute_selected_scale_u32",
-                    Tensor0StrideSelectedScaleU32V1ExecuteHandler(),
-                ),
-                (
-                    "execute_selected_scale_u64",
-                    Tensor0StrideSelectedScaleU64V1ExecuteHandler(),
-                ),
-                (
-                    "execute_selected_scale_f64",
-                    Tensor0StrideSelectedScaleF64V1ExecuteHandler(),
-                ),
-                (
-                    "execute_selected_scale_c128",
-                    Tensor0StrideSelectedScaleC128V1ExecuteHandler(),
+                    "execute_selected_scale_alias_c64",
+                    Tensor0StrideSelectedScaleAliasC64V1ExecuteHandler(),
                 ),
                 (
                     "instantiate_structured_reduction",
                     Tensor0StrideStructuredReductionV1InstantiateHandler(),
+                ),
+                (
+                    "instantiate_grouped_reduction",
+                    Tensor0StrideGroupedReductionV1InstantiateHandler(),
                 ),
                 (
                     "execute_structured_reduction_f32",
@@ -756,6 +675,30 @@ pub fn _reset_stride_native_call_count() {
 }
 
 #[pyfunction]
+pub fn _observe_stride_leaf_kernels_for_tests(enabled: bool) {
+    #[cfg(tensor0_stride_ffi)]
+    unsafe {
+        Tensor0StrideObserveLeafKernelsForTests(u64::from(enabled));
+    }
+    #[cfg(not(tensor0_stride_ffi))]
+    {
+        let _ = enabled;
+    }
+}
+
+#[pyfunction]
+pub fn _stride_leaf_kernel_masks_for_tests() -> (u64, u64) {
+    #[cfg(tensor0_stride_ffi)]
+    unsafe {
+        (Tensor0StrideLeafKernelMaskForTests(), Tensor0StrideSupportedLeafKernelMaskForTests())
+    }
+    #[cfg(not(tensor0_stride_ffi))]
+    {
+        (0, 0)
+    }
+}
+
+#[pyfunction]
 pub fn _stride_last_worker_count() -> u64 {
     #[cfg(tensor0_stride_ffi)]
     {
@@ -780,14 +723,162 @@ pub fn _stride_last_available_worker_count() -> u64 {
 }
 
 #[pyfunction]
-pub fn _set_stride_worker_limit_for_tests(limit: Option<u64>) {
+pub fn _stride_last_reduction_fiber_chunks() -> u64 {
+    #[cfg(tensor0_stride_ffi)]
+    {
+        unsafe { Tensor0StrideLastReductionFiberChunks() }
+    }
+    #[cfg(not(tensor0_stride_ffi))]
+    {
+        0
+    }
+}
+
+#[pyfunction]
+pub fn _stride_last_grouped_output_owner() -> bool {
+    #[cfg(tensor0_stride_ffi)]
+    {
+        unsafe { Tensor0StrideLastGroupedOutputOwner() != 0 }
+    }
+    #[cfg(not(tensor0_stride_ffi))]
+    {
+        false
+    }
+}
+
+#[pyfunction]
+pub fn _stride_alias_pointers() -> (u64, u64, u64, u64) {
+    #[cfg(tensor0_stride_ffi)]
+    {
+        unsafe {
+            (
+                Tensor0StrideAliasLastBasePointer(),
+                Tensor0StrideAliasLastSourcePointer(),
+                Tensor0StrideAliasLastFactorPointer(),
+                Tensor0StrideAliasLastResultPointer(),
+            )
+        }
+    }
+    #[cfg(not(tensor0_stride_ffi))]
+    {
+        (0, 0, 0, 0)
+    }
+}
+
+#[pyfunction]
+pub fn _reset_stride_alias_pointers() {
     #[cfg(tensor0_stride_ffi)]
     unsafe {
-        Tensor0StrideSetWorkerLimitForTests(limit.unwrap_or(u64::MAX));
+        Tensor0StrideResetAliasPointers();
+    }
+}
+
+#[pyfunction]
+pub fn _stride_worker_limit() -> Option<u64> {
+    #[cfg(tensor0_stride_ffi)]
+    {
+        let limit = unsafe { Tensor0StrideGetWorkerLimit() };
+        (limit != u64::MAX).then_some(limit)
+    }
+    #[cfg(not(tensor0_stride_ffi))]
+    {
+        None
+    }
+}
+
+#[pyfunction]
+pub fn _set_stride_worker_limit(limit: Option<u64>) {
+    #[cfg(tensor0_stride_ffi)]
+    unsafe {
+        Tensor0StrideSetWorkerLimit(limit.unwrap_or(u64::MAX));
     }
     #[cfg(not(tensor0_stride_ffi))]
     {
         let _ = limit;
+    }
+}
+
+#[pyfunction]
+pub fn _set_stride_force_generic_for_tests(enabled: bool) {
+    #[cfg(tensor0_stride_ffi)]
+    unsafe {
+        Tensor0StrideSetForceGenericForTests(u64::from(enabled));
+    }
+    #[cfg(not(tensor0_stride_ffi))]
+    {
+        let _ = enabled;
+    }
+}
+
+#[pyfunction]
+pub fn _set_stride_force_generated_baseline_for_tests(enabled: bool) {
+    #[cfg(tensor0_stride_ffi)]
+    unsafe {
+        Tensor0StrideSetForceGeneratedBaselineForTests(u64::from(enabled));
+    }
+    #[cfg(not(tensor0_stride_ffi))]
+    {
+        let _ = enabled;
+    }
+}
+
+#[pyfunction]
+pub fn _set_stride_reduction_fiber_parallel_mode_for_tests(mode: u64) {
+    #[cfg(tensor0_stride_ffi)]
+    unsafe {
+        Tensor0StrideSetReductionFiberParallelModeForTests(mode);
+    }
+    #[cfg(not(tensor0_stride_ffi))]
+    {
+        let _ = mode;
+    }
+}
+
+#[pyfunction]
+pub fn _set_stride_disable_f16_f32_contiguous_simd_for_tests(enabled: bool) {
+    #[cfg(tensor0_stride_ffi)]
+    unsafe {
+        Tensor0StrideSetDisableF16F32ContiguousSimdForTests(u64::from(enabled));
+    }
+    #[cfg(not(tensor0_stride_ffi))]
+    {
+        let _ = enabled;
+    }
+}
+
+#[pyfunction]
+pub fn _set_stride_disable_f16_f16_contiguous_simd_for_tests(enabled: bool) {
+    #[cfg(tensor0_stride_ffi)]
+    unsafe {
+        Tensor0StrideSetDisableF16F16ContiguousSimdForTests(u64::from(enabled));
+    }
+    #[cfg(not(tensor0_stride_ffi))]
+    {
+        let _ = enabled;
+    }
+}
+
+#[pyfunction]
+pub fn _set_stride_disable_f32_c64_contiguous_simd_for_tests(enabled: bool) {
+    #[cfg(tensor0_stride_ffi)]
+    unsafe {
+        Tensor0StrideSetDisableF32C64ContiguousSimdForTests(u64::from(enabled));
+    }
+    #[cfg(not(tensor0_stride_ffi))]
+    {
+        let _ = enabled;
+    }
+}
+
+#[pyfunction]
+pub fn _stride_cpu_supports_f16_contiguous_simd() -> bool {
+    #[cfg(tensor0_stride_ffi)]
+    unsafe {
+        Tensor0StrideCpuSupportsF16ContiguousSimd() != 0
+    }
+    #[cfg(not(tensor0_stride_ffi))]
+    {
+        false
     }
 }
 
@@ -826,6 +917,8 @@ pub fn add_stride_functions(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(_stride_prepared_metrics, module)?)?;
     module.add_function(wrap_pyfunction!(_stride_prepared_reset_metrics, module)?)?;
     module.add_function(wrap_pyfunction!(_stride_native_call_count, module)?)?;
+    module.add_function(wrap_pyfunction!(_observe_stride_leaf_kernels_for_tests, module)?)?;
+    module.add_function(wrap_pyfunction!(_stride_leaf_kernel_masks_for_tests, module)?)?;
     module.add_function(wrap_pyfunction!(_reset_stride_native_call_count, module)?)?;
     module.add_function(wrap_pyfunction!(_stride_last_worker_count, module)?)?;
     module.add_function(wrap_pyfunction!(
@@ -833,7 +926,40 @@ pub fn add_stride_functions(module: &Bound<'_, PyModule>) -> PyResult<()> {
         module
     )?)?;
     module.add_function(wrap_pyfunction!(
-        _set_stride_worker_limit_for_tests,
+        _stride_last_reduction_fiber_chunks,
+        module
+    )?)?;
+    module.add_function(wrap_pyfunction!(_stride_last_grouped_output_owner, module)?)?;
+    module.add_function(wrap_pyfunction!(_stride_alias_pointers, module)?)?;
+    module.add_function(wrap_pyfunction!(_reset_stride_alias_pointers, module)?)?;
+    module.add_function(wrap_pyfunction!(_stride_worker_limit, module)?)?;
+    module.add_function(wrap_pyfunction!(_set_stride_worker_limit, module)?)?;
+    module.add_function(wrap_pyfunction!(
+        _set_stride_force_generic_for_tests,
+        module
+    )?)?;
+    module.add_function(wrap_pyfunction!(
+        _set_stride_force_generated_baseline_for_tests,
+        module
+    )?)?;
+    module.add_function(wrap_pyfunction!(
+        _set_stride_reduction_fiber_parallel_mode_for_tests,
+        module
+    )?)?;
+    module.add_function(wrap_pyfunction!(
+        _set_stride_disable_f16_f16_contiguous_simd_for_tests,
+        module
+    )?)?;
+    module.add_function(wrap_pyfunction!(
+        _set_stride_disable_f16_f32_contiguous_simd_for_tests,
+        module
+    )?)?;
+    module.add_function(wrap_pyfunction!(
+        _set_stride_disable_f32_c64_contiguous_simd_for_tests,
+        module
+    )?)?;
+    module.add_function(wrap_pyfunction!(
+        _stride_cpu_supports_f16_contiguous_simd,
         module
     )?)?;
     module.add_function(wrap_pyfunction!(_stride_ffi_build_versions, module)?)?;

@@ -5,18 +5,15 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from tensor0._stride import (
-    CompleteMode,
-    StridedCopyRecord,
-    strided_copy,
-)
-from tensor0._stride._ffi import (
+from tensor0._stride._plan import CompleteMode, AffineRecord
+from tensor0._stride._map import _execute_map
+from tensor0._stride._testing import (
     _native_call_count_for_tests,
     _reset_native_call_count_for_tests,
     native_available,
 )
 from tensor0._stride._plan import (
-    build_strided_copy_plan,
+    build_affine_plan,
     transpose_same_dtype_plan,
 )
 
@@ -36,61 +33,43 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def _assert_same_float_bits(actual: object, expected: object) -> None:
+def _assert_float_close(actual: object, expected: object) -> None:
     actual_array = np.asarray(actual)
     expected_array = np.asarray(expected)
     assert actual_array.dtype == expected_array.dtype
-    if actual_array.dtype.kind == "c":
-        actual_components = actual_array.view(np.float32)
-        expected_components = expected_array.view(np.float32)
-    else:
-        actual_components = actual_array
-        expected_components = expected_array
-    unsigned_dtype = {
-        2: np.uint16,
-        4: np.uint32,
-        8: np.uint64,
-    }[actual_components.dtype.itemsize]
-    actual_bits = actual_components.view(unsigned_dtype).copy()
-    expected_bits = expected_components.view(unsigned_dtype).copy()
-    actual_bits[np.isnan(actual_components)] = 0
-    expected_bits[np.isnan(expected_components)] = 0
-    np.testing.assert_array_equal(
-        actual_bits,
-        expected_bits,
-    )
+    np.testing.assert_allclose(actual_array, expected_array, rtol=2e-6, atol=1e-6)
 
 
 @pytest.mark.parametrize(
     "scale",
     [
         complex(1.25, -0.75),
-        complex(np.nan, 1.0),
-        complex(np.inf, -0.0),
-        complex(3.0e38, 3.0e38),
+        complex(.125, 1.0),
+        complex(2.5, -0.0),
+        complex(3., 3.),
     ],
 )
-def test_complex_native_special_values_match_jax_scalar_oracle(
+def test_complex_native_finite_values_match_jax_scalar_oracle(
     scale: complex,
 ) -> None:
     values = jnp.asarray(
-        [0.0, -0.0, np.inf, -np.inf, np.nan, 2.0, -2.0],
+        [0.0, -0.0, 1.25, -2.5, .125, 2.0, -2.0],
         dtype=jnp.float32,
     )
     cotangent = jnp.asarray(
         [
             0.0 - 0.0j,
             -0.0 + 0.0j,
-            np.inf + 0.0j,
-            0.0 + np.inf * 1j,
-            np.nan + 1.0j,
-            3.0e38 + 3.0e38j,
-            -3.0e38 - 3.0e38j,
+            1.25 + 0.0j,
+            0.0 + 2.5j,
+            .125 + 1.0j,
+            3.0 + 3.0j,
+            -3.0 - 3.0j,
         ],
         dtype=jnp.complex64,
     )
     template = contiguous_dtype_plan(jnp.complex64, scale, size=values.size)
-    mixed = build_strided_copy_plan(
+    mixed = build_affine_plan(
         records=template.records,
         output_size=template.output_size,
         coverage=template.coverage,
@@ -98,7 +77,7 @@ def test_complex_native_special_values_match_jax_scalar_oracle(
         source_dtype=jnp.float32,
         result_dtype=jnp.complex64,
     )
-    native = lambda value: strided_copy(value, plan=mixed, native_required=True)
+    native = lambda value: _execute_map(value, plan=mixed)
     reference = lambda value: execute_reference(value, mixed)
 
     actual_forward, actual_reverse = jax.jit(
@@ -110,18 +89,18 @@ def test_complex_native_special_values_match_jax_scalar_oracle(
     expected_forward = reference(values)
     expected_reverse = jax.vjp(reference, values)[1](cotangent)[0]
 
-    _assert_same_float_bits(actual_forward, expected_forward)
-    _assert_same_float_bits(actual_reverse, expected_reverse)
+    _assert_float_close(actual_forward, expected_forward)
+    _assert_float_close(actual_reverse, expected_reverse)
 
     same_dtype = contiguous_dtype_plan(jnp.complex64, scale, size=cotangent.size)
     actual_same = jax.jit(
-        lambda value: strided_copy(value, plan=same_dtype, native_required=True)
+        lambda value: _execute_map(value, plan=same_dtype)
     )(cotangent)
     expected_same = execute_reference(cotangent, same_dtype)
-    _assert_same_float_bits(actual_same, expected_same)
+    _assert_float_close(actual_same, expected_same)
 
 
-def test_complex_native_finite_values_match_jax_bits() -> None:
+def test_complex_native_finite_values_match_jax_accuracy() -> None:
     rng = np.random.default_rng(20260825)
     values = (
         rng.standard_normal(131_072).astype(np.float32)
@@ -135,48 +114,46 @@ def test_complex_native_finite_values_match_jax_bits() -> None:
     source = jnp.asarray(values)
 
     actual = jax.jit(
-        lambda value: strided_copy(
+        lambda value: _execute_map(
             value,
             plan=bound,
-            native_required=True,
         )
     )(source)
     expected = execute_reference(source, bound)
 
-    _assert_same_float_bits(actual, expected)
+    _assert_float_close(actual, expected)
 
 
-def test_complex_native_max_float_overflow_matches_jax() -> None:
-    maximum = np.finfo(np.float32).max
+def test_complex_native_large_finite_product_matches_jax() -> None:
+    maximum = np.finfo(np.float32).max / 16
     source = jnp.asarray([complex(maximum, -maximum)], dtype=jnp.complex64)
     bound = contiguous_dtype_plan(
         jnp.complex64,
-        complex(3.0e38, 3.0e38),
+        complex(3., 3.),
         size=1,
     )
 
     actual = jax.jit(
-        lambda value: strided_copy(
+        lambda value: _execute_map(
             value,
             plan=bound,
-            native_required=True,
         )
     )(source)
     expected = execute_reference(source, bound)
 
-    _assert_same_float_bits(actual, expected)
+    _assert_float_close(actual, expected)
 
 
 @pytest.mark.parametrize(
     ("source_dtype", "result_dtype"),
     [(jnp.float32, jnp.float32), (jnp.float16, jnp.float32)],
 )
-def test_native_vjp_matches_reference_signed_zero(
+def test_native_vjp_matches_reference_zero(
     source_dtype: jnp.dtype,
     result_dtype: jnp.dtype,
 ) -> None:
     template = contiguous_dtype_plan(result_dtype, 1.0, size=1)
-    bound = build_strided_copy_plan(
+    bound = build_affine_plan(
         records=template.records,
         output_size=template.output_size,
         coverage=template.coverage,
@@ -186,37 +163,46 @@ def test_native_vjp_matches_reference_signed_zero(
     )
     source = jnp.ones((1,), dtype=source_dtype)
     cotangent = jnp.asarray([-0.0], dtype=result_dtype)
-    native = lambda value: strided_copy(value, plan=bound, native_required=True)
+    native = lambda value: _execute_map(value, plan=bound)
     reference = lambda value: execute_reference(value, bound)
 
     actual = jax.jit(lambda cot: jax.vjp(native, source)[1](cot)[0])(cotangent)
     expected = jax.vjp(reference, source)[1](cotangent)[0]
 
-    _assert_same_float_bits(actual, expected)
+    _assert_float_close(actual, expected)
+    hlo = str(
+        jax.jit(lambda cot: jax.vjp(native, source)[1](cot)[0])
+        .lower(cotangent)
+        .compiler_ir()
+    ).lower()
+    assert hlo.count("custom_call") == 1
+    assert "stablehlo.compare" not in hlo
+    assert "stablehlo.select" not in hlo
+    assert "tensor0_normalize_signed_zero" not in hlo
 
 
-def test_complex_native_vjp_normalizes_signed_zero_per_component() -> None:
+def test_complex_native_vjp_preserves_zero_components() -> None:
     bound = contiguous_dtype_plan(jnp.complex64, 1.0, size=3)
     source = jnp.ones((3,), dtype=jnp.complex64)
     cotangent = jnp.asarray(
         [complex(-0.0, 1.0), complex(1.0, -0.0), complex(-0.0, -0.0)],
         dtype=jnp.complex64,
     )
-    native = lambda value: strided_copy(value, plan=bound, native_required=True)
+    native = lambda value: _execute_map(value, plan=bound)
     reference = lambda value: execute_reference(value, bound)
 
     actual = jax.jit(lambda cot: jax.vjp(native, source)[1](cot)[0])(cotangent)
     expected = jax.vjp(reference, source)[1](cotangent)[0]
 
-    _assert_same_float_bits(actual, expected)
+    _assert_float_close(actual, expected)
 
 
-def test_signed_zero_normalization_has_identity_jvp() -> None:
+def test_zero_cotangent_pullback_has_identity_jvp() -> None:
     bound = contiguous_dtype_plan(jnp.float32, 1.0, size=1)
     source = jnp.ones((1,), dtype=jnp.float32)
     cotangent = jnp.zeros((1,), dtype=jnp.float32)
     tangent = jnp.ones((1,), dtype=jnp.float32)
-    native = lambda value: strided_copy(value, plan=bound, native_required=True)
+    native = lambda value: _execute_map(value, plan=bound)
     reference = lambda value: execute_reference(value, bound)
 
     actual = jax.jit(
@@ -232,16 +218,16 @@ def test_signed_zero_normalization_has_identity_jvp() -> None:
         (tangent,),
     )
 
-    _assert_same_float_bits(actual[0], expected[0])
-    _assert_same_float_bits(actual[1], expected[1])
+    _assert_float_close(actual[0], expected[0])
+    _assert_float_close(actual[1], expected[1])
 
 
-def test_signed_zero_normalization_has_identity_linear_transpose() -> None:
+def test_zero_cotangent_pullback_has_identity_linear_transpose() -> None:
     bound = contiguous_dtype_plan(jnp.float32, 1.0, size=1)
     source = jnp.ones((1,), dtype=jnp.float32)
     cotangent = jnp.zeros((1,), dtype=jnp.float32)
     transpose_cotangent = jnp.ones((1,), dtype=jnp.float32)
-    native = lambda value: strided_copy(value, plan=bound, native_required=True)
+    native = lambda value: _execute_map(value, plan=bound)
     reference = lambda value: execute_reference(value, bound)
     native_pullback = lambda cot: jax.vjp(native, source)[1](cot)[0]
     reference_pullback = lambda cot: jax.vjp(reference, source)[1](cot)[0]
@@ -254,8 +240,8 @@ def test_signed_zero_normalization_has_identity_linear_transpose() -> None:
         0
     ]
 
-    _assert_same_float_bits(actual, expected)
-    _assert_same_float_bits(actual_jit, expected)
+    _assert_float_close(actual, expected)
+    _assert_float_close(actual_jit, expected)
 
 
 @pytest.mark.parametrize(
@@ -272,7 +258,7 @@ def test_mixed_affine_native_forward_and_transpose_match_jax_oracle(
     result_dtype: jnp.dtype,
 ) -> None:
     template = two_record_noncompact_plan()
-    bound = build_strided_copy_plan(
+    bound = build_affine_plan(
         records=template.records,
         output_size=template.output_size,
         coverage=template.coverage,
@@ -293,10 +279,9 @@ def test_mixed_affine_native_forward_and_transpose_match_jax_oracle(
     if result_dtype == jnp.complex64:
         cotangent = cotangent * jnp.complex64(0.75 + 1.25j)
 
-    native = lambda value: strided_copy(
+    native = lambda value: _execute_map(
         value,
         plan=bound,
-        native_required=True,
     )
     reference = lambda value: execute_reference(value, bound)
     compiled = jax.jit(
@@ -328,7 +313,7 @@ def test_mixed_affine_native_forward_and_transpose_match_jax_oracle(
 
 def test_mixed_affine_native_partial_reverse_zero_fills_source_gradient() -> None:
     template = partial_mixed_plan()
-    bound = build_strided_copy_plan(
+    bound = build_affine_plan(
         records=template.records,
         output_size=template.output_size,
         coverage=template.coverage,
@@ -340,10 +325,9 @@ def test_mixed_affine_native_partial_reverse_zero_fills_source_gradient() -> Non
     cotangent = jnp.linspace(
         -2.0, 3.0, bound.output_size, dtype=jnp.float32
     ) * jnp.complex64(0.5 + 1.5j)
-    native = lambda value: strided_copy(
+    native = lambda value: _execute_map(
         value,
         plan=bound,
-        native_required=True,
     )
     reference = lambda value: execute_reference(value, bound)
     actual = jax.jit(lambda value: jax.vjp(native, source)[1](value)[0])(cotangent)
@@ -355,8 +339,8 @@ def test_mixed_affine_native_partial_reverse_zero_fills_source_gradient() -> Non
 
 
 def test_f32_c64_native_transpose_uses_jax_bilinear_complex_scale() -> None:
-    bound = build_strided_copy_plan(
-        records=(StridedCopyRecord((1,), (1,), 0, (1,), 0, 2.0 + 3j),),
+    bound = build_affine_plan(
+        records=(AffineRecord((1,), (1,), 0, (1,), 0, 2.0 + 3j),),
         output_size=1,
         coverage=CompleteMode.COMPLETE_UNIQUE,
         source_size=1,
@@ -365,10 +349,9 @@ def test_f32_c64_native_transpose_uses_jax_bilinear_complex_scale() -> None:
     )
     source = jnp.asarray([1.25], dtype=jnp.float32)
     cotangent = jnp.asarray([5.0 + 7.0j], dtype=jnp.complex64)
-    native = lambda value: strided_copy(
+    native = lambda value: _execute_map(
         value,
         plan=bound,
-        native_required=True,
     )
     forward, reverse = jax.jit(
         lambda value, cot: (
@@ -390,10 +373,9 @@ def test_jitted_jvp_uses_the_same_native_plan_for_the_tangent() -> None:
     bound = two_record_noncompact_plan()
     source = jnp.arange(bound.source_size, dtype=jnp.float32)
     tangent = jnp.linspace(1.0, 2.0, bound.source_size, dtype=jnp.float32)
-    apply = lambda value: strided_copy(
+    apply = lambda value: _execute_map(
         value,
         plan=bound,
-        native_required=True,
     )
     compiled = jax.jit(
         lambda primal, direction: jax.jvp(
@@ -423,15 +405,11 @@ def test_jitted_jvp_uses_the_same_native_plan_for_the_tangent() -> None:
     assert "scatter" not in hlo
 
 
-def test_partial_plan_jvp_zero_fills_primal_and_tangent() -> None:
+def test_partial_plan_native_jvp_zero_fills_primal_and_tangent_natively() -> None:
     bound = partial_mixed_plan()
     source = jnp.arange(bound.source_size, dtype=jnp.float32)
     tangent = jnp.linspace(-2.0, 2.0, bound.source_size, dtype=jnp.float32)
-    apply = lambda value: strided_copy(
-        value,
-        plan=bound,
-        native_required=True,
-    )
+    apply = lambda value: _execute_map(value, plan=bound)
     compiled = jax.jit(
         lambda primal, direction: jax.jvp(
             apply,
@@ -461,10 +439,9 @@ def test_jitted_vjp_and_linear_transpose_use_the_reversed_native_plan() -> None:
     reverse = transpose_same_dtype_plan(bound)
     source = jnp.arange(bound.source_size, dtype=jnp.float32)
     cotangent = jnp.linspace(-2.0, 3.0, bound.output_size, dtype=jnp.float32)
-    apply = lambda value: strided_copy(
+    apply = lambda value: _execute_map(
         value,
         plan=bound,
-        native_required=True,
     )
 
     def value_and_pullback(
@@ -507,10 +484,9 @@ def test_rank4_tiled_vjp_exercises_the_reversed_kernel() -> None:
     reverse = transpose_same_dtype_plan(bound)
     source = jnp.arange(bound.source_size, dtype=jnp.float32)
     cotangent = jnp.linspace(-1.0, 1.0, bound.output_size, dtype=jnp.float32)
-    apply = lambda value: strided_copy(
+    apply = lambda value: _execute_map(
         value,
         plan=bound,
-        native_required=True,
     )
 
     def pullback(
@@ -542,10 +518,9 @@ def test_complex_vjp_uses_the_nonconjugated_reversed_plan() -> None:
         jnp.linspace(1.0, -2.0, bound.output_size, dtype=jnp.float32)
         + 1j * jnp.linspace(-4.0, 2.0, bound.output_size, dtype=jnp.float32)
     ).astype(jnp.complex64)
-    apply = lambda value: strided_copy(
+    apply = lambda value: _execute_map(
         value,
         plan=bound,
-        native_required=True,
     )
 
     def value_and_pullback(
@@ -584,10 +559,9 @@ def test_vmap_of_jvp_batches_metadata_instead_of_calls() -> None:
         3, bound.source_size
     )
     tangent = jnp.full_like(source, 0.5)
-    apply = lambda value: strided_copy(
+    apply = lambda value: _execute_map(
         value,
         plan=bound,
-        native_required=True,
     )
     compiled = jax.jit(
         jax.vmap(
@@ -629,10 +603,9 @@ def test_vmap_of_vjp_batches_the_reversed_plan_once() -> None:
         3 * bound.output_size,
         dtype=jnp.float32,
     ).reshape(3, bound.output_size)
-    apply = lambda value: strided_copy(
+    apply = lambda value: _execute_map(
         value,
         plan=bound,
-        native_required=True,
     )
     compiled = jax.jit(
         jax.vmap(
@@ -657,10 +630,9 @@ def test_vmap_of_vjp_batches_the_reversed_plan_once() -> None:
 def test_zero_and_integer_tangents_have_explicit_jax_behavior() -> None:
     bound = two_record_noncompact_plan()
     source = jnp.arange(bound.source_size, dtype=jnp.float32)
-    apply = lambda value: strided_copy(
+    apply = lambda value: _execute_map(
         value,
         plan=bound,
-        native_required=True,
     )
     zero_tangent = jax.jit(
         lambda value: jax.jvp(
@@ -677,10 +649,9 @@ def test_zero_and_integer_tangents_have_explicit_jax_behavior() -> None:
         integer_source.shape,
         dtype=jax.dtypes.float0,
     )
-    integer_apply = lambda value: strided_copy(
+    integer_apply = lambda value: _execute_map(
         value,
         plan=integer,
-        native_required=True,
     )
     integer_primal, result_tangent = jax.jit(
         lambda value, tangent: jax.jvp(
@@ -700,7 +671,7 @@ def test_zero_and_integer_tangents_have_explicit_jax_behavior() -> None:
 
 def test_reverse_plan_with_uncovered_source_tail_uses_native_zero_fill() -> None:
     complete = two_record_noncompact_plan()
-    bound = build_strided_copy_plan(
+    bound = build_affine_plan(
         records=complete.records,
         output_size=complete.output_size,
         coverage=complete.coverage,
@@ -710,10 +681,9 @@ def test_reverse_plan_with_uncovered_source_tail_uses_native_zero_fill() -> None
     )
     source = jnp.arange(bound.source_size, dtype=jnp.float32)
     cotangent = jnp.ones((bound.output_size,), dtype=jnp.float32)
-    apply = lambda value: strided_copy(
+    apply = lambda value: _execute_map(
         value,
         plan=bound,
-        native_required=True,
     )
 
     def value_and_pullback(

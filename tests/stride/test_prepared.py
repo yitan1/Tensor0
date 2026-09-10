@@ -13,20 +13,17 @@ import numpy as np
 import pytest
 
 from tensor0 import _native
-from tensor0._stride import (
-    CompleteMode,
-    StridedCopyRecord,
-    strided_copy,
-)
-import tensor0._stride._ffi as ffi_module
-from tensor0._stride._ffi import (
+from tensor0._stride._plan import CompleteMode, AffineRecord
+from tensor0._stride._map import _execute_map
+import tensor0._stride._native as native_module
+from tensor0._stride._testing import (
     _native_worker_counts_for_tests,
     _set_native_worker_limit_for_tests,
     native_available,
 )
-from tensor0._stride._native_lowering import lower_plan
+from tensor0._stride._native_descriptor import lower_plan
 from tensor0._stride._plan import (
-    build_strided_copy_plan,
+    build_affine_plan,
 )
 
 from ._fixtures import (
@@ -48,8 +45,8 @@ pytestmark = pytest.mark.skipif(
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
-def _target_v7(dtype_name: str = "float32") -> str:
-    return ffi_module._ensure_registered_v7(dtype_name)
+def _affine_target(dtype_name: str = "float32") -> str:
+    return native_module._ensure_affine_registered(dtype_name)
 
 
 def _raw_prepared_call(
@@ -61,7 +58,7 @@ def _raw_prepared_call(
     dtype_name: str = "float32",
 ) -> jax.Array:
     call = jax.ffi.ffi_call(
-        _target_v7(dtype_name),
+        _affine_target(dtype_name),
         jax.ShapeDtypeStruct(output_shape, jnp.float32),
         input_layouts=(tuple(reversed(range(source.ndim))),),
         output_layouts=tuple(reversed(range(len(output_shape)))),
@@ -75,14 +72,15 @@ def _raw_prepared_call(
 
 def test_prepared_operation_target_mismatch_is_rejected() -> None:
     plan = selected_scale_plan()
-    ffi_module._ensure_selected_scale_registered("float32")
+    source = jnp.arange(plan.source_size, dtype=jnp.float32)
+    native_module._ensure_affine_registered("float32")
     registration = _native._stride_prepared_registration()
     target = "tensor0_stride_test_prepared_operation_mismatch"
     jax.ffi.register_ffi_target(
         target,
         {
             "instantiate": registration["instantiate_selected_scale"],
-            "execute": registration["execute_base_assign_f32"],
+            "execute": registration["execute_f32"],
         },
         platform="cpu",
         api_version=1,
@@ -90,7 +88,7 @@ def test_prepared_operation_target_mismatch_is_rejected() -> None:
     call = jax.ffi.ffi_call(
         target,
         jax.ShapeDtypeStruct((plan.output_size,), jnp.float32),
-        input_layouts=((0,), (0,)),
+        input_layouts=((0,),),
         output_layouts=(0,),
         vmap_method="expand_dims",
         custom_call_api_version=4,
@@ -99,11 +97,8 @@ def test_prepared_operation_target_mismatch_is_rejected() -> None:
         lower_plan(plan).descriptor,
         dtype=np.uint8,
     ).copy()
-    base = jnp.arange(plan.output_size, dtype=jnp.float32)
-    source = jnp.arange(plan.source_size, dtype=jnp.float32)
-
     with pytest.raises(Exception, match="prepared operation does not match"):
-        call(base, source, descriptor=descriptor).block_until_ready()
+        call(source, descriptor=descriptor).block_until_ready()
 
 
 @pytest.mark.parametrize("scale", [1.0, -0.75])
@@ -114,7 +109,7 @@ def test_rank4_two_pair_prepared_batch_matches_reference(scale: float) -> None:
     )
 
     actual = jax.jit(
-        lambda value: strided_copy(value, plan=plan, native_required=True)
+        lambda value: _execute_map(value, plan=plan)
     )(source)
     expected = jax.vmap(lambda value: execute_reference(value, plan))(source)
 
@@ -127,7 +122,7 @@ def test_rank4_two_pair_prepared_parallel_range_matches_reference() -> None:
     _set_native_worker_limit_for_tests(4)
     try:
         actual = jax.jit(
-            lambda value: strided_copy(value, plan=plan, native_required=True)
+            lambda value: _execute_map(value, plan=plan)
         )(source)
         workers, available = _native_worker_counts_for_tests()
     finally:
@@ -140,18 +135,22 @@ def test_rank4_two_pair_prepared_parallel_range_matches_reference() -> None:
         assert workers >= 2
 
 
-@pytest.mark.parametrize("field", ["raw_witness", "kernel", "loop", "shape"])
-def test_abi_v7_instantiate_rejects_mutated_compiled_decision(field: str) -> None:
+@pytest.mark.parametrize(
+    ("field", "word_index"),
+    [
+        ("scalar_policy", 10),
+        ("shape", 19),
+        ("source_stride", 21),
+        ("destination_stride", 23),
+    ],
+)
+def test_affine_v7_instantiate_revalidates_semantic_descriptor(
+    field: str,
+    word_index: int,
+) -> None:
     plan = rank2_transpose_plan()
     lowered = lower_plan(plan)
     words = list(lowered.words)
-    first_record = 14 + words[5]
-    word_index = {
-        "raw_witness": 12,
-        "kernel": first_record + 3,
-        "shape": first_record + 16,
-        "loop": first_record + 22,
-    }[field]
     words[word_index] ^= 1
     descriptor = b"".join(word.to_bytes(8, "little") for word in words)
     source = jnp.arange(plan.source_size, dtype=jnp.float32)
@@ -164,12 +163,17 @@ def test_abi_v7_instantiate_rejects_mutated_compiled_decision(field: str) -> Non
         ).block_until_ready()
 
 
-@pytest.mark.parametrize("mutation", ["version", "truncated", "extended"])
-def test_abi_v7_instantiate_rejects_malformed_descriptor(mutation: str) -> None:
+@pytest.mark.parametrize(
+    "mutation", ["version", "execution_flags", "truncated", "extended"]
+)
+def test_affine_v8_instantiate_rejects_malformed_descriptor(mutation: str) -> None:
     plan = two_record_noncompact_plan()
     words = list(lower_plan(plan).words)
     if mutation == "version":
         words[1] += 1
+        descriptor = b"".join(word.to_bytes(8, "little") for word in words)
+    elif mutation == "execution_flags":
+        words[11] = 2
         descriptor = b"".join(word.to_bytes(8, "little") for word in words)
     else:
         descriptor = b"".join(word.to_bytes(8, "little") for word in words)
@@ -186,7 +190,7 @@ def test_abi_v7_instantiate_rejects_malformed_descriptor(mutation: str) -> None:
         ).block_until_ready()
 
 
-def test_abi_v7_handler_rejects_rank_two_physical_buffers() -> None:
+def test_affine_v8_handler_rejects_rank_two_physical_buffers() -> None:
     plan = rank2_transpose_plan(rows=2, columns=3)
     source = jnp.arange(2 * plan.source_size, dtype=jnp.float32).reshape(
         2,
@@ -201,7 +205,7 @@ def test_abi_v7_handler_rejects_rank_two_physical_buffers() -> None:
         ).block_until_ready()
 
 
-def test_abi_v7_execute_rejects_descriptor_dtype_target_mismatch() -> None:
+def test_affine_v8_execute_rejects_descriptor_dtype_target_mismatch() -> None:
     plan = dtype_transpose_plan(jnp.float16, 0.75)
     source = jnp.arange(plan.source_size, dtype=jnp.float32)
 
@@ -216,7 +220,7 @@ def test_abi_v7_execute_rejects_descriptor_dtype_target_mismatch() -> None:
         ).block_until_ready()
 
 
-def test_abi_v7_execute_rejects_explicit_alias() -> None:
+def test_affine_v8_execute_rejects_explicit_alias() -> None:
     plan = two_record_noncompact_plan()
     source = jnp.arange(plan.source_size, dtype=jnp.float32)
 
@@ -229,13 +233,13 @@ def test_abi_v7_execute_rejects_explicit_alias() -> None:
         ).block_until_ready()
 
 
-def test_abi_v7_instantiate_enforces_absolute_state_limit() -> None:
+def test_affine_v8_instantiate_enforces_absolute_state_limit() -> None:
     record_count = 12_000
     records = tuple(
-        StridedCopyRecord((1,), (1,), index, (1,), index)
+        AffineRecord((1,), (1,), index, (1,), index)
         for index in range(record_count)
     )
-    plan = build_strided_copy_plan(
+    plan = build_affine_plan(
         records=records,
         output_size=record_count,
         coverage=CompleteMode.COMPLETE_UNIQUE,
@@ -256,10 +260,9 @@ def test_abi_v7_instantiate_enforces_absolute_state_limit() -> None:
 def test_prepared_compiled_calls_are_concurrent_and_independent() -> None:
     plan = many_tiny_balanced_plan()
     compiled = jax.jit(
-        lambda value: strided_copy(
+        lambda value: _execute_map(
             value,
             plan=plan,
-            native_required=True,
         )
     )
     sources = [
@@ -291,7 +294,8 @@ def test_prepared_lifecycle_and_reload_in_fresh_process(
         import jax.numpy as jnp
 
         from tensor0 import _native
-        import tensor0._stride._ffi as stride_ffi
+        import tensor0._stride._map as stride_primitive
+        import tensor0._stride._native as stride_native
         from tests.stride._fixtures import two_record_noncompact_plan
 
         metric_names = (
@@ -309,18 +313,17 @@ def test_prepared_lifecycle_and_reload_in_fresh_process(
         plan = two_record_noncompact_plan()
         source = jnp.arange(plan.source_size, dtype=jnp.float32)
         compiled = jax.jit(
-            lambda value: stride_ffi.strided_copy(
+            lambda value: stride_primitive._execute_map(
                 value,
                 plan=plan,
-                native_required=True,
             )
         )
         compiled(source).block_until_ready()
         compiled(source).block_until_ready()
         before = metrics()
 
-        stride_ffi = importlib.reload(stride_ffi)
-        stride_ffi._ensure_registered_v7("float32")
+        stride_native = importlib.reload(stride_native)
+        stride_native._ensure_affine_registered("float32")
         after_reload = metrics()
 
         DESTRUCTION
@@ -363,16 +366,15 @@ def test_prepared_process_exit_with_live_state_is_clean() -> None:
         import jax
         import jax.numpy as jnp
 
-        import tensor0._stride._ffi as stride_ffi
+        import tensor0._stride._map as stride_primitive
         from tests.stride._fixtures import two_record_noncompact_plan
 
         plan = two_record_noncompact_plan()
         source = jnp.arange(plan.source_size, dtype=jnp.float32)
         compiled = jax.jit(
-            lambda value: stride_ffi.strided_copy(
+            lambda value: stride_primitive._execute_map(
                 value,
                 plan=plan,
-                native_required=True,
             )
         )
         compiled(source).block_until_ready()
@@ -400,14 +402,14 @@ def test_mixed_affine_prepared_states_reuse_and_destroy_in_fresh_process() -> No
         import jax.numpy as jnp
 
         from tensor0 import _native
-        from tensor0._stride import strided_copy
+        from tensor0._stride._map import _execute_map
         from tensor0._stride._plan import (
-            build_strided_copy_plan,
+            build_affine_plan,
         )
         from tests.stride._fixtures import two_record_noncompact_plan
 
         template = two_record_noncompact_plan()
-        plan = build_strided_copy_plan(
+        plan = build_affine_plan(
             records=template.records,
             output_size=template.output_size,
             coverage=template.coverage,
@@ -417,8 +419,8 @@ def test_mixed_affine_prepared_states_reuse_and_destroy_in_fresh_process() -> No
         )
         source = jnp.arange(plan.source_size, dtype=jnp.float32)
         cotangent = jnp.ones(plan.output_size, dtype=jnp.complex64) * (1 + 2j)
-        apply = lambda value: strided_copy(
-            value, plan=plan, native_required=True
+        apply = lambda value: _execute_map(
+            value, plan=plan
         )
         compiled = jax.jit(
             lambda value, cot: (

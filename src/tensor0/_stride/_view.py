@@ -11,7 +11,7 @@ from jax import Array
 from jax.core import Tracer
 import jax.numpy as jnp
 
-from ._plan import INT64_MAX, INT64_MIN, UINT64_MAX, _contiguous_strides
+from ._plan import INT64_MAX, INT64_MIN, UINT64_MAX, contiguous_strides
 
 
 StridedIndex: TypeAlias = int | slice
@@ -60,9 +60,9 @@ def _reshape_strides(
         return None
     element_count = prod(old_sizes)
     if element_count == 0:
-        return _contiguous_strides(new_sizes)
+        return contiguous_strides(new_sizes)
     if element_count == 1:
-        return _contiguous_strides(new_sizes)
+        return contiguous_strides(new_sizes)
     if not old_sizes or not new_sizes:
         return None
 
@@ -138,7 +138,7 @@ class StridedView:
         else:
             raise ValueError("dense data shape does not match StridedView sizes")
         flat = jnp.reshape(data, (*batch_shape, element_count))
-        return cls(flat, new_sizes, _contiguous_strides(new_sizes), 0)
+        return cls(flat, new_sizes, contiguous_strides(new_sizes), 0)
 
     def __post_init__(self) -> None:
         if not isinstance(self.data, (Array, Tracer)):
@@ -202,6 +202,15 @@ class StridedView:
         sizes, strides, offset = metadata
         (data,) = children
         return cls(data, sizes, strides, offset)
+
+    def _with_data(self, data: Array) -> StridedView:
+        """Bind the same affine view metadata to replacement storage."""
+
+        if not isinstance(data, (Array, Tracer)):
+            raise TypeError("StridedView data must be a JAX Array")
+        if data.shape != self.data.shape:
+            raise ValueError("replacement storage shape must match StridedView data")
+        return StridedView(data, self.sizes, self.strides, self.offset)
 
     def permute(self, permutation: tuple[int, ...]) -> StridedView:
         """Return the same storage with affine axes permuted."""

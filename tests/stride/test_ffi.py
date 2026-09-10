@@ -17,17 +17,19 @@ from jax.typing import DTypeLike
 import numpy as np
 import pytest
 
-from tensor0._stride import (
+from tensor0._stride._plan import (
     CompleteMode,
-    StridedCopyRecord,
-    strided_copy,
-    StridedCopyPlan,
+    AffineRecord,
+    AffinePlan,
 )
+from tensor0._stride._map import _execute_map
 from tensor0 import _native
-import tensor0._stride._ffi as ffi_module
-from tensor0._stride._compiler import COMPILED_DESCRIPTOR_VERSION
-from tensor0._stride._ffi import (
-    _ensure_registered_v7,
+import tensor0._stride._map as primitive_module
+from tensor0._stride._native import (
+    _ensure_affine_registered,
+    _mixed_ffi_call,
+)
+from tensor0._stride._testing import (
     _native_call_count_for_tests,
     _native_worker_counts_for_tests,
     _prepared_native_call_for_tests,
@@ -35,9 +37,9 @@ from tensor0._stride._ffi import (
     _set_native_worker_limit_for_tests,
     native_available,
 )
-from tensor0._stride._native_lowering import lower_plan
+from tensor0._stride._native_descriptor import AFFINE_DESCRIPTOR_VERSION, lower_plan
 from tensor0._stride._plan import (
-    build_strided_copy_plan,
+    build_affine_plan,
     transpose_same_dtype_plan,
 )
 
@@ -70,27 +72,27 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_native_handler_build_identity_matches_runtime() -> None:
-    assert _native._stride_ffi_abi_version() == COMPILED_DESCRIPTOR_VERSION
+    assert _native._stride_ffi_abi_version() == AFFINE_DESCRIPTOR_VERSION
     assert _native._stride_ffi_build_versions() == (
         jax.__version__,
         version("jaxlib"),
     )
 
 
-def test_one_direction_is_canonicalized_once(
+def test_one_direction_is_lowered_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     plan = contiguous_dtype_plan(jnp.int32, 1, size=32)
     source = jnp.arange(plan.source_size, dtype=jnp.int32)
-    original = ffi_module.compile_plan
-    calls: list[StridedCopyPlan] = []
+    original = primitive_module.lower_plan
+    calls: list[AffinePlan] = []
 
-    def counted_compile(bound: StridedCopyPlan):
+    def counted_lower(bound: AffinePlan):
         calls.append(bound)
         return original(bound)
 
-    monkeypatch.setattr(ffi_module, "compile_plan", counted_compile)
-    strided_copy(source, plan=plan, native_required=True).block_until_ready()
+    monkeypatch.setattr(primitive_module, "lower_plan", counted_lower)
+    _execute_map(source, plan=plan).block_until_ready()
 
     assert calls == [plan]
 
@@ -104,7 +106,8 @@ def test_fresh_process_registration_and_repeated_module_import() -> None:
         import jax
         import jax.numpy as jnp
 
-        import tensor0._stride._ffi as stride_ffi
+        import tensor0._stride._map as stride_primitive
+        from tensor0._stride._testing import _native_call_count_for_tests
         from tests.stride._fixtures import two_record_noncompact_plan
 
         plan = two_record_noncompact_plan()
@@ -112,20 +115,19 @@ def test_fresh_process_registration_and_repeated_module_import() -> None:
 
         def execute(module):
             result = jax.jit(
-                lambda value: module.strided_copy(
+                lambda value: module._execute_map(
                     value,
                     plan=plan,
-                    native_required=True,
                 )
             )(source)
             result.block_until_ready()
 
-        execute(stride_ffi)
-        stride_ffi = importlib.reload(stride_ffi)
-        execute(stride_ffi)
+        execute(stride_primitive)
+        stride_primitive = importlib.reload(stride_primitive)
+        execute(stride_primitive)
         print(json.dumps({
-            "available": stride_ffi.native_available(),
-            "calls": stride_ffi._native_call_count_for_tests(),
+            "available": stride_primitive.native_available(),
+            "calls": _native_call_count_for_tests(),
         }))
         """
     )
@@ -155,19 +157,16 @@ def test_x64_mode_preserves_uint64_descriptor_words(
         import jax
         import jax.numpy as jnp
 
-        from tensor0._stride import (
-            CompleteMode,
-            StridedCopyRecord,
-            strided_copy,
-        )
-        from tensor0._stride._ffi import _native_call_count_for_tests
-        from tensor0._stride._native_lowering import lower_plan
+        from tensor0._stride._plan import CompleteMode, AffineRecord
+        from tensor0._stride._map import _execute_map
+        from tensor0._stride._testing import _native_call_count_for_tests
+        from tensor0._stride._native_descriptor import lower_plan
         from tensor0._stride._plan import (
-            build_strided_copy_plan,
+            build_affine_plan,
         )
 
         large_stride = 2**31 + 17
-        record = StridedCopyRecord(
+        record = AffineRecord(
             (1,),
             (large_stride,),
             0,
@@ -175,7 +174,7 @@ def test_x64_mode_preserves_uint64_descriptor_words(
             0,
             1,
         )
-        plan = build_strided_copy_plan(
+        plan = build_affine_plan(
             records=(record,),
             output_size=1,
             coverage=CompleteMode.COMPLETE_UNIQUE,
@@ -185,10 +184,9 @@ def test_x64_mode_preserves_uint64_descriptor_words(
         )
         lowered = lower_plan(plan)
         result = jax.jit(
-            lambda value: strided_copy(
+            lambda value: _execute_map(
                 value,
                 plan=lowered,
-                native_required=True,
             )
         )(jnp.asarray([3.5], dtype=jnp.float32))
         result.block_until_ready()
@@ -228,9 +226,9 @@ def test_jit_cache_reuses_equal_plans_and_separates_unequal_plans() -> None:
     def execute(
         value: jax.Array,
         *,
-        plan: StridedCopyPlan,
+        plan: AffinePlan,
     ) -> jax.Array:
-        return strided_copy(value, plan=plan, native_required=True)
+        return _execute_map(value, plan=plan)
 
     compiled = jax.jit(execute, static_argnames=("plan",))
     cache_size = getattr(compiled, "_cache_size")
@@ -279,17 +277,14 @@ def test_multi_device_cpu_uses_partitioned_native_without_implicit_all_gather() 
         from jax.sharding import NamedSharding
         from jax.sharding import PartitionSpec as P
 
-        from tensor0._stride import (
-            CompleteMode,
-            StridedCopyRecord,
-            strided_copy,
-        )
-        from tensor0._stride._ffi import (
+        from tensor0._stride._plan import CompleteMode, AffineRecord
+        from tensor0._stride._map import _execute_map
+        from tensor0._stride._testing import (
             _native_call_count_for_tests,
             _reset_native_call_count_for_tests,
         )
         from tensor0._stride._plan import (
-            build_strided_copy_plan,
+            build_affine_plan,
         )
         from tests.stride._fixtures import large_contiguous_plan
         from tests.stride._oracle import execute_reference
@@ -302,15 +297,15 @@ def test_multi_device_cpu_uses_partitioned_native_without_implicit_all_gather() 
             dtype=np.float32,
         ).reshape(2, plan.source_size)
         source = jax.device_put(host, batch_sharding)
-        automatic = jax.jit(
-            lambda value: strided_copy(value, plan=plan),
+        compiled = jax.jit(
+            lambda value: _execute_map(value, plan=plan),
             in_shardings=batch_sharding,
             out_shardings=batch_sharding,
         ).lower(source).compile()
-        optimized_hlo = automatic.as_text().lower()
+        optimized_hlo = compiled.as_text().lower()
 
         _reset_native_call_count_for_tests()
-        actual = automatic(source)
+        actual = compiled(source)
         actual.block_until_ready()
         np.testing.assert_array_equal(
             np.asarray(actual),
@@ -321,7 +316,7 @@ def test_multi_device_cpu_uses_partitioned_native_without_implicit_all_gather() 
         replicated_sharding = NamedSharding(mesh, P())
         replicated_source = jax.device_put(host[0], replicated_sharding)
         replicated = jax.jit(
-            lambda value: strided_copy(value, plan=plan),
+            lambda value: _execute_map(value, plan=plan),
             in_shardings=replicated_sharding,
             out_shardings=replicated_sharding,
         ).lower(replicated_source).compile()
@@ -337,7 +332,7 @@ def test_multi_device_cpu_uses_partitioned_native_without_implicit_all_gather() 
 
         _reset_native_call_count_for_tests()
         mapped = jax.pmap(
-            lambda value: strided_copy(value, plan=plan)
+            lambda value: _execute_map(value, plan=plan)
         )(jnp.asarray(host))
         mapped.block_until_ready()
         np.testing.assert_array_equal(np.asarray(mapped), np.asarray(actual))
@@ -347,7 +342,7 @@ def test_multi_device_cpu_uses_partitioned_native_without_implicit_all_gather() 
         storage_source = jax.device_put(host[0], storage_sharding)
         try:
             jax.jit(
-                lambda value: strided_copy(value, plan=plan),
+                lambda value: _execute_map(value, plan=plan),
                 in_shardings=storage_sharding,
                 out_shardings=storage_sharding,
             ).lower(storage_source).compile()
@@ -357,21 +352,26 @@ def test_multi_device_cpu_uses_partitioned_native_without_implicit_all_gather() 
             storage_error = ""
 
         unsupported_shape = (2,) * 9
-        unsupported_strides = tuple(2 ** (8 - axis) for axis in range(9))
-        unsupported_plan = build_strided_copy_plan(
+        unsupported_source_strides = tuple(
+            3 ** (8 - axis) for axis in range(9)
+        )
+        unsupported_destination_strides = tuple(
+            2 ** (8 - axis) for axis in range(9)
+        )
+        unsupported_plan = build_affine_plan(
             records=(
-                StridedCopyRecord(
+                AffineRecord(
                     unsupported_shape,
-                    unsupported_strides,
+                    unsupported_source_strides,
                     0,
-                    unsupported_strides,
+                    unsupported_destination_strides,
                     0,
                     1.0,
                 ),
             ),
             output_size=512,
             coverage=CompleteMode.COMPLETE_UNIQUE,
-            source_size=512,
+            source_size=sum(unsupported_source_strides) + 1,
             source_dtype=jnp.float32,
             result_dtype=jnp.float32,
         )
@@ -382,7 +382,7 @@ def test_multi_device_cpu_uses_partitioned_native_without_implicit_all_gather() 
         unsupported_source = jax.device_put(unsupported_host, batch_sharding)
         try:
             jax.jit(
-                lambda value: strided_copy(value, plan=unsupported_plan),
+                lambda value: _execute_map(value, plan=unsupported_plan),
                 in_shardings=batch_sharding,
                 out_shardings=batch_sharding,
             ).lower(unsupported_source).compile()
@@ -390,21 +390,6 @@ def test_multi_device_cpu_uses_partitioned_native_without_implicit_all_gather() 
             unsupported_error = str(error)
         else:
             unsupported_error = ""
-
-        try:
-            jax.jit(
-                lambda value: strided_copy(
-                    value,
-                    plan=plan,
-                    native_required=True,
-                ),
-                in_shardings=batch_sharding,
-                out_shardings=batch_sharding,
-            ).lower(source)
-        except Exception as error:
-            forced_error = str(error)
-        else:
-            forced_error = ""
 
         print(json.dumps({
             "devices": len(jax.devices()),
@@ -425,10 +410,8 @@ def test_multi_device_cpu_uses_partitioned_native_without_implicit_all_gather() 
                 "cannot shard the packed storage axis" in storage_error
             ),
             "unsupported_error": (
-                "native_cpu_executor_unavailable" in unsupported_error
-            ),
-            "forced_error": (
-                "only supports unsharded CPU input" in forced_error
+                "effective logical rank exceeds native limit 8"
+                in unsupported_error
             ),
         }))
         """
@@ -456,7 +439,6 @@ def test_multi_device_cpu_uses_partitioned_native_without_implicit_all_gather() 
         "pmap_native_calls": 2,
         "storage_error": True,
         "unsupported_error": True,
-        "forced_error": True,
     }
 
 
@@ -465,7 +447,7 @@ def test_native_vertical_slice_is_one_observable_call_without_indices() -> None:
     source = jnp.arange(bound.source_size, dtype=jnp.float32)
     expected = execute_reference(source, bound)
     compiled = jax.jit(
-        lambda value: strided_copy(value, plan=bound, native_required=True)
+        lambda value: _execute_map(value, plan=bound)
     )
 
     _reset_native_call_count_for_tests()
@@ -495,7 +477,7 @@ def test_native_vertical_slice_is_one_observable_call_without_indices() -> None:
     ],
 )
 def test_injective_source_with_storage_gaps_executes_natively(
-    factory: Callable[[], StridedCopyPlan],
+    factory: Callable[[], AffinePlan],
     expected: np.ndarray,
 ) -> None:
     bound = factory()
@@ -503,7 +485,7 @@ def test_injective_source_with_storage_gaps_executes_natively(
 
     _reset_native_call_count_for_tests()
     actual = jax.jit(
-        lambda value: strided_copy(value, plan=bound, native_required=True)
+        lambda value: _execute_map(value, plan=bound)
     )(source)
     actual.block_until_ready()
 
@@ -516,7 +498,7 @@ def test_injective_source_with_storage_gaps_executes_natively(
 
 @pytest.mark.parametrize("factory", [u1_two_record_plan, u1_three_record_plan])
 def test_frozen_u1_multi_record_fixtures_execute_natively(
-    factory: Callable[[], StridedCopyPlan],
+    factory: Callable[[], AffinePlan],
 ) -> None:
     bound = factory()
     source = jnp.arange(bound.source_size, dtype=jnp.float32)
@@ -524,7 +506,7 @@ def test_frozen_u1_multi_record_fixtures_execute_natively(
 
     _reset_native_call_count_for_tests()
     actual = jax.jit(
-        lambda value: strided_copy(value, plan=bound, native_required=True)
+        lambda value: _execute_map(value, plan=bound)
     )(source)
     actual.block_until_ready()
 
@@ -535,7 +517,7 @@ def test_frozen_u1_multi_record_fixtures_execute_natively(
 def test_native_handler_rejects_an_unknown_coverage_mode() -> None:
     bound = partial_mixed_plan()
     words = list(lower_plan(bound).words)
-    words[21] = 99
+    words[7] = 99
     descriptor = b"".join(word.to_bytes(8, "little") for word in words)
     source = jnp.arange(bound.source_size, dtype=jnp.float32)
 
@@ -550,7 +532,7 @@ def test_native_handler_rejects_an_unknown_coverage_mode() -> None:
 def test_native_handler_revalidates_dtype_specific_scale_bits() -> None:
     bound = dtype_transpose_plan(jnp.float16, 1.25)
     words = list(lower_plan(bound).words)
-    words[26] = 1 << 16
+    words[15] = 1 << 16
     descriptor = b"".join(word.to_bytes(8, "little") for word in words)
     source = jnp.arange(bound.source_size, dtype=jnp.float16)
 
@@ -562,9 +544,9 @@ def test_native_handler_revalidates_dtype_specific_scale_bits() -> None:
         ).block_until_ready()
 
 
-def test_native_handler_revalidates_mixed_operand_policy_header() -> None:
+def test_native_handler_revalidates_mixed_operand_dtype_header() -> None:
     template = partial_mixed_plan()
-    bound = build_strided_copy_plan(
+    bound = build_affine_plan(
         records=template.records,
         output_size=template.output_size,
         coverage=template.coverage,
@@ -574,15 +556,15 @@ def test_native_handler_revalidates_mixed_operand_policy_header() -> None:
     )
     execution = lower_plan(bound)
     words = list(execution.words)
-    words[12] = words[11]
+    words[9] = words[8]
     forged = replace(
         execution,
         descriptor=b"".join(word.to_bytes(8, "little") for word in words),
     )
     source = jnp.arange(bound.source_size, dtype=jnp.float32)
 
-    with pytest.raises(Exception, match="scalar dtype witness mismatch"):
-        ffi_module._mixed_ffi_call_v2(source, forged).block_until_ready()
+    with pytest.raises(Exception, match="dtype does not match prepared typed target"):
+        _mixed_ffi_call(source, forged).block_until_ready()
 
 
 def test_native_handler_revalidates_records_and_actual_buffers() -> None:
@@ -591,8 +573,11 @@ def test_native_handler_revalidates_records_and_actual_buffers() -> None:
     source = jnp.arange(bound.source_size, dtype=jnp.float32)
 
     words = list(lowered.words)
-    first_destination_stride = 23 + 6 + 2 * len(bound.records[0].logical_shape)
-    words[first_destination_stride + 1] = words[first_destination_stride]
+    first_rank = len(bound.records[0].logical_shape)
+    second_rank = len(bound.records[1].logical_shape)
+    second_record = 12 + 7 + 3 * first_rank
+    second_destination_stride = second_record + 7 + 2 * second_rank
+    words[second_destination_stride + 1] = words[second_destination_stride]
     forged_record = b"".join(word.to_bytes(8, "little") for word in words)
     with pytest.raises(Exception, match="destination strides do not prove"):
         _prepared_native_call_for_tests(
@@ -621,7 +606,7 @@ def test_native_handler_rejects_mismatched_flat_batch_counts() -> None:
     source = jnp.arange(2 * bound.source_size, dtype=jnp.float32)
     descriptor = np.frombuffer(lowered.descriptor, dtype=np.uint8).copy()
     call = jax.ffi.ffi_call(
-        _ensure_registered_v7("float32"),
+        _ensure_affine_registered("float32"),
         jax.ShapeDtypeStruct((3 * bound.output_size,), jnp.float32),
         input_layouts=((0,),),
         output_layouts=(0,),
@@ -659,10 +644,9 @@ def test_multidimensional_batch_prefix_uses_one_flat_native_call() -> None:
     ).reshape(2, 3, bound.source_size)
     expected = jax.vmap(jax.vmap(lambda value: execute_reference(value, bound)))(source)
     compiled = jax.jit(
-        lambda value: strided_copy(
+        lambda value: _execute_map(
             value,
             plan=bound,
-            native_required=True,
         )
     )
 
@@ -678,7 +662,7 @@ def test_multidimensional_batch_prefix_uses_one_flat_native_call() -> None:
 
 
 def _assert_parallel_matches_pool_size_one(
-    bound: StridedCopyPlan,
+    bound: AffinePlan,
 ) -> np.ndarray:
     dtype = jnp.dtype(bound.source_dtype)
     if jnp.issubdtype(dtype, jnp.integer):
@@ -692,10 +676,9 @@ def _assert_parallel_matches_pool_size_one(
         source = ((indices % 2048).astype(jnp.float32) / 256.0 - 4.0).astype(dtype)
     compiled = (
         jax.jit(
-            lambda value: strided_copy(
+            lambda value: _execute_map(
                 value,
                 plan=bound,
-                native_required=True,
             )
         )
         .lower(source)
@@ -792,10 +775,9 @@ def test_large_partial_zero_fill_matches_pool_size_one() -> None:
 def test_concurrent_parallel_native_invocations_are_race_free() -> None:
     bound = rank2_transpose_plan(rows=512, columns=512)
     compiled = jax.jit(
-        lambda value: strided_copy(
+        lambda value: _execute_map(
             value,
             plan=bound,
-            native_required=True,
         )
     )
     reference = jax.jit(lambda value: execute_reference(value, bound))
@@ -821,7 +803,7 @@ def test_concurrent_parallel_native_invocations_are_race_free() -> None:
 
 @pytest.mark.parametrize("factory", [partial_mixed_plan, empty_partial_plan])
 def test_partial_unique_zero_fill_executes_natively(
-    factory: Callable[[], StridedCopyPlan],
+    factory: Callable[[], AffinePlan],
 ) -> None:
     bound = factory()
     source = jnp.arange(bound.source_size, dtype=jnp.float32)
@@ -829,7 +811,7 @@ def test_partial_unique_zero_fill_executes_natively(
 
     _reset_native_call_count_for_tests()
     compiled = jax.jit(
-        lambda value: strided_copy(value, plan=bound, native_required=True)
+        lambda value: _execute_map(value, plan=bound)
     )
     actual = compiled(source)
     actual.block_until_ready()
@@ -848,10 +830,9 @@ def test_batched_empty_partial_plan_derives_batch_from_flat_result() -> None:
 
     _reset_native_call_count_for_tests()
     actual = jax.jit(
-        lambda value: strided_copy(
+        lambda value: _execute_map(
             value,
             plan=bound,
-            native_required=True,
         )
     )(source)
     actual.block_until_ready()
@@ -889,7 +870,7 @@ def test_enabled_same_dtype_kernels_match_reference(
 
     _reset_native_call_count_for_tests()
     compiled = jax.jit(
-        lambda value: strided_copy(value, plan=bound, native_required=True)
+        lambda value: _execute_map(value, plan=bound)
     )
     actual = compiled(source)
     actual.block_until_ready()
@@ -926,7 +907,7 @@ def test_narrow_float_kernels_cover_every_storage_bit_pattern(
 
     _reset_native_call_count_for_tests()
     actual = jax.jit(
-        lambda value: strided_copy(value, plan=bound, native_required=True)
+        lambda value: _execute_map(value, plan=bound)
     )(source)
     actual.block_until_ready()
 
@@ -947,7 +928,7 @@ def test_partial_zero_fill_supports_enabled_inexact_dtypes(
     dtype: DTypeLike,
 ) -> None:
     template = partial_mixed_plan()
-    bound = build_strided_copy_plan(
+    bound = build_affine_plan(
         records=template.records,
         output_size=template.output_size,
         coverage=template.coverage,
@@ -960,7 +941,7 @@ def test_partial_zero_fill_supports_enabled_inexact_dtypes(
 
     _reset_native_call_count_for_tests()
     actual = jax.jit(
-        lambda value: strided_copy(value, plan=bound, native_required=True)
+        lambda value: _execute_map(value, plan=bound)
     )(source)
     actual.block_until_ready()
 
@@ -984,10 +965,9 @@ def test_enabled_dtype_batching_remains_one_native_call(
         )
         .astype(dtype)
     )
-    run = lambda value: strided_copy(
+    run = lambda value: _execute_map(
         value,
         plan=bound,
-        native_required=True,
     )
 
     _reset_native_call_count_for_tests()
@@ -1004,7 +984,7 @@ def test_enabled_dtype_batching_remains_one_native_call(
     [rank2_transpose_plan, rank4_tiled_plan, rank4_avx2_shape_plan],
 )
 def test_measured_specialized_kernel_shapes_match_reference(
-    factory: Callable[[], StridedCopyPlan],
+    factory: Callable[[], AffinePlan],
 ) -> None:
     bound = factory()
     source = jnp.linspace(-3.0, 4.0, bound.source_size, dtype=jnp.float32)
@@ -1012,7 +992,7 @@ def test_measured_specialized_kernel_shapes_match_reference(
 
     _reset_native_call_count_for_tests()
     actual = jax.jit(
-        lambda value: strided_copy(value, plan=bound, native_required=True)
+        lambda value: _execute_map(value, plan=bound)
     )(source)
     actual.block_until_ready()
 
@@ -1028,7 +1008,7 @@ def test_measured_specialized_kernel_shapes_match_reference(
     ],
 )
 def test_rank_zero_and_empty_plans_execute_natively(
-    factory: Callable[[], StridedCopyPlan],
+    factory: Callable[[], AffinePlan],
     expected: np.ndarray,
     expected_calls: int,
 ) -> None:
@@ -1036,7 +1016,7 @@ def test_rank_zero_and_empty_plans_execute_natively(
     source = jnp.asarray([3.0], dtype=jnp.float32)[: bound.source_size]
 
     _reset_native_call_count_for_tests()
-    actual = strided_copy(source, plan=bound, native_required=True)
+    actual = _execute_map(source, plan=bound)
     actual.block_until_ready()
 
     np.testing.assert_array_equal(np.asarray(actual), expected)
@@ -1048,10 +1028,9 @@ def test_leading_and_nonleading_vmap_each_emit_one_native_call() -> None:
     leading = jnp.arange(3 * bound.source_size, dtype=jnp.float32).reshape(
         3, bound.source_size
     )
-    run = lambda value: strided_copy(
+    run = lambda value: _execute_map(
         value,
         plan=bound,
-        native_required=True,
     )
 
     leading_compiled = jax.jit(jax.vmap(run))
@@ -1085,7 +1064,45 @@ def test_leading_and_nonleading_vmap_each_emit_one_native_call() -> None:
     assert _native_call_count_for_tests() == 1
     nonleading_hlo = str(nonleading_compiled.lower(nonleading).compiler_ir()).lower()
     assert nonleading_hlo.count("custom_call") == 1
-    assert nonleading_hlo.count("stablehlo.transpose") == 2
+    assert "stablehlo.transpose" not in nonleading_hlo
+
+
+def test_nested_trailing_vmap_lifts_both_batch_axes() -> None:
+    bound = two_record_noncompact_plan()
+    source = jnp.arange(
+        bound.source_size * 2 * 3,
+        dtype=jnp.float32,
+    ).reshape(bound.source_size, 2, 3)
+    run = lambda value: _execute_map(
+        value,
+        plan=bound,
+    )
+    function = jax.jit(
+        jax.vmap(
+            jax.vmap(run, in_axes=1, out_axes=1),
+            in_axes=2,
+            out_axes=2,
+        )
+    )
+    reference = jax.vmap(
+        jax.vmap(
+            lambda value: execute_reference(value, bound),
+            in_axes=1,
+            out_axes=1,
+        ),
+        in_axes=2,
+        out_axes=2,
+    )
+
+    actual = function(source)
+    np.testing.assert_array_equal(
+        np.asarray(actual),
+        np.asarray(reference(source)),
+    )
+    stablehlo = str(function.lower(source).compiler_ir()).lower()
+    assert stablehlo.count("custom_call") == 1
+    assert "gather" not in stablehlo
+    assert "scatter" not in stablehlo
 
 
 def test_large_leading_vmap_uses_one_call_and_bounded_workers() -> None:
@@ -1094,10 +1111,9 @@ def test_large_leading_vmap_uses_one_call_and_bounded_workers() -> None:
         4 * bound.source_size,
         dtype=jnp.float32,
     ).reshape(4, bound.source_size)
-    run = lambda value: strided_copy(
+    run = lambda value: _execute_map(
         value,
         plan=bound,
-        native_required=True,
     )
     compiled = jax.jit(jax.vmap(run))
 
@@ -1117,18 +1133,106 @@ def test_large_leading_vmap_uses_one_call_and_bounded_workers() -> None:
         assert workers > 1
 
 
-def test_native_required_cannot_silently_bypass_rank_limit() -> None:
+def test_native_rank_limit_applies_after_semantic_normalization() -> None:
     shape = (2,) * 9
-    strides = tuple(2 ** (8 - axis) for axis in range(9))
-    unsupported = build_strided_copy_plan(
-        records=(StridedCopyRecord(shape, strides, 0, strides, 0, 1.0),),
+    compact_strides = tuple(2 ** (8 - axis) for axis in range(9))
+    reducible = build_affine_plan(
+        records=(
+            AffineRecord(
+                shape,
+                compact_strides,
+                0,
+                compact_strides,
+                0,
+                1.0,
+            ),
+        ),
         output_size=512,
         coverage=CompleteMode.COMPLETE_UNIQUE,
         source_size=512,
         source_dtype=jnp.float32,
         result_dtype=jnp.float32,
     )
-    source = jnp.arange(unsupported.source_size, dtype=jnp.float32)
+    source = jnp.arange(reducible.source_size, dtype=jnp.float32)
 
-    with pytest.raises(ValueError, match="rank exceeds native limit"):
-        strided_copy(source, plan=unsupported, native_required=True)
+    _reset_native_call_count_for_tests()
+    actual = _execute_map(source, plan=reducible)
+    actual.block_until_ready()
+
+    np.testing.assert_array_equal(actual, execute_reference(source, reducible))
+    assert _native_call_count_for_tests() == 1
+
+    irreducible_source_strides = tuple(3 ** (8 - axis) for axis in range(9))
+    unsupported = build_affine_plan(
+        records=(
+            AffineRecord(
+                shape,
+                irreducible_source_strides,
+                0,
+                compact_strides,
+                0,
+                1.0,
+            ),
+        ),
+        output_size=512,
+        coverage=CompleteMode.COMPLETE_UNIQUE,
+        source_size=sum(irreducible_source_strides) + 1,
+        source_dtype=jnp.float32,
+        result_dtype=jnp.float32,
+    )
+    unsupported_source = jnp.arange(
+        unsupported.source_size,
+        dtype=jnp.float32,
+    )
+
+    with pytest.raises(
+        Exception,
+        match="effective logical rank exceeds native limit 8",
+    ):
+        _execute_map(
+            unsupported_source,
+            plan=unsupported,
+        )
+
+
+def test_native_semantic_rank_above_64_can_broadcast_when_normalized() -> None:
+    rank = 70
+    shape = (1,) * (rank - 1) + (3,)
+    plan = build_affine_plan(
+        records=(
+            AffineRecord(
+                shape,
+                (0,) * rank,
+                0,
+                (0,) * (rank - 1) + (1,),
+                0,
+                1.0,
+                source_broadcast_axes=(rank - 1,),
+            ),
+        ),
+        output_size=3,
+        coverage=CompleteMode.COMPLETE_UNIQUE,
+        source_size=1,
+        source_dtype=jnp.float32,
+        result_dtype=jnp.float32,
+    )
+    source = jnp.asarray([3.5], dtype=jnp.float32)
+    tangent = jnp.asarray([-1.25], dtype=jnp.float32)
+    execute = lambda value: _execute_map(
+        value,
+        plan=plan,
+    )
+
+    _reset_native_call_count_for_tests()
+    actual, actual_tangent = jax.jvp(execute, (source,), (tangent,))
+    actual.block_until_ready()
+
+    np.testing.assert_array_equal(actual, jnp.full((3,), source[0]))
+    np.testing.assert_array_equal(
+        actual_tangent,
+        jnp.full((3,), tangent[0]),
+    )
+    cotangent = jnp.asarray([1.0, -2.0, 4.0], dtype=jnp.float32)
+    actual_vjp = jax.vjp(execute, source)[1](cotangent)[0]
+    np.testing.assert_array_equal(actual_vjp, jnp.asarray([3.0], jnp.float32))
+    assert _native_call_count_for_tests() == 4

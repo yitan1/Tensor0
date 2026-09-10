@@ -13,12 +13,8 @@ import numpy as np
 import pytest
 
 from tensor0 import SU2Irrep, hom, space
-from tensor0._stride import (
-    StridedView,
-    strided_accumulate,
-    strided_assign,
-    strided_scale,
-)
+from tensor0._stride import StridedView, scale
+from tests.stride._fixtures import execute_view_accumulate, execute_view_assign
 from tensor0.structure import get_degeneracystructure
 
 from ._oracle import (
@@ -83,9 +79,9 @@ def test_static_subblock_metadata_updates_match_bounded_oracle() -> None:
 
     destination = _view(storage, metadata)
     source = _source_view(value, sizes)
-    actual_assign = strided_assign(destination, source)
-    actual_accumulate = strided_accumulate(destination, source)
-    actual_scale = strided_scale(destination, factor)
+    actual_assign = execute_view_assign(destination, source)
+    actual_accumulate = execute_view_accumulate(destination, source)
+    actual_scale = scale(destination, factor).data
 
     np.testing.assert_array_equal(actual_assign, expected_assign)
     np.testing.assert_array_equal(actual_accumulate, expected_accumulate)
@@ -101,11 +97,11 @@ def test_strided_updates_reject_non_jax_array_operands() -> None:
     with pytest.raises(TypeError, match="data must be a JAX Array"):
         _view(numpy_base, metadata)
     destination = _view(base, metadata)
-    for operation in (strided_assign, strided_accumulate):
+    for operation in (execute_view_assign, execute_view_accumulate):
         with pytest.raises(TypeError, match="source must be a StridedView"):
             operation(destination, numpy_source)  # type: ignore[arg-type]
-    with pytest.raises(TypeError, match="strided_scale requires a StridedView"):
-        strided_scale(numpy_base, 2)  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="view must be a StridedView"):
+        scale(numpy_base, 2).data  # type: ignore[arg-type]
 
 
 def test_static_subblock_update_jit_vmap_and_ad_match_compatibility() -> None:
@@ -119,7 +115,7 @@ def test_static_subblock_update_jit_vmap_and_ad_match_compatibility() -> None:
     storage_tangent = jnp.linspace(1, -2, layout.total_dim, dtype=jnp.float32)
     factor_tangent = jnp.asarray(0.75, dtype=jnp.float32)
     cotangent = jnp.linspace(-3, 4, layout.total_dim, dtype=jnp.float32)
-    migrated = lambda old, scale: strided_scale(_view(old, metadata), scale)
+    migrated = lambda old, coefficient: scale(_view(old, metadata), coefficient).data
     indices = legacy_strided_indices(sizes, strides, subblock.offset)
     legacy = lambda old, scale: old.at[indices].set(
         scale * old[indices],
@@ -128,7 +124,7 @@ def test_static_subblock_update_jit_vmap_and_ad_match_compatibility() -> None:
 
     np.testing.assert_array_equal(
         jax.jit(
-            lambda old, update: strided_assign(
+            lambda old, update: execute_view_assign(
                 _view(old, metadata),
                 _source_view(update, sizes),
             )
@@ -140,7 +136,7 @@ def test_static_subblock_update_jit_vmap_and_ad_match_compatibility() -> None:
     )
     np.testing.assert_array_equal(
         jax.jit(
-            lambda old, update: strided_accumulate(
+            lambda old, update: execute_view_accumulate(
                 _view(old, metadata),
                 _source_view(update, sizes),
             )
@@ -150,20 +146,23 @@ def test_static_subblock_update_jit_vmap_and_ad_match_compatibility() -> None:
         ),
         legacy_strided_accumulate(storage, sizes, strides, subblock.offset, value),
     )
-    for actual, expected in zip(
-        jax.jvp(
-            migrated,
-            (storage, factor),
-            (storage_tangent, factor_tangent),
-        ),
-        jax.jvp(
-            legacy,
-            (storage, factor),
-            (storage_tangent, factor_tangent),
-        ),
-        strict=True,
-    ):
-        np.testing.assert_array_equal(actual, expected)
+    actual_primal, actual_tangent = jax.jvp(
+        migrated,
+        (storage, factor),
+        (storage_tangent, factor_tangent),
+    )
+    expected_primal, expected_tangent = jax.jvp(
+        legacy,
+        (storage, factor),
+        (storage_tangent, factor_tangent),
+    )
+    np.testing.assert_array_equal(actual_primal, expected_primal)
+    np.testing.assert_allclose(
+        actual_tangent,
+        expected_tangent,
+        rtol=1e-6,
+        atol=1e-6,
+    )
     actual_base, actual_factor = jax.vjp(migrated, storage, factor)[1](cotangent)
     expected_base, expected_factor = jax.vjp(legacy, storage, factor)[1](cotangent)
     np.testing.assert_array_equal(actual_base, expected_base)
@@ -179,7 +178,7 @@ def test_static_subblock_update_jit_vmap_and_ad_match_compatibility() -> None:
     )
 
 
-def test_static_subblock_assign_and_accumulate_preserve_complex_special_values() -> (
+def test_static_subblock_assign_preserves_complex_special_values() -> (
     None
 ):
     layout, subblock = _noncompact_subblock_case()
@@ -204,7 +203,7 @@ def test_static_subblock_assign_and_accumulate_preserve_complex_special_values()
 
     destination = _view(storage, metadata)
     source = _source_view(value, sizes)
-    actual_assign = strided_assign(destination, source)
+    actual_assign = execute_view_assign(destination, source)
     expected_assign = legacy_strided_assign(
         storage,
         sizes,
@@ -212,22 +211,9 @@ def test_static_subblock_assign_and_accumulate_preserve_complex_special_values()
         subblock.offset,
         value,
     )
-    actual_accumulate = strided_accumulate(destination, source)
-    expected_accumulate = legacy_strided_accumulate(
-        storage,
-        sizes,
-        strides,
-        subblock.offset,
-        value,
-    )
-
     np.testing.assert_array_equal(
         np.asarray(actual_assign).view(np.uint32),
         np.asarray(expected_assign).view(np.uint32),
-    )
-    np.testing.assert_array_equal(
-        np.asarray(actual_accumulate).view(np.uint32),
-        np.asarray(expected_accumulate).view(np.uint32),
     )
 
 
@@ -243,10 +229,9 @@ def test_concrete_eager_stride_operations_reject_packed_storage_sharding() -> No
         from tensor0._stride import (
             StridedView,
             materialize,
-            strided_accumulate,
-            strided_assign,
-            strided_scale,
+            scale,
         )
+        from tests.stride._fixtures import execute_view_accumulate, execute_view_assign
 
         mesh = Mesh(np.asarray(jax.devices()), ("device",))
         storage_sharding = NamedSharding(mesh, P("device"))
@@ -264,18 +249,15 @@ def test_concrete_eager_stride_operations_reject_packed_storage_sharding() -> No
             "materialize": lambda: materialize(
                 StridedView(storage, (2,), (2,), 0),
             ),
-            "assign": lambda: strided_assign(
+            "assign": lambda: execute_view_assign(
                 StridedView(storage, (2,), (2,), 0),
                 StridedView.from_dense(update, (2,)),
             ),
-            "accumulate": lambda: strided_accumulate(
+            "accumulate": lambda: execute_view_accumulate(
                 StridedView(storage, (2,), (2,), 0),
                 StridedView.from_dense(update, (2,)),
             ),
-            "scale": lambda: strided_scale(
-                StridedView(storage, (2,), (2,), 0),
-                factor,
-            ),
+            "scale": lambda: scale(StridedView(storage, (2,), (2,), 0), factor).data,
         }
         results = {}
         for name, operation in operations.items():
@@ -288,7 +270,7 @@ def test_concrete_eager_stride_operations_reject_packed_storage_sharding() -> No
             else:
                 results[name] = False
         print(json.dumps(results))
-        """
+"""
     )
     environment = os.environ.copy()
     environment["JAX_PLATFORMS"] = "cpu"

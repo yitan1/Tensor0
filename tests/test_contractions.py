@@ -6,7 +6,7 @@ import pytest
 
 import tensor0.operations.contractions.primitives as contractions
 import tensor0.operations.transforms as transforms
-from tensor0._stride._ffi import (
+from tensor0._stride._testing import (
     _native_call_count_for_tests,
     _reset_native_call_count_for_tests,
     native_available,

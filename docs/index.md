@@ -13,6 +13,8 @@ JAXLIB 0.10.1. The native stride handler is compiled against that exact XLA FFI
 header version and rejects mismatched runtimes. Other platforms and versions
 are not currently supported execution targets, and missing native routes are
 reported explicitly rather than hidden by an element-address fallback.
+Native stride operations lower through JAX as `stablehlo.custom_call`
+operations. Tensor0 does not ship a separate pure-StableHLO stride backend.
 
 ## Start Here
 

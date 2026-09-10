@@ -7,25 +7,16 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from tensor0._stride import (
-    CompleteMode,
-    StridedCopyRecord,
-    strided_copy,
-)
-from tensor0._stride._compiler import compile_plan
-from tensor0._stride._ffi import (
+from tensor0._stride._plan import CompleteMode, AffineRecord
+from tensor0._stride._map import _execute_map
+from tensor0._stride._testing import (
     _native_call_count_for_tests,
     _reset_native_call_count_for_tests,
     native_available,
 )
 from tensor0._stride._plan import (
-    build_strided_copy_plan,
+    build_affine_plan,
 )
-from tensor0._stride._stablehlo import (
-    compile_compact_stablehlo_recipe,
-    execute_compact_stablehlo_recipe,
-)
-
 from ._oracle import execute_reference
 
 
@@ -48,7 +39,7 @@ def _compact_plan(
 ):
     elements = prod(shape)
     strides = _row_major_strides(shape)
-    record = StridedCopyRecord(
+    record = AffineRecord(
         shape,
         strides,
         source_offset,
@@ -56,7 +47,7 @@ def _compact_plan(
         0,
         scale,
     )
-    return build_strided_copy_plan(
+    return build_affine_plan(
         records=(record,),
         output_size=elements,
         coverage=CompleteMode.COMPLETE_UNIQUE,
@@ -80,7 +71,7 @@ def _stablehlo(function, argument: jax.Array) -> str:
 
 def _permutation_plan():
     shape = (8, 16)
-    record = StridedCopyRecord(
+    record = AffineRecord(
         shape,
         (1, shape[0]),
         0,
@@ -88,7 +79,7 @@ def _permutation_plan():
         0,
         0.75 - 0.5j,
     )
-    return build_strided_copy_plan(
+    return build_affine_plan(
         records=(record,),
         output_size=prod(shape),
         coverage=CompleteMode.COMPLETE_UNIQUE,
@@ -99,60 +90,15 @@ def _permutation_plan():
 
 
 @pytest.mark.parametrize(
-    ("dtype", "scale"),
-    [
-        (jnp.float16, 0.75),
-        (jnp.bfloat16, 0.75),
-        (jnp.float32, 0.75),
-        (jnp.complex64, 0.75 - 0.5j),
-        (jnp.int32, 3),
-    ],
-)
-def test_generic_compact_recipe_supports_native_same_dtypes(
-    dtype: jnp.dtype,
-    scale: int | float | complex,
-) -> None:
-    bound = _compact_plan(
-        (8, 16),
-        source_offset=3,
-        source_padding=5,
-        scale=scale,
-        dtype=dtype,
-    )
-    recipe = compile_compact_stablehlo_recipe(compile_plan(bound))
-    real = jnp.arange(2 * bound.source_size, dtype=jnp.float32).reshape(
-        2,
-        bound.source_size,
-    )
-    source = (
-        (real + 1j * (1 - real)).astype(dtype)
-        if jnp.issubdtype(dtype, jnp.complexfloating)
-        else real.astype(dtype)
-    )
-    function = lambda value: execute_compact_stablehlo_recipe(value, recipe)
-    stablehlo = _stablehlo(function, source)
-
-    assert "custom_call" not in stablehlo
-    assert "gather" not in stablehlo
-    assert "scatter" not in stablehlo
-    assert "iota" not in stablehlo
-    np.testing.assert_array_equal(
-        np.asarray(jax.jit(function)(source)),
-        np.asarray(execute_reference(source, bound)),
-    )
-
-
-@pytest.mark.parametrize(
     ("dtype", "scale", "elements"),
     [
-        (jnp.float16, 0.75, 131_072),
         (jnp.bfloat16, 0.75, 131_072),
         (jnp.float32, 0.75, 65_536),
         (jnp.complex64, 0.75 - 0.5j, 32_768),
         (jnp.int32, 3, 65_536),
     ],
 )
-def test_small_rank_one_compact_automatic_route_has_no_address_arrays(
+def test_rank_one_compact_native_route_uses_native_without_address_arrays(
     dtype: jnp.dtype,
     scale: int | float | complex,
     elements: int,
@@ -170,10 +116,10 @@ def test_small_rank_one_compact_automatic_route_has_no_address_arrays(
         if jnp.issubdtype(dtype, jnp.complexfloating)
         else real.astype(dtype)
     )
-    function = lambda value: strided_copy(value, plan=bound)
+    function = lambda value: _execute_map(value, plan=bound)
     stablehlo = _stablehlo(function, source)
 
-    assert "custom_call" not in stablehlo
+    assert stablehlo.count("custom_call") == 1
     assert "gather" not in stablehlo
     assert "scatter" not in stablehlo
     assert "iota" not in stablehlo
@@ -183,7 +129,30 @@ def test_small_rank_one_compact_automatic_route_has_no_address_arrays(
     )
 
 
-def test_small_compact_vmap_and_float32_ad_use_recipe() -> None:
+def test_medium_float16_compact_native_route_uses_native_simd() -> None:
+    bound = _compact_plan(
+        (131_072,),
+        source_offset=3,
+        source_padding=5,
+        scale=0.75,
+        dtype=jnp.float16,
+    )
+    source = jnp.asarray(
+        np.linspace(-1, 1, bound.source_size, dtype=np.float16)
+    )
+    function = lambda value: _execute_map(value, plan=bound)
+    stablehlo = _stablehlo(function, source)
+
+    assert "tensor0_stride_affine_f16" in stablehlo.lower()
+    assert "gather" not in stablehlo
+    assert "scatter" not in stablehlo
+    np.testing.assert_array_equal(
+        np.asarray(jax.jit(function)(source)),
+        np.asarray(execute_reference(source, bound)),
+    )
+
+
+def test_small_compact_vmap_and_float32_ad_use_native() -> None:
     bound = _compact_plan(
         (4_096,),
         source_offset=3,
@@ -195,11 +164,11 @@ def test_small_compact_vmap_and_float32_ad_use_recipe() -> None:
         4,
         bound.source_size,
     )
-    function = jax.vmap(lambda value: strided_copy(value, plan=bound))
+    function = jax.vmap(lambda value: _execute_map(value, plan=bound))
     reference = jax.vmap(lambda value: execute_reference(value, bound))
     stablehlo = _stablehlo(function, source)
 
-    assert "custom_call" not in stablehlo
+    assert stablehlo.count("custom_call") == 1
     assert "gather" not in stablehlo
     assert "scatter" not in stablehlo
     primal, tangent = jax.jvp(function, (source,), (source / 8,))
@@ -222,13 +191,13 @@ def test_small_compact_vmap_and_float32_ad_use_recipe() -> None:
     )
     vjp_function = jax.jit(lambda value: jax.vjp(function, source)[1](value)[0])
     vjp_hlo = str(vjp_function.lower(cotangent).compiler_ir()).lower()
-    assert "custom_call" not in vjp_hlo
+    assert vjp_hlo.count("custom_call") == 1
+    assert "tensor0_stride_affine_f32_cpu_v8" in vjp_hlo
     assert "gather" not in vjp_hlo
     assert "scatter" not in vjp_hlo
-    assert "pad" in vjp_hlo
 
 
-def test_small_rank_one_compact_recipe_remains_fusible_with_adjacent_ops() -> None:
+def test_rank_one_compact_native_composes_with_adjacent_ops() -> None:
     bound = _compact_plan(
         (65_536,),
         source_offset=3,
@@ -237,14 +206,14 @@ def test_small_rank_one_compact_recipe_remains_fusible_with_adjacent_ops() -> No
         dtype=jnp.float32,
     )
     source = jnp.arange(bound.source_size, dtype=jnp.float32) / 64
-    function = jax.jit(lambda value: jnp.tanh(strided_copy(jnp.sin(value), plan=bound)))
+    function = jax.jit(lambda value: jnp.tanh(_execute_map(jnp.sin(value), plan=bound)))
     compiled = function.lower(source).compile()
     assert compiled is not None
     compiled_text = compiled.as_text()
     assert compiled_text is not None
     hlo = compiled_text.lower()
 
-    assert "tensor0_stride_" not in hlo
+    assert "tensor0_stride_" in hlo
     assert "gather" not in hlo
     assert "scatter" not in hlo
     assert "fusion" in hlo
@@ -256,22 +225,21 @@ def test_small_rank_one_compact_recipe_remains_fusible_with_adjacent_ops() -> No
     )
 
 
-def test_batched_automatic_route_has_no_address_or_native_operations() -> None:
+def test_batched_native_route_uses_one_native_operation() -> None:
     bound = _compact_plan(source_offset=3, source_padding=5)
     source = _complex_values((3, bound.source_size))
-    function = lambda value: strided_copy(value, plan=bound)
+    function = lambda value: _execute_map(value, plan=bound)
     stablehlo = _stablehlo(function, source)
 
-    assert "custom_call" not in stablehlo
+    assert stablehlo.count("custom_call") == 1
     assert "gather" not in stablehlo
     assert "scatter" not in stablehlo
     assert "iota" not in stablehlo
-    assert "stablehlo.slice" in stablehlo
 
     _reset_native_call_count_for_tests()
     actual = jax.jit(function)(source)
     actual.block_until_ready()
-    assert _native_call_count_for_tests() == 0
+    assert _native_call_count_for_tests() == 1
     np.testing.assert_array_equal(
         np.asarray(actual),
         np.asarray(execute_reference(source, bound)),
@@ -283,7 +251,7 @@ def test_compact_recipe_jvp_vjp_and_nonleading_vmap_match_reference() -> None:
     source = _complex_values((bound.source_size, 3))
     tangent = (source * jnp.complex64(0.25 + 0.125j)).astype(jnp.complex64)
     function = lambda value: jax.vmap(
-        lambda item: strided_copy(item, plan=bound),
+        lambda item: _execute_map(item, plan=bound),
         in_axes=1,
         out_axes=1,
     )(value)
@@ -294,7 +262,9 @@ def test_compact_recipe_jvp_vjp_and_nonleading_vmap_match_reference() -> None:
     )(value)
 
     stablehlo = _stablehlo(function, source)
-    assert "custom_call" not in stablehlo
+    assert stablehlo.count("custom_call") == 1
+    assert "tensor0_stride_affine_c64_cpu_v8" in stablehlo
+    assert "stablehlo.transpose" not in stablehlo
     assert "gather" not in stablehlo
     assert "scatter" not in stablehlo
     assert "iota" not in stablehlo
@@ -329,23 +299,24 @@ def test_compact_recipe_jvp_vjp_and_nonleading_vmap_match_reference() -> None:
         lambda value: jax.vjp(function, source)[1](value)[0],
         cotangent,
     )
-    assert "custom_call" not in vjp_stablehlo
+    assert vjp_stablehlo.count("custom_call") == 1
+    assert "tensor0_stride_affine_c64_cpu_v8" in vjp_stablehlo
+    assert "stablehlo.transpose" not in vjp_stablehlo
     assert "gather" not in vjp_stablehlo
     assert "scatter" not in vjp_stablehlo
-    assert "pad" in vjp_stablehlo
 
 
-def test_compact_recipe_hlo_size_is_independent_of_element_count() -> None:
+def test_compact_native_hlo_size_is_independent_of_element_count() -> None:
     operation_counts: list[int] = []
     for elements in (64, 16_384):
         bound = _compact_plan((elements,))
         source = _complex_values((2, elements))
         stablehlo = _stablehlo(
-            lambda value, plan=bound: strided_copy(value, plan=plan),
+            lambda value, plan=bound: _execute_map(value, plan=plan),
             source,
         )
         operation_counts.append(stablehlo.count("stablehlo."))
-        assert "custom_call" not in stablehlo
+        assert stablehlo.count("custom_call") == 1
         assert "gather" not in stablehlo
         assert "scatter" not in stablehlo
         assert "iota" not in stablehlo
@@ -353,36 +324,35 @@ def test_compact_recipe_hlo_size_is_independent_of_element_count() -> None:
     assert operation_counts[0] == operation_counts[1]
 
 
-def test_compact_and_positive_affine_recipes_are_address_free() -> None:
+def test_compact_and_positive_affine_native_routes_are_address_free() -> None:
     small = _compact_plan((64,))
     small_source = _complex_values((small.source_size,))
     small_hlo = _stablehlo(
-        lambda value: strided_copy(value, plan=small),
+        lambda value: _execute_map(value, plan=small),
         small_source,
     )
-    assert "custom_call" not in small_hlo
+    assert small_hlo.count("custom_call") == 1
     assert "gather" not in small_hlo
     assert "scatter" not in small_hlo
-    assert "stablehlo.multiply" in small_hlo
 
     permutation = _permutation_plan()
     batched_source = _complex_values((2, permutation.source_size))
     permutation_hlo = _stablehlo(
-        lambda value: strided_copy(value, plan=permutation),
+        lambda value: _execute_map(value, plan=permutation),
         batched_source,
     )
-    assert "custom_call" not in permutation_hlo
+    assert permutation_hlo.count("custom_call") == 1
     assert "gather" not in permutation_hlo
     assert "scatter" not in permutation_hlo
-    assert "stablehlo.transpose" in permutation_hlo
+    assert "stablehlo.transpose" not in permutation_hlo
 
     if native_available():
         large = _compact_plan((65_536,))
         large_source = _complex_values((large.source_size,))
         large_hlo = _stablehlo(
-            lambda value: strided_copy(value, plan=large),
+            lambda value: _execute_map(value, plan=large),
             large_source,
         )
-        assert "tensor0_stride_r2_prepared_c64_cpu_v7" in large_hlo
+        assert "tensor0_stride_affine_c64_cpu_v8" in large_hlo
         assert "gather" not in large_hlo
         assert "scatter" not in large_hlo

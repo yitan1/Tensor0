@@ -793,6 +793,31 @@ value, gradient = jax.value_and_grad(loss)(a.storage.data)
 Changing only storage values keeps the same pytree structure. Changing the
 `HomSpace` metadata creates a different static JAX specialization.
 
+For optimization over a `TensorMap` argument, use `tensor0.grad` or
+`tensor0.value_and_grad`. These wrappers return the Riesz gradient for the
+quantum-dimension-weighted `TensorMap` inner product. Ordinary JAX array
+arguments retain their coordinate gradients.
+
+```python
+import tensor0
+
+
+def tensor_loss(candidate):
+    return jnp.real(tensor0.inner(candidate, candidate))
+
+
+value, gradient = tensor0.value_and_grad(tensor_loss)(a)
+updated = a - 0.01 * gradient
+```
+
+`jax.grad(tensor_loss)(a)` remains available and returns the packed-storage
+coordinate cotangent. If the differentiated argument is an array and the
+function constructs a `TensorMap` internally, `tensor0.grad` likewise returns
+an array coordinate gradient; the wrapper does not infer a metric from
+intermediate values. TensorMap Riesz gradients currently require a real-valued
+objective and do not support `holomorphic=True` or `DiagonalTensorMap`
+arguments.
+
 ## Current Boundaries
 
 Tensor0 currently does not include:

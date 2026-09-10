@@ -5,20 +5,18 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from tensor0._stride import (
-    CompleteMode,
-    StridedCopyRecord,
-    strided_copy,
-)
-import tensor0._stride._ffi as ffi_module
+from tensor0._stride._plan import CompleteMode, AffineRecord
+from tensor0._stride._map import _execute_map
+import tensor0._stride._map as primitive_module
+import tensor0._stride._native as native_module
 from tensor0._stride._errors import NO_ROUTE_PREFIX
-from tensor0._stride._ffi import (
+from tensor0._stride._testing import (
     _native_call_count_for_tests,
     _reset_native_call_count_for_tests,
     native_available,
 )
 from tensor0._stride._plan import (
-    build_strided_copy_plan,
+    build_affine_plan,
 )
 
 from ._fixtures import (
@@ -31,46 +29,13 @@ from ._fixtures import (
 from ._oracle import execute_reference
 
 
-def test_records_interface_builds_and_executes_the_complete_unique_plan() -> None:
-    plan = two_record_noncompact_plan()
-    source = jnp.arange(plan.source_size, dtype=jnp.float32)
-    function = jax.jit(
-        lambda value: strided_copy(
-            value,
-            records=plan.records,
-            output_size=plan.output_size,
-            result_dtype=jnp.float32,
-        )
-    )
-
-    actual = function(source)
-
-    np.testing.assert_array_equal(
-        np.asarray(actual),
-        np.asarray(execute_reference(source, plan)),
-    )
-
-
-def test_records_interface_rejects_an_explicit_plan_at_the_same_time() -> None:
-    plan = two_record_noncompact_plan()
-    source = jnp.arange(plan.source_size, dtype=jnp.float32)
-
-    with pytest.raises(TypeError, match="either plan or records"):
-        strided_copy(
-            source,
-            plan=plan,
-            records=plan.records,
-            output_size=plan.output_size,
-        )
-
-
 @pytest.mark.skipif(not native_available(), reason="native CPU stride is unavailable")
 def test_auto_selection_uses_native_for_general_maps_and_measured_large_class() -> (
     None
 ):
     small = two_record_noncompact_plan()
     small_source = jnp.arange(small.source_size, dtype=jnp.float32)
-    small_compiled = jax.jit(lambda value: strided_copy(value, plan=small))
+    small_compiled = jax.jit(lambda value: _execute_map(value, plan=small))
 
     _reset_native_call_count_for_tests()
     small_actual = small_compiled(small_source)
@@ -88,7 +53,7 @@ def test_auto_selection_uses_native_for_general_maps_and_measured_large_class() 
 
     large = large_contiguous_plan()
     large_source = jnp.arange(large.source_size, dtype=jnp.float32)
-    large_compiled = jax.jit(lambda value: strided_copy(value, plan=large))
+    large_compiled = jax.jit(lambda value: _execute_map(value, plan=large))
 
     _reset_native_call_count_for_tests()
     large_actual = large_compiled(large_source)
@@ -115,8 +80,8 @@ def test_auto_selection_accounts_for_direct_and_vmap_batch_work() -> None:
         bound.source_size,
     )
     functions = (
-        jax.jit(lambda value: strided_copy(value, plan=bound)),
-        jax.jit(jax.vmap(lambda value: strided_copy(value, plan=bound))),
+        jax.jit(lambda value: _execute_map(value, plan=bound)),
+        jax.jit(jax.vmap(lambda value: _execute_map(value, plan=bound))),
     )
 
     for function in functions:
@@ -136,7 +101,7 @@ def test_auto_selection_accounts_for_direct_and_vmap_batch_work() -> None:
 
 
 @pytest.mark.skipif(not native_available(), reason="native CPU stride is unavailable")
-def test_auto_selection_protects_batched_complex64_regression() -> None:
+def test_auto_selection_uses_native_for_batched_complex64() -> None:
     bound = contiguous_dtype_plan(jnp.complex64, 1, size=131_072)
     real = jnp.arange(8 * bound.source_size, dtype=jnp.float32).reshape(
         8,
@@ -144,17 +109,20 @@ def test_auto_selection_protects_batched_complex64_regression() -> None:
     )
     source = (real + 1j * (1 - real)).astype(jnp.complex64)
     expected = execute_reference(source, bound)
-    automatic = jax.jit(jax.vmap(lambda value: strided_copy(value, plan=bound)))
+    compiled = jax.jit(jax.vmap(lambda value: _execute_map(value, plan=bound)))
 
     _reset_native_call_count_for_tests()
-    actual = automatic(source)
+    actual = compiled(source)
     actual.block_until_ready()
 
     np.testing.assert_array_equal(np.asarray(actual), np.asarray(expected))
-    assert _native_call_count_for_tests() == 0
-    assert "custom_call" not in str(automatic.lower(source).compiler_ir()).lower()
+    assert _native_call_count_for_tests() == 1
+    assert (
+        str(compiled.lower(source).compiler_ir()).lower().count("custom_call")
+        == 1
+    )
 
-    direct = jax.jit(lambda value: strided_copy(value, plan=bound))
+    direct = jax.jit(lambda value: _execute_map(value, plan=bound))
     _reset_native_call_count_for_tests()
     direct_actual = direct(source)
     direct_actual.block_until_ready()
@@ -162,14 +130,13 @@ def test_auto_selection_protects_batched_complex64_regression() -> None:
         np.asarray(direct_actual),
         np.asarray(expected),
     )
-    assert _native_call_count_for_tests() == 0
+    assert _native_call_count_for_tests() == 1
 
     forced = jax.jit(
         jax.vmap(
-            lambda value: strided_copy(
+            lambda value: _execute_map(
                 value,
                 plan=bound,
-                native_required=True,
             )
         )
     )
@@ -188,7 +155,7 @@ def test_auto_selection_protects_batched_complex64_regression() -> None:
 def test_auto_selection_uses_measured_many_record_class() -> None:
     bound = many_tiny_balanced_plan()
     source = jnp.arange(bound.source_size, dtype=jnp.float32)
-    compiled = jax.jit(lambda value: strided_copy(value, plan=bound))
+    compiled = jax.jit(lambda value: _execute_map(value, plan=bound))
 
     _reset_native_call_count_for_tests()
     actual = compiled(source)
@@ -205,11 +172,11 @@ def test_auto_selection_uses_measured_many_record_class() -> None:
     assert "scatter" not in hlo
 
 
-def test_excessive_native_rank_uses_portable_stablehlo() -> None:
+def test_high_semantic_rank_normalizes_before_native_execution() -> None:
     shape = (2,) * 9
     strides = tuple(2 ** (8 - axis) for axis in range(9))
-    record = StridedCopyRecord(shape, strides, 0, strides, 0, 1.0)
-    bound = build_strided_copy_plan(
+    record = AffineRecord(shape, strides, 0, strides, 0, 1.0)
+    bound = build_affine_plan(
         records=(record,),
         output_size=512,
         coverage=CompleteMode.COMPLETE_UNIQUE,
@@ -220,7 +187,7 @@ def test_excessive_native_rank_uses_portable_stablehlo() -> None:
     source = jnp.arange(bound.source_size, dtype=jnp.float32)
 
     _reset_native_call_count_for_tests()
-    compiled = jax.jit(lambda value: strided_copy(value, plan=bound))
+    compiled = jax.jit(lambda value: _execute_map(value, plan=bound))
     stablehlo = str(compiled.lower(source).compiler_ir()).lower()
     actual = compiled(source)
 
@@ -228,10 +195,10 @@ def test_excessive_native_rank_uses_portable_stablehlo() -> None:
         np.asarray(actual),
         np.asarray(execute_reference(source, bound)),
     )
-    assert "custom_call" not in stablehlo
+    assert stablehlo.count("custom_call") == 1
     assert "gather" not in stablehlo
     assert "scatter" not in stablehlo
-    assert _native_call_count_for_tests() == 0
+    assert _native_call_count_for_tests() == 1
 
 
 @pytest.mark.parametrize(
@@ -248,7 +215,7 @@ def test_mixed_inexact_dtype_primal_jvp_and_vjp_match_reference(
     result_dtype: jnp.dtype,
 ) -> None:
     template = two_record_noncompact_plan()
-    bound = build_strided_copy_plan(
+    bound = build_affine_plan(
         records=template.records,
         output_size=template.output_size,
         coverage=template.coverage,
@@ -264,7 +231,7 @@ def test_mixed_inexact_dtype_primal_jvp_and_vjp_match_reference(
     if source_dtype == jnp.complex64:
         source = source * jnp.complex64(1 + 0.25j)
     tangent = source / 8
-    function = lambda value: strided_copy(value, plan=bound)
+    function = lambda value: _execute_map(value, plan=bound)
     reference = lambda value: execute_reference(value, bound)
     actual_primal, actual_tangent = jax.jvp(
         function,
@@ -300,18 +267,18 @@ def test_mixed_inexact_dtype_primal_jvp_and_vjp_match_reference(
 
 def test_large_unique_mixed_dtype_vjp_uses_native_without_addresses() -> None:
     source_size = 100_000_000
-    copied_elements = 4
-    record = StridedCopyRecord(
-        (copied_elements,),
+    mapped_elements = 4
+    record = AffineRecord(
+        (mapped_elements,),
         (1,),
         0,
         (1,),
         0,
         1.0,
     )
-    bound = build_strided_copy_plan(
+    bound = build_affine_plan(
         records=(record,),
-        output_size=copied_elements,
+        output_size=mapped_elements,
         coverage=CompleteMode.COMPLETE_UNIQUE,
         source_size=source_size,
         source_dtype=jnp.float16,
@@ -320,10 +287,10 @@ def test_large_unique_mixed_dtype_vjp_uses_native_without_addresses() -> None:
     source_shape = (source_size,)
 
     source = jax.ShapeDtypeStruct(source_shape, jnp.float16)
-    cotangent = jax.ShapeDtypeStruct((copied_elements,), jnp.float32)
+    cotangent = jax.ShapeDtypeStruct((mapped_elements,), jnp.float32)
     vjp = jax.jit(
         lambda value, cot: jax.vjp(
-            lambda item: strided_copy(item, plan=bound),
+            lambda item: _execute_map(item, plan=bound),
             value,
         )[1](cot)[0]
     )
@@ -333,11 +300,11 @@ def test_large_unique_mixed_dtype_vjp_uses_native_without_addresses() -> None:
     assert "scatter" not in hlo
 
 
-def test_rank9_mixed_plan_uses_portable_stablehlo_automatically() -> None:
+def test_reducible_rank9_mixed_plan_supports_native_after_normalization() -> None:
     shape = (2,) * 9
     strides = tuple(2 ** (8 - axis) for axis in range(9))
-    record = StridedCopyRecord(shape, strides, 0, strides, 0, 1.0 + 0.5j)
-    bound = build_strided_copy_plan(
+    record = AffineRecord(shape, strides, 0, strides, 0, 1.0 + 0.5j)
+    bound = build_affine_plan(
         records=(record,),
         output_size=512,
         coverage=CompleteMode.COMPLETE_UNIQUE,
@@ -346,7 +313,7 @@ def test_rank9_mixed_plan_uses_portable_stablehlo_automatically() -> None:
         result_dtype=jnp.complex64,
     )
     source = jnp.arange(bound.source_size, dtype=jnp.float32)
-    function = jax.jit(lambda value: strided_copy(value, plan=bound))
+    function = jax.jit(lambda value: _execute_map(value, plan=bound))
 
     _reset_native_call_count_for_tests()
     stablehlo = str(function.lower(source).compiler_ir()).lower()
@@ -356,47 +323,64 @@ def test_rank9_mixed_plan_uses_portable_stablehlo_automatically() -> None:
         np.asarray(actual),
         np.asarray(execute_reference(source, bound)),
     )
-    assert "custom_call" not in stablehlo
     assert "gather" not in stablehlo
     assert "scatter" not in stablehlo
-    assert _native_call_count_for_tests() == 0
-    with pytest.raises(ValueError, match="rank exceeds native limit"):
-        strided_copy(source, plan=bound, native_required=True)
+
+    forced = jax.jit(
+        lambda value: _execute_map(value, plan=bound)
+    )
+    _reset_native_call_count_for_tests()
+    forced_hlo = str(forced.lower(source).compiler_ir()).lower()
+    forced_actual = forced(source)
+    forced_actual.block_until_ready()
+
+    np.testing.assert_array_equal(np.asarray(forced_actual), np.asarray(actual))
+    assert forced_hlo.count("custom_call") == 1
+    assert _native_call_count_for_tests() == 1
 
 
-def test_excessive_rank_direct_and_vmap_share_portable_lowering() -> None:
+def test_irreducible_rank9_direct_and_vmap_fail_closed() -> None:
     shape = (2,) * 9
-    strides = tuple(2 ** (8 - axis) for axis in range(9))
-    record = StridedCopyRecord(shape, strides, 0, strides, 0, 1.0)
-    bound = build_strided_copy_plan(
+    source_strides = tuple(3 ** (8 - axis) for axis in range(9))
+    destination_strides = tuple(2 ** (8 - axis) for axis in range(9))
+    record = AffineRecord(
+        shape,
+        source_strides,
+        0,
+        destination_strides,
+        0,
+        1.0,
+    )
+    bound = build_affine_plan(
         records=(record,),
         output_size=512,
         coverage=CompleteMode.COMPLETE_UNIQUE,
-        source_size=512,
+        source_size=sum(source_strides) + 1,
         source_dtype=jnp.float32,
         result_dtype=jnp.float32,
     )
-    source = jax.ShapeDtypeStruct((6_000, bound.source_size), jnp.float32)
+    source = jax.ShapeDtypeStruct((3, bound.source_size), jnp.float32)
     functions = (
-        jax.jit(lambda value: strided_copy(value, plan=bound)),
-        jax.jit(jax.vmap(lambda value: strided_copy(value, plan=bound))),
+        jax.jit(lambda value: _execute_map(value, plan=bound)),
+        jax.jit(jax.vmap(lambda value: _execute_map(value, plan=bound))),
     )
 
     for function in functions:
-        stablehlo = str(function.lower(source).compiler_ir()).lower()
-        assert "custom_call" not in stablehlo
-        assert "gather" not in stablehlo
-        assert "scatter" not in stablehlo
+        with pytest.raises(
+            Exception,
+            match="effective logical rank exceeds native limit 8",
+        ):
+            function.lower(source).compile()
 
 
 @pytest.mark.skipif(not native_available(), reason="native CPU stride is unavailable")
 def test_auto_selection_routes_many_single_element_records_to_native() -> None:
     record_count = 1_024
     records = tuple(
-        StridedCopyRecord((1,), (1,), index, (1,), index, 1.0)
+        AffineRecord((1,), (1,), index, (1,), index, 1.0)
         for index in range(record_count)
     )
-    bound = build_strided_copy_plan(
+    bound = build_affine_plan(
         records=records,
         output_size=record_count,
         coverage=CompleteMode.COMPLETE_UNIQUE,
@@ -405,7 +389,7 @@ def test_auto_selection_routes_many_single_element_records_to_native() -> None:
         result_dtype=jnp.float32,
     )
     source = jnp.arange(record_count, dtype=jnp.float32)
-    compiled = jax.jit(lambda value: strided_copy(value, plan=bound))
+    compiled = jax.jit(lambda value: _execute_map(value, plan=bound))
     hlo = str(compiled.lower(source).compiler_ir()).lower()
 
     assert hlo.count("custom_call") == 1
@@ -423,7 +407,7 @@ def test_missing_transformation_primitive_fails_closed(
     bound = two_record_noncompact_plan()
     source = jnp.arange(bound.source_size, dtype=jnp.float32)
     monkeypatch.setattr(
-        ffi_module,
+        primitive_module,
         "_STRIDE_PRIMITIVE",
         None,
     )
@@ -432,24 +416,24 @@ def test_missing_transformation_primitive_fails_closed(
         RuntimeError,
         match=f"{NO_ROUTE_PREFIX} native_primitive_unavailable",
     ):
-        strided_copy(source, plan=bound)
-    with pytest.raises(RuntimeError, match="transformation-safe"):
-        strided_copy(source, plan=bound, native_required=True)
+        _execute_map(source, plan=bound)
 
 
 @pytest.mark.skipif(not native_available(), reason="native CPU stride is unavailable")
-def test_forced_native_rejects_single_non_cpu_lowering() -> None:
+def test_non_cpu_lowering_fails_closed() -> None:
     bound = contiguous_dtype_plan(jnp.float32, 1, size=4_096)
     source = jnp.zeros(bound.source_size, dtype=jnp.float32)
     traced = jax.jit(
-        lambda value: strided_copy(
+        lambda value: _execute_map(
             value,
             plan=bound,
-            native_required=True,
         )
     ).trace(source)
 
-    with pytest.raises(RuntimeError, match="only supports the CPU platform"):
+    with pytest.raises(
+        RuntimeError,
+        match=f"{NO_ROUTE_PREFIX} native_device_executor_unavailable",
+    ):
         traced.lower(lowering_platforms=("tpu",))
 
 
@@ -457,21 +441,19 @@ def test_native_build_runtime_mismatch_disables_registration(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        ffi_module._native,
+        native_module._native,
         "_stride_ffi_build_versions",
         lambda: ("mismatch", "mismatch"),
     )
     bound = two_record_noncompact_plan()
     source = jnp.arange(bound.source_size, dtype=jnp.float32)
 
-    assert not ffi_module.native_available()
+    assert not native_module.native_available()
     with pytest.raises(
         RuntimeError,
         match=f"{NO_ROUTE_PREFIX} native_cpu_executor_unavailable",
     ):
-        strided_copy(source, plan=bound)
-    with pytest.raises(RuntimeError, match="native CPU path"):
-        strided_copy(source, plan=bound, native_required=True)
+        _execute_map(source, plan=bound)
 
 
 @pytest.mark.skipif(not native_available(), reason="native CPU stride is unavailable")
@@ -485,7 +467,7 @@ def test_large_batched_noncompact_complex64_uses_native_without_addresses() -> (
         columns=1_024,
     )
     source = jnp.zeros((2, bound.source_size), dtype=jnp.complex64)
-    function = jax.jit(lambda value: strided_copy(value, plan=bound))
+    function = jax.jit(lambda value: _execute_map(value, plan=bound))
     hlo = str(function.lower(source).compiler_ir()).lower()
 
     assert hlo.count("custom_call") == 1
@@ -498,11 +480,11 @@ def test_large_batched_noncompact_complex64_uses_native_without_addresses() -> (
     np.testing.assert_array_equal(np.asarray(actual), np.zeros_like(actual))
 
 
-def test_native_unavailable_positive_affine_uses_portable_stablehlo(
+def test_native_unavailable_positive_affine_fails_closed_on_cpu(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        ffi_module._native,
+        native_module._native,
         "_stride_ffi_build_versions",
         lambda: ("mismatch", "mismatch"),
     )
@@ -513,9 +495,6 @@ def test_native_unavailable_positive_affine_uses_portable_stablehlo(
         columns=1_024,
     )
     source = jnp.zeros(bound.source_size, dtype=jnp.float32)
-    function = jax.jit(lambda value: strided_copy(value, plan=bound))
-    stablehlo = str(function.lower(source).compiler_ir()).lower()
-
-    assert "custom_call" not in stablehlo
-    assert "gather" not in stablehlo
-    assert "scatter" not in stablehlo
+    function = jax.jit(lambda value: _execute_map(value, plan=bound))
+    with pytest.raises(RuntimeError, match="native_cpu_executor_unavailable"):
+        function.lower(source)

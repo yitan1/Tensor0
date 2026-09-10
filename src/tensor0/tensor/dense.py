@@ -7,7 +7,9 @@ import jax.numpy as jnp
 from jax import Array
 
 from .. import _native
-from .._stride import StridedView, materialize, strided_accumulate
+from .._stride import StridedView, materialize
+from .._stride._ops._update import _execute_update
+from .._stride._ops._update_support import _prepare_strided_update
 from ..structure.layout import get_degeneracystructure, get_sectorstructure
 from ._tolerances import nonnegative_tolerance
 from .tensor_map import TensorMap
@@ -78,7 +80,7 @@ def from_dense(
         dense_slice = dense[_dense_slices(axes)]
         reduced = _project_interleaved(dense_slice, coeff, axes)
         reduced = reduced / space.sector_spec.quantum_dim(row_tree.coupled)
-        storage = strided_accumulate(
+        base_data, source_data, plan = _prepare_strided_update(
             StridedView(
                 storage,
                 tuple(subblock.sizes),
@@ -86,6 +88,9 @@ def from_dense(
                 subblock.offset,
             ),
             StridedView.from_dense(reduced, tuple(subblock.sizes)),
+        )
+        storage = _execute_update(
+            base_data, source_data, source_factor=1, base_factor=1, plan=plan,
         )
 
     result = TensorMap(space, storage)

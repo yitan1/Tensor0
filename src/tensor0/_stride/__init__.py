@@ -1,36 +1,31 @@
-"""Private, sector-independent functional stride layer."""
+"""Private, sector-independent functional view algebra.
 
-from ._ffi import strided_copy
-from ._materialize import materialize
-from ._native_reduction import strided_reduce
-from ._plan import (
-    CompleteMode,
-    StridedCopyPlan,
-    StridedCopyRecord,
-    StridedOutputInit,
-    StridedReductionKind,
-    StridedScalarKind,
-    StridedWriteKind,
-    build_strided_copy_plan,
-)
-from ._selected_scale import strided_scale
-from ._update import strided_accumulate, strided_assign
+Scale, addition, and internal assignment and accumulation share one functional
+update core with zero/one short-circuit semantics and explicit AD rules.
+Execution plans and multi-record execution remain private implementation
+details; they are not exported by this facade.
+"""
+
+from ._algebra import add, dotc, dotu, reduce_sum, scale
+from ._ops._materialize import materialize
 from ._view import StridedView
+from ._native import (
+    disable_threads,
+    enable_threads,
+    get_num_threads,
+    set_num_threads,
+)
 
 __all__ = [
-    "CompleteMode",
-    "StridedCopyPlan",
-    "StridedCopyRecord",
-    "StridedOutputInit",
-    "StridedReductionKind",
-    "StridedScalarKind",
     "StridedView",
-    "StridedWriteKind",
-    "build_strided_copy_plan",
+    "add",
+    "disable_threads",
+    "dotc",
+    "dotu",
+    "enable_threads",
+    "get_num_threads",
     "materialize",
-    "strided_accumulate",
-    "strided_assign",
-    "strided_copy",
-    "strided_reduce",
-    "strided_scale",
+    "reduce_sum",
+    "scale",
+    "set_num_threads",
 ]

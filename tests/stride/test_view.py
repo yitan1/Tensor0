@@ -83,6 +83,23 @@ def test_strided_view_is_a_pytree_with_only_data_as_dynamic_child() -> None:
     assert rebuilt.offset == view.offset
 
 
+def test_strided_view_rebinding_preserves_metadata_and_requires_storage_shape() -> None:
+    data = jnp.arange(12, dtype=jnp.float32)
+    view = StridedView(data, (2, 3), (1, 4), 2)
+    replacement = jnp.linspace(-1, 1, 12, dtype=jnp.float32)
+
+    rebound = view._with_data(replacement)
+
+    assert rebound.data is replacement
+    assert rebound.sizes == view.sizes
+    assert rebound.strides == view.strides
+    assert rebound.offset == view.offset
+    with pytest.raises(ValueError, match="replacement storage shape"):
+        view._with_data(jnp.arange(13, dtype=jnp.float32))
+    with pytest.raises(TypeError, match="data must be a JAX Array"):
+        view._with_data(np.arange(12, dtype=np.float32))  # type: ignore[arg-type]
+
+
 def test_strided_view_permute_only_changes_affine_metadata() -> None:
     data = jnp.arange(20, dtype=jnp.float32)
     view = StridedView(data, (2, 3), (1, 4), 2)

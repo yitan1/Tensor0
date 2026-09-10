@@ -1,6 +1,7 @@
 """tensor0 public API."""
 
 from . import _native
+from .autodiff import grad, value_and_grad
 from ._native import (
     ElementarySpace,
     FermionNumber,
@@ -168,6 +169,7 @@ __all__ = [
     "from_blocks",
     "from_dense",
     "flip",
+    "grad",
     "hom",
     "fuse",
     "idx",
@@ -232,6 +234,7 @@ __all__ = [
     "trunctol",
     "unitary",
     "unit_space",
+    "value_and_grad",
     "zero_like",
     "zero_space",
     "zeros",

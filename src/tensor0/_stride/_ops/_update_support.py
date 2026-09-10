@@ -1,4 +1,4 @@
-"""Functional affine updates with an explicit preserved base operand."""
+"""Update plan preparation, specialized lowering, and mapped scatters."""
 
 from __future__ import annotations
 
@@ -8,44 +8,24 @@ from typing import Any
 
 import jax
 from jax import Array
+from jax.core import ShapedArray
 import jax.numpy as jnp
 from jax.typing import DTypeLike
 
-from ._ffi import (
-    _base_update_ffi_call_v2,
-    _batch_only_named_sharding,
-    _require_jax_array,
-    native_available,
-    strided_copy,
-)
-from ._errors import raise_no_eligible_route
-from ._native_lowering import lower_plan
-from ._plan import (
+from .._jax import require_jax_array
+from .._map import _execute_map
+from .._errors import raise_no_eligible_route
+from .._plan import (
     CompleteMode,
     StridedOutputInit,
-    StridedCopyPlan,
-    StridedCopyRecord,
+    AffinePlan,
+    AffineRecord,
     StridedReductionKind,
     StridedScalarKind,
     StridedWriteKind,
-    build_strided_copy_plan,
+    build_affine_plan,
 )
-from ._view import StridedView
-
-
-@lru_cache(maxsize=1_024)
-def _base_update_native_descriptor(plan: StridedCopyPlan) -> bytes | None:
-    if (
-        plan.write_kind is StridedWriteKind.ACCUMULATE
-        and plan.source_dtype == "bool"
-        and plan.result_dtype == "bool"
-    ):
-        return None
-    try:
-        lowered = lower_plan(plan)
-    except ValueError:
-        return None
-    return lowered.descriptor
+from .._view import StridedView
 
 
 @lru_cache(maxsize=1_024)
@@ -60,9 +40,8 @@ def _build_strided_base_update_plan(
     source_dtype: DTypeLike,
     base_size: int,
     base_dtype: DTypeLike,
-    write_kind: StridedWriteKind,
-) -> StridedCopyPlan:
-    record = StridedCopyRecord(
+) -> AffinePlan:
+    record = AffineRecord(
         logical_shape=sizes,
         source_strides=source_strides,
         source_offset=source_offset,
@@ -76,7 +55,7 @@ def _build_strided_base_update_plan(
             if size > 1 and stride == 0
         ),
     )
-    return build_strided_copy_plan(
+    return build_affine_plan(
         records=(record,),
         output_size=base_size,
         coverage=CompleteMode.PARTIAL_UNIQUE_ZERO_FILL,
@@ -84,15 +63,14 @@ def _build_strided_base_update_plan(
         source_dtype=source_dtype,
         result_dtype=base_dtype,
         output_init=StridedOutputInit.PRESERVE_BASE,
-        write_kind=write_kind,
+        write_kind=StridedWriteKind.ASSIGN,
     )
 
 
 def _prepare_strided_update(
     destination: StridedView,
     source: StridedView,
-    write_kind: StridedWriteKind,
-) -> tuple[Array, Array, StridedCopyPlan]:
+) -> tuple[Array, Array, AffinePlan]:
     if not isinstance(destination, StridedView):
         raise TypeError("strided update destination must be a StridedView")
     if not isinstance(source, StridedView):
@@ -103,7 +81,7 @@ def _prepare_strided_update(
         raise ValueError("strided update source and destination batch shapes must match")
     base_data = destination.data
     source_data = source.data
-    bound = _build_strided_base_update_plan(
+    plan = _build_strided_base_update_plan(
         sizes=destination.sizes,
         source_strides=source.strides,
         source_offset=source.offset,
@@ -113,51 +91,50 @@ def _prepare_strided_update(
         source_dtype=source_data.dtype,
         base_size=destination.storage_size,
         base_dtype=base_data.dtype,
-        write_kind=write_kind,
     )
-    return base_data, source_data, bound
+    return base_data, source_data, plan
 
 
-def _compile_base_update_plan(
-    bound: StridedCopyPlan,
+def _build_base_update_plan(
+    plan: AffinePlan,
     write_kind: StridedWriteKind,
-) -> StridedCopyPlan:
-    if bound.scalar_kind is not StridedScalarKind.STATIC_SCALE_CAST:
+) -> AffinePlan:
+    if plan.scalar_kind is not StridedScalarKind.STATIC_SCALE_CAST:
         raise ValueError("base update requires static scale/cast semantics")
-    if bound.reduction_kind is not StridedReductionKind.NONE:
+    if plan.reduction_kind is not StridedReductionKind.NONE:
         raise ValueError("base update does not admit reduction records")
-    return build_strided_copy_plan(
-        records=bound.records,
-        output_size=bound.output_size,
-        coverage=bound.coverage,
-        source_size=bound.source_size,
-        source_dtype=bound.source_dtype,
-        result_dtype=bound.result_dtype,
+    return build_affine_plan(
+        records=plan.records,
+        output_size=plan.output_size,
+        coverage=plan.coverage,
+        source_size=plan.source_size,
+        source_dtype=plan.source_dtype,
+        result_dtype=plan.result_dtype,
         output_init=StridedOutputInit.PRESERVE_BASE,
         write_kind=write_kind,
     )
 
 
 @lru_cache(maxsize=1_024)
-def compile_base_assign_plan(bound: StridedCopyPlan) -> StridedCopyPlan:
+def build_base_assign_plan(plan: AffinePlan) -> AffinePlan:
     """Freeze a validated unique affine plan for functional assignment."""
 
-    return _compile_base_update_plan(bound, StridedWriteKind.ASSIGN)
+    return _build_base_update_plan(plan, StridedWriteKind.ASSIGN)
 
 
 @lru_cache(maxsize=1_024)
-def compile_base_accumulate_plan(
-    bound: StridedCopyPlan,
-) -> StridedCopyPlan:
+def build_base_accumulate_plan(
+    plan: AffinePlan,
+) -> AffinePlan:
     """Freeze a validated unique affine plan for functional accumulation."""
 
-    return _compile_base_update_plan(bound, StridedWriteKind.ACCUMULATE)
+    return _build_base_update_plan(plan, StridedWriteKind.ACCUMULATE)
 
 
 def _validate_operands(
-    base: Array,
-    source: Array,
-    plan: StridedCopyPlan,
+    base: Array | ShapedArray,
+    source: Array | ShapedArray,
+    plan: AffinePlan,
 ) -> None:
     if not base.shape or base.shape[-1] != plan.output_size:
         raise ValueError(
@@ -183,103 +160,10 @@ def _base_assign_abstract_eval(
     base_aval: Any,
     source_aval: Any,
     *,
-    plan: StridedCopyPlan,
+    plan: AffinePlan,
 ) -> Any:
-    if not base_aval.shape or base_aval.shape[-1] != plan.output_size:
-        raise ValueError("base affine assignment size mismatch")
-    if not source_aval.shape or source_aval.shape[-1] != plan.source_size:
-        raise ValueError("source affine assignment size mismatch")
-    if base_aval.shape[:-1] != source_aval.shape[:-1]:
-        raise ValueError("base and source batch shapes must match")
-    if base_aval.dtype != jnp.dtype(plan.result_dtype):
-        raise TypeError("base affine assignment dtype mismatch")
-    if source_aval.dtype != jnp.dtype(plan.source_dtype):
-        raise TypeError("source affine assignment dtype mismatch")
+    _validate_operands(base_aval, source_aval, plan)
     return base_aval
-
-
-def _partition_base_assign(
-    plan: StridedCopyPlan,
-    mesh: Any,
-    argument_shapes: tuple[Any, ...],
-    result_shape: Any,
-) -> tuple[Any, Any, Any, tuple[Any, ...]]:
-    base_shape, source_shape = argument_shapes
-    base_sharding = _batch_only_named_sharding(base_shape)
-    source_sharding = _batch_only_named_sharding(source_shape)
-    result_sharding = _batch_only_named_sharding(result_shape)
-    return (
-        mesh,
-        lambda base, source: _execute_base_update_native(base, source, plan),
-        result_sharding,
-        (base_sharding, source_sharding),
-    )
-
-
-def _infer_base_assign_sharding(
-    plan: StridedCopyPlan,
-    mesh: Any,
-    argument_shapes: tuple[Any, ...],
-    result_shape: Any,
-) -> Any:
-    del plan, mesh, result_shape
-    base_shape, _ = argument_shapes
-    return _batch_only_named_sharding(base_shape)
-
-
-def _propagate_base_assign_sharding(
-    plan: StridedCopyPlan,
-    mesh: Any,
-    user_shape: Any,
-) -> Any:
-    del plan, mesh
-    return _batch_only_named_sharding(user_shape)
-
-
-def _create_partitioned_base_assign() -> Any | None:
-    try:
-        from jax.experimental.custom_partitioning import custom_partitioning
-    except (AttributeError, ImportError):
-        return None
-
-    @partial(custom_partitioning, static_argnums=(2,))
-    def partitioned(
-        base: Array,
-        source: Array,
-        plan: StridedCopyPlan,
-    ) -> Array:
-        del source, plan
-        return jnp.zeros_like(base)
-
-    partitioned.def_partition(
-        partition=_partition_base_assign,
-        propagate_user_sharding=_propagate_base_assign_sharding,
-        infer_sharding_from_operands=_infer_base_assign_sharding,
-        decode_shardings=True,
-        sharding_rule="... base, ... source -> ... result",
-    )
-    return partitioned
-
-
-_PARTITIONED_BASE_ASSIGN = _create_partitioned_base_assign()
-
-
-def _execute_base_update_native(
-    base: Array,
-    source: Array,
-    plan: StridedCopyPlan,
-) -> Array:
-    descriptor = _base_update_native_descriptor(plan)
-    if not native_available():
-        raise_no_eligible_route(("native_base_update_executor_unavailable",))
-    if descriptor is None:
-        raise_no_eligible_route(("native_base_update_projection_unavailable",))
-    return _base_update_ffi_call_v2(
-        base,
-        source,
-        descriptor=descriptor,
-        operation=plan.write_kind.value,
-    )
 
 
 def _base_assign_lowering(
@@ -287,20 +171,14 @@ def _base_assign_lowering(
     base: Any,
     source: Any,
     *,
-    plan: StridedCopyPlan,
+    plan: AffinePlan,
 ) -> Any:
     from jax.interpreters import mlir
+    from ._update import _execute_update
 
-    device_count = getattr(context.module_context.axis_context, "num_devices", None)
-    if device_count in (None, 1):
-        function = lambda old, value: _execute_base_update_native(old, value, plan)
-    else:
-        partitioned = _PARTITIONED_BASE_ASSIGN
-        if partitioned is None:
-            raise RuntimeError(
-                "multi-device BaseAssign requires JAX custom partitioning support"
-            )
-        function = lambda old, value: partitioned(old, value, plan)
+    function = lambda old, value: _execute_update(
+        old, value, source_factor=1, base_factor=0, plan=plan,
+    )
     return mlir.lower_fun(function, multiple_results=False)(context, base, source)
 
 
@@ -309,7 +187,7 @@ def _base_assign_non_cpu_lowering(
     base: Any,
     source: Any,
     *,
-    plan: StridedCopyPlan,
+    plan: AffinePlan,
 ) -> Any:
     del context, base, source, plan
     raise_no_eligible_route(("native_base_update_executor_non_cpu",))
@@ -319,13 +197,13 @@ def _base_assign_jvp(
     primals: tuple[Array, Array],
     tangents: tuple[Any, Any],
     *,
-    plan: StridedCopyPlan,
+    plan: AffinePlan,
 ) -> tuple[Array, Any]:
     from jax.interpreters import ad
 
     base, source = primals
     base_tangent, source_tangent = tangents
-    primal = _BASE_ASSIGN_PRIMITIVE.bind(base, source, plan=plan)
+    primal = _SCATTER_PRIMITIVE.bind(base, source, plan=plan)
     if not jnp.issubdtype(base.dtype, jnp.inexact):
         return primal, jnp.zeros(primal.shape, dtype=jax.dtypes.float0)
     if isinstance(base_tangent, ad.Zero):
@@ -336,7 +214,7 @@ def _base_assign_jvp(
         source_tangent = jnp.zeros_like(source)
     return (
         primal,
-        _BASE_ASSIGN_PRIMITIVE.bind(
+        _SCATTER_PRIMITIVE.bind(
             base_tangent,
             source_tangent,
             plan=plan,
@@ -349,7 +227,7 @@ def _base_assign_transpose(
     base: Any,
     source: Any,
     *,
-    plan: StridedCopyPlan,
+    plan: AffinePlan,
 ) -> list[Any]:
     from jax.interpreters import ad
 
@@ -372,7 +250,7 @@ def _base_assign_transpose(
                 source_shape,
                 dtype=jnp.dtype(plan.source_dtype),
             )
-            base_cotangent = _BASE_ASSIGN_PRIMITIVE.bind(
+            base_cotangent = _SCATTER_PRIMITIVE.bind(
                 cotangent,
                 zero_source,
                 plan=zero_plan,
@@ -385,7 +263,7 @@ def _base_assign_transpose(
         if jnp.issubdtype(source_dtype, jnp.inexact):
             source_primal = jnp.zeros(source.aval.shape, dtype=source_dtype)
             source_cotangent = jax.linear_transpose(
-                lambda value: strided_copy(
+                lambda value: _execute_map(
                     value,
                     plan=_fresh_map_projection(plan),
                 ),
@@ -398,9 +276,9 @@ def _base_assign_transpose(
 
 @lru_cache(maxsize=1_024)
 def _zero_destination_base_assign_plan(
-    plan: StridedCopyPlan,
-) -> StridedCopyPlan:
-    affine = build_strided_copy_plan(
+    plan: AffinePlan,
+) -> AffinePlan:
+    affine = build_affine_plan(
         records=tuple(replace(record, scale=0) for record in plan.records),
         output_size=plan.output_size,
         coverage=plan.coverage,
@@ -408,12 +286,12 @@ def _zero_destination_base_assign_plan(
         source_dtype=plan.source_dtype,
         result_dtype=plan.result_dtype,
     )
-    return compile_base_assign_plan(affine)
+    return build_base_assign_plan(affine)
 
 
 @lru_cache(maxsize=1_024)
-def _fresh_map_projection(plan: StridedCopyPlan) -> StridedCopyPlan:
-    return build_strided_copy_plan(
+def _fresh_map_projection(plan: AffinePlan) -> AffinePlan:
+    return build_affine_plan(
         records=plan.records,
         output_size=plan.output_size,
         coverage=plan.coverage,
@@ -427,7 +305,7 @@ def _base_assign_batch(
     arguments: tuple[Array, Array],
     dimensions: tuple[int | None, int | None],
     *,
-    plan: StridedCopyPlan,
+    plan: AffinePlan,
 ) -> tuple[Array, int]:
     from jax.interpreters import batching
 
@@ -440,7 +318,7 @@ def _base_assign_batch(
     )
     base = batching.bdim_at_front(base, base_dimension, batch_size)
     source = batching.bdim_at_front(source, source_dimension, batch_size)
-    return _BASE_ASSIGN_PRIMITIVE.bind(base, source, plan=plan), 0
+    return _SCATTER_PRIMITIVE.bind(base, source, plan=plan), 0
 
 
 def _create_base_assign_primitive() -> Any:
@@ -451,7 +329,7 @@ def _create_base_assign_primitive() -> Any:
     from jax.interpreters import mlir
     from jax.interpreters import xla
 
-    primitive = core.Primitive("tensor0_stride_base_update")
+    primitive = core.Primitive("tensor0_stride_update_scatter")
     primitive.def_impl(partial(xla.apply_primitive, primitive))
     primitive.def_abstract_eval(_base_assign_abstract_eval)
     ad.primitive_jvps[primitive] = _base_assign_jvp
@@ -463,14 +341,14 @@ def _create_base_assign_primitive() -> Any:
     return primitive
 
 
-_BASE_ASSIGN_PRIMITIVE = _create_base_assign_primitive()
+_SCATTER_PRIMITIVE = _create_base_assign_primitive()
 
 
-def base_assign(
+def _scatter_mapped(
     base: object,
     source: object,
     *,
-    plan: StridedCopyPlan,
+    plan: AffinePlan,
 ) -> Array:
     """Functionally assign one certified affine map over a preserved base."""
 
@@ -480,75 +358,15 @@ def base_assign(
         or plan.scalar_kind is not StridedScalarKind.STATIC_SCALE_CAST
         or plan.reduction_kind is not StridedReductionKind.NONE
     ):
-        raise ValueError("base_assign requires an assign update plan")
-    base_data = _require_jax_array(base, "base_assign base")
-    source_data = _require_jax_array(source, "base_assign source")
+        raise ValueError("_scatter_mapped requires an assign update plan")
+    base_data = require_jax_array(base, "_scatter_mapped base")
+    source_data = require_jax_array(source, "_scatter_mapped source")
     _validate_operands(base_data, source_data, plan)
-    return _BASE_ASSIGN_PRIMITIVE.bind(base_data, source_data, plan=plan)
-
-
-def base_accumulate(
-    base: object,
-    source: object,
-    *,
-    plan: StridedCopyPlan,
-) -> Array:
-    """Functionally add one certified affine map over a preserved base."""
-
-    if (
-        plan.output_init is not StridedOutputInit.PRESERVE_BASE
-        or plan.write_kind is not StridedWriteKind.ACCUMULATE
-        or plan.scalar_kind is not StridedScalarKind.STATIC_SCALE_CAST
-        or plan.reduction_kind is not StridedReductionKind.NONE
-    ):
-        raise ValueError("base_accumulate requires an accumulate update plan")
-    base_data = _require_jax_array(base, "base_accumulate base")
-    source_data = _require_jax_array(source, "base_accumulate source")
-    _validate_operands(base_data, source_data, plan)
-    return _BASE_ASSIGN_PRIMITIVE.bind(base_data, source_data, plan=plan)
-
-
-def strided_assign(
-    destination: StridedView,
-    source: StridedView,
-) -> Array:
-    """Assign one static affine subblock over a preserved base."""
-
-    base_data, source_data, bound = _prepare_strided_update(
-        destination,
-        source,
-        StridedWriteKind.ASSIGN,
-    )
-    return base_assign(
-        base_data,
-        source_data,
-        plan=bound,
-    )
-
-
-def strided_accumulate(
-    destination: StridedView,
-    source: StridedView,
-) -> Array:
-    """Accumulate one static affine subblock over a preserved base."""
-
-    base_data, source_data, bound = _prepare_strided_update(
-        destination,
-        source,
-        StridedWriteKind.ACCUMULATE,
-    )
-    return base_accumulate(
-        base_data,
-        source_data,
-        plan=bound,
-    )
+    return _SCATTER_PRIMITIVE.bind(base_data, source_data, plan=plan)
 
 
 __all__ = [
-    "base_accumulate",
-    "base_assign",
-    "compile_base_accumulate_plan",
-    "compile_base_assign_plan",
-    "strided_accumulate",
-    "strided_assign",
+    "_scatter_mapped",
+    "build_base_accumulate_plan",
+    "build_base_assign_plan",
 ]

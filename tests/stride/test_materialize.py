@@ -5,23 +5,19 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-import tensor0._stride._materialize as materialize_module
+import tensor0._stride._ops._materialize as materialize_module
 from tensor0 import SU2Irrep, hom, space
-from tensor0._stride import (
-    StridedView,
-    materialize,
-    strided_copy,
-)
-from tensor0._stride._ffi import (
+from tensor0._stride import StridedView, materialize
+from tensor0._stride._map import _execute_map
+from tensor0._stride._testing import (
     _native_call_count_for_tests,
     _reset_native_call_count_for_tests,
     native_available,
 )
-from tensor0._stride._materialize import build_materialize_plan
-from tensor0._stride._routing import (
+from tensor0._stride._ops._materialize import build_materialize_plan
+from tensor0._stride._map_routing import (
     RouteKind,
-    StableHloCapability,
-    compile_affine_route_features,
+    build_affine_route_features,
     decide_fresh_map_route,
 )
 from tensor0.structure import get_degeneracystructure
@@ -38,7 +34,7 @@ def _view(
     return StridedView(data, sizes, strides, offset)
 
 
-def test_static_contiguous_materialization_uses_address_free_compact_recipe() -> None:
+def test_static_contiguous_materialization_uses_native_on_cpu() -> None:
     source = jnp.arange(20, dtype=jnp.float32)
     function = jax.jit(
         lambda value: materialize(
@@ -53,7 +49,7 @@ def test_static_contiguous_materialization_uses_address_free_compact_recipe() ->
         np.asarray(actual),
         np.asarray(source[4:10].reshape(2, 3)),
     )
-    assert "custom_call" not in hlo
+    assert hlo.count("custom_call") == 1
     assert "gather" not in hlo
     assert "scatter" not in hlo
 
@@ -67,7 +63,7 @@ def test_static_sliced_permuted_materialization_and_cast_use_native() -> None:
     function = jax.jit(
         lambda value: materialize(
             _view(value, (2, 3), (1, 4), 2),
-            result_dtype=jnp.complex64,
+            dtype=jnp.complex64,
         )
     )
 
@@ -100,7 +96,7 @@ def test_static_empty_materialization_preserves_explicit_result_dtype() -> None:
 
     actual = materialize(
         _view(source, (2, 0, 3), (3, 3, 1), 5),
-        result_dtype=jnp.complex64,
+        dtype=jnp.complex64,
     )
 
     assert actual.shape == (2, 0, 3)
@@ -121,13 +117,13 @@ def test_materialize_requires_a_bound_view() -> None:
         source_dtype=jnp.float32,
         result_dtype=jnp.float32,
     )
-    with pytest.raises(TypeError, match="strided_copy source.*JAX Array"):
-        strided_copy(source, plan=plan)
+    with pytest.raises(TypeError, match="_execute_map source.*JAX Array"):
+        _execute_map(source, plan=plan)
 
 
 def test_small_concrete_materialization_enters_unified_executor(monkeypatch) -> None:
     source = jnp.arange(20, dtype=jnp.float32)
-    real_strided_copy = materialize_module.strided_copy
+    real_strided_copy = materialize_module._execute_map
     calls = 0
 
     def counted_strided_copy(*args, **kwargs):
@@ -135,7 +131,7 @@ def test_small_concrete_materialization_enters_unified_executor(monkeypatch) -> 
         calls += 1
         return real_strided_copy(*args, **kwargs)
 
-    monkeypatch.setattr(materialize_module, "strided_copy", counted_strided_copy)
+    monkeypatch.setattr(materialize_module, "_execute_map", counted_strided_copy)
     actual = materialize(
         _view(source, (2, 3), (1, 4), 2),
     )
@@ -203,7 +199,7 @@ def test_mixed_materialize_jit_jvp_vjp_and_vmap_match_explicit_cast() -> None:
     def migrated(value):
         return materialize(
             _view(value, (2, 3), (3, 1), 0),
-            result_dtype=jnp.complex64,
+            dtype=jnp.complex64,
         )
 
     def explicit(value):
@@ -251,7 +247,7 @@ def test_subblock_metadata_can_be_materialized_directly() -> None:
 
 
 @pytest.mark.skipif(not native_available(), reason="native CPU stride is unavailable")
-def test_partial_materialization_does_not_inherit_complete_map_threshold() -> None:
+def test_partial_materialization_uses_native_primary_route() -> None:
     sizes = (64, 64)
     plan = build_materialize_plan(
         sizes=sizes,
@@ -261,22 +257,20 @@ def test_partial_materialization_does_not_inherit_complete_map_threshold() -> No
         source_dtype=jnp.float32,
         result_dtype=jnp.float32,
     )
-    features = compile_affine_route_features(
+    features = build_affine_route_features(
         plan,
         source_shape=(plan.source_size,),
         platform="cpu",
-        stablehlo_capability=StableHloCapability.NONE,
         native_runtime_available=True,
     )
     decision = decide_fresh_map_route(features)
 
-    assert not features.source_complete
     assert decision.route is RouteKind.NATIVE
-    assert decision.reason == "general_native"
+    assert decision.reason == "native_cpu_primary"
 
 
 @pytest.mark.skipif(not native_available(), reason="native CPU stride is unavailable")
-def test_large_partial_materialization_obeys_general_native_threshold() -> None:
+def test_large_partial_materialization_uses_native_primary_route() -> None:
     sizes = (512, 512)
     strides = (1, 512)
     copied = sizes[0] * sizes[1]
@@ -289,11 +283,10 @@ def test_large_partial_materialization_obeys_general_native_threshold() -> None:
         source_dtype=source.dtype,
         result_dtype=source.dtype,
     )
-    features = compile_affine_route_features(
+    features = build_affine_route_features(
         plan,
         source_shape=tuple(source.shape),
         platform="cpu",
-        stablehlo_capability=StableHloCapability.NONE,
         native_runtime_available=True,
     )
     decision = decide_fresh_map_route(features)
@@ -308,9 +301,8 @@ def test_large_partial_materialization_obeys_general_native_threshold() -> None:
     actual = function(source)
     actual.block_until_ready()
 
-    assert not features.source_complete
     assert decision.route is RouteKind.NATIVE
-    assert decision.reason == "general_native"
+    assert decision.reason == "native_cpu_primary"
     assert hlo.count("custom_call") == 1
     assert "gather" not in hlo
     assert "scatter" not in hlo

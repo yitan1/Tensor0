@@ -9,15 +9,15 @@ from jax import Array
 import jax.numpy as jnp
 from jax.typing import DTypeLike
 
-from ._ffi import strided_copy
-from ._plan import (
+from .._map import _execute_map
+from .._plan import (
     CompleteMode,
-    StridedCopyPlan,
-    StridedCopyRecord,
-    _contiguous_strides,
-    build_strided_copy_plan,
+    AffinePlan,
+    AffineRecord,
+    build_affine_plan,
+    contiguous_strides,
 )
-from ._view import StridedView
+from .._view import StridedView
 
 
 @lru_cache(maxsize=1_024)
@@ -29,18 +29,18 @@ def build_materialize_plan(
     source_size: int,
     source_dtype: DTypeLike,
     result_dtype: DTypeLike,
-) -> StridedCopyPlan:
+) -> AffinePlan:
     """Build one certified affine map into a fresh compact destination."""
 
-    destination_strides = _contiguous_strides(sizes)
-    record = StridedCopyRecord(
+    destination_strides = contiguous_strides(sizes)
+    record = AffineRecord(
         logical_shape=sizes,
         source_strides=strides,
         source_offset=offset,
         destination_strides=destination_strides,
         destination_offset=0,
     )
-    return build_strided_copy_plan(
+    return build_affine_plan(
         records=(record,),
         output_size=prod(sizes),
         coverage=CompleteMode.COMPLETE_UNIQUE,
@@ -66,14 +66,14 @@ def _execute_materialize(
         source_dtype=data.dtype,
         result_dtype=result_dtype,
     )
-    flat = strided_copy(data, plan=plan)
+    flat = _execute_map(data, plan=plan)
     return jnp.reshape(flat, (*data.shape[:-1], *sizes))
 
 
 def materialize(
     view: StridedView,
     *,
-    result_dtype: DTypeLike | None = None,
+    dtype: DTypeLike | None = None,
 ) -> Array:
     """Materialize one affine view as a fresh compact JAX Array."""
 
@@ -84,7 +84,7 @@ def materialize(
         sizes=view.sizes,
         strides=view.strides,
         offset=view.offset,
-        result_dtype=(view.data.dtype if result_dtype is None else result_dtype),
+        result_dtype=(view.data.dtype if dtype is None else dtype),
     )
 
 
