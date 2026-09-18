@@ -39,14 +39,14 @@ def _reduction_size(value: int) -> int:
 
 
 def encode_reduction_layout(
-    *, source_shape: tuple[int, ...], source_strides: tuple[int, ...], source_offset: int,
-    output_shape: tuple[int, ...], output_strides: tuple[int, ...], output_offset: int,
-    reduction_axes: tuple[bool, ...], source_size: int, output_size: int,
+    records: tuple[AffineRecord, ...], *, output_shapes: tuple[tuple[int, ...], ...],
+    reduction_axes: tuple[tuple[bool, ...], ...], source_size: int, output_size: int,
 ) -> np.ndarray:
-    """Encode one real input/output layout pair as little-endian protocol bytes.
+    """Encode all input/output layout pairs as little-endian protocol bytes.
 
     Only protocol representation is checked here; native validates true views
     and constructs shared traversal records. No coefficient data is encoded.
+    Empty records emit a header for fresh output initialization.
     """
     def offset(value: int) -> int:
         if type(value) is not int or not 0 <= value <= INT64_MAX:
@@ -58,35 +58,19 @@ def encode_reduction_layout(
             raise ValueError("reduction layout strides must fit int64")
         return value & UINT64_MAX
 
-    words = [1, _reduction_size(source_size), _reduction_size(output_size), 1]
-    rank = len(source_shape)
-    if any(len(field) != rank for field in (
-        source_strides, output_shape, output_strides, reduction_axes,
-    )):
-        raise ValueError("reduction layout field ranks must match")
-    if any(type(flag) is not bool for flag in reduction_axes):
-        raise ValueError("reduction axis flags must be booleans")
-    words.extend((rank, offset(source_offset), offset(output_offset)))
-    words.extend(_reduction_size(value) for value in source_shape)
-    words.extend(stride(value) for value in source_strides)
-    words.extend(_reduction_size(value) for value in output_shape)
-    words.extend(stride(value) for value in output_strides)
-    words.extend(int(flag) for flag in reduction_axes)
+    words = [1, _reduction_size(source_size), _reduction_size(output_size), len(records)]
+    for record, output_shape, axes in zip(records, output_shapes, reduction_axes, strict=True):
+        rank = len(record.logical_shape)
+        if any(len(field) != rank for field in (
+            record.source_strides, output_shape, record.destination_strides, axes,
+        )):
+            raise ValueError("reduction layout field ranks must match")
+        if any(type(flag) is not bool for flag in axes):
+            raise ValueError("reduction axis flags must be booleans")
+        words.extend((rank, offset(record.source_offset), offset(record.destination_offset)))
+        words.extend(_reduction_size(value) for value in record.logical_shape)
+        words.extend(stride(value) for value in record.source_strides)
+        words.extend(_reduction_size(value) for value in output_shape)
+        words.extend(stride(value) for value in record.destination_strides)
+        words.extend(int(flag) for flag in axes)
     return np.asarray(words, dtype="<u8").view(np.uint8)
-
-
-def merge_reduction_layouts(
-    layouts: tuple[np.ndarray, ...], *, source_size: int, output_size: int,
-) -> np.ndarray:
-    """Join single-record encoder outputs in order, without changing their payloads.
-
-    All records share storage sizes, not necessarily logical rank or output view.
-    An empty tuple emits the existing zero-record protocol for fresh initialization.
-    """
-    header = np.asarray([1, _reduction_size(source_size), _reduction_size(output_size),
-                         len(layouts)], dtype="<u8")
-    for layout in layouts:
-        words = layout.view("<u8")
-        if not np.array_equal(words[:3], header[:3]) or words[3] != 1:
-            raise ValueError("expected single-record layouts with matching storage sizes")
-    return np.concatenate([header.view(np.uint8), *(layout[32:] for layout in layouts)])

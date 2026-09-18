@@ -11,7 +11,7 @@ import pytest
 
 from tensor0._stride import StridedView, reduce_sum
 from tensor0._stride._jax import accumulation_p, reduction_p
-from tensor0._stride._ops._reduction import _strided_tensortrace
+from tensor0._stride._tensor_ops import _strided_tensortrace
 from tensor0._stride._layout import AffineRecord
 from ._support import native_available
 

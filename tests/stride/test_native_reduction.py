@@ -13,11 +13,11 @@ import pytest
 from tensor0._stride import StridedView, enable_threads, get_num_threads, reduce_sum, set_num_threads
 from tensor0._stride import _jax
 from tensor0._stride._ffi._calls import execute_reduction
-from tensor0._stride._ffi._descriptor import encode_reduction_layout, merge_reduction_layouts
+from tensor0._stride._ffi._descriptor import encode_reduction_layout
 from tensor0._stride._ffi._registration import operation_target
 from tensor0._stride._jax import copy_p, reduction_p
 from tensor0._stride._layout import AffineRecord, contiguous_strides
-from tensor0._stride._ops._reduction import _strided_tensortrace
+from tensor0._stride._tensor_ops import _strided_tensortrace
 
 from ._support import native_available
 from .test_reduction_ad import scalar_trace
@@ -333,8 +333,7 @@ def test_broadcast_map_transpose_accumulates_and_supports_nested_ad():
     ("axes", "axis flag is not boolean"), ("output_shape", "shapes do not match axis roles"),
     ("dtype", "dtype|element type")])
 def test_reduction_ffi_rejects_invalid_protocol_or_typed_output(invalid, message):
-    layout = encode_reduction_layout(source_shape=(2, 3), source_strides=(3, 1), source_offset=0,
-        output_shape=(2, 1), output_strides=(1, 1), output_offset=0, reduction_axes=(False, True), source_size=6, output_size=2)
+    layout = _encode_reduction_records((dict(source_shape=(2, 3), source_strides=(3, 1), source_offset=0, output_shape=(2, 1), output_strides=(1, 1), output_offset=0, reduction_axes=(False, True)),), source_size=6, output_size=2)
     words = layout.view("<u8")
     if invalid == "version":
         words[0] = 99
@@ -366,12 +365,14 @@ REDUCTION_FIBER = dict(source_shape=(3,), source_strides=(1,), source_offset=0, 
 
 
 def _encode_reduction_records(records, *, source_size, output_size):
-    """Assemble multi-record protocol fixtures without a production batch API."""
-    header = np.asarray([1, source_size, output_size, len(records)], dtype="<u8").view(np.uint8)
-    payloads = [encode_reduction_layout(**record, source_size=source_size, output_size=output_size)[32:]
-                for record in records]
-    return np.concatenate([header, *payloads])
-
+    """Encode dictionary-based reduction fixtures in one batch."""
+    return encode_reduction_layout(
+        tuple(AffineRecord(record["source_shape"], record["source_strides"], record["source_offset"],
+                           record["output_strides"], record["output_offset"]) for record in records),
+        output_shapes=tuple(record["output_shape"] for record in records),
+        reduction_axes=tuple(record["reduction_axes"] for record in records),
+        source_size=source_size, output_size=output_size,
+    )
 
 
 def _raw_reduction_call(source, layout, *, shape=(1, 1), dtype="float32", coefficients=(), indices=(), aliases=None):
@@ -440,17 +441,18 @@ def test_public_sum_real_output_layout(monkeypatch):
     encode = _jax.encode_reduction_layout
     captured = []
 
-    def capture(**fields):
-        captured.append(fields)
-        return encode(**fields)
+    def capture(records, **fields):
+        captured.append(dict(records=records, **fields))
+        return encode(records, **fields)
 
     monkeypatch.setattr(_jax, "encode_reduction_layout", capture)
     view = StridedView.from_dense(jnp.arange(24, dtype=jnp.float32), (2, 3, 4))
     actual = reduce_sum(view, (1,))
     np.testing.assert_array_equal(actual, np.arange(24).reshape(2, 3, 4).sum(axis=1))
-    assert captured[0]["output_shape"] == (2, 1, 4)
-    assert captured[0]["output_strides"] == (4, 4, 1)
-    assert captured[0]["reduction_axes"] == (False, True, False)
+    assert len(captured) == 1
+    assert captured[0]["output_shapes"] == ((2, 1, 4),)
+    assert captured[0]["records"][0].destination_strides == (4, 4, 1)
+    assert captured[0]["reduction_axes"] == ((False, True, False),)
 
 
 
@@ -533,7 +535,7 @@ def test_reduction_batches_coefficient_shapes_and_types(dtype, batch_shape, shar
         factors = jnp.asarray(np.arange(prod(batch_shape)).reshape(batch_shape) % 3, dtype=dtype)
         if shared != "batch":
             factors = jnp.asarray(1 if shared == "scalar" else [2], dtype=dtype)
-        layout = encode_reduction_layout(**REDUCTION_FIBER, source_size=3, output_size=1)
+        layout = _encode_reduction_records((REDUCTION_FIBER,), source_size=3, output_size=1)
         execute = jax.jit(lambda data, coefficient: execute_reduction(
             data, (coefficient,), coefficient_records=(0,), layout=layout, output_size=1))
         result = execute(source, factors)
@@ -560,7 +562,7 @@ def test_reduction_batches_zero_record_preserves_prior_contributions_per_batch()
 @pytest.mark.parametrize("batch_shape", [(3,), (0,), (2, 0)])
 def test_reduction_batches_empty_reduction_with_per_batch_coefficients(batch_shape):
     record = dict(REDUCTION_FIBER, source_shape=(0,), output_offset=2)
-    layout = encode_reduction_layout(**record, source_size=0, output_size=3)
+    layout = _encode_reduction_records((record,), source_size=0, output_size=3)
     result = execute_reduction(jnp.zeros((*batch_shape, 0)), (jnp.full(batch_shape, np.nan),),
                                coefficient_records=(0,), layout=layout, output_size=3)
     np.testing.assert_array_equal(result, np.zeros((*batch_shape, 3)))
@@ -568,7 +570,7 @@ def test_reduction_batches_empty_reduction_with_per_batch_coefficients(batch_sha
 
 
 def test_reduction_batches_invalid_coefficient_batch_shapes():
-    layout = encode_reduction_layout(**dict(REDUCTION_FIBER, source_shape=(1,)), source_size=1, output_size=1)
+    layout = _encode_reduction_records((dict(REDUCTION_FIBER, source_shape=(1,)),), source_size=1, output_size=1)
     source = jnp.ones((3, 1))
     for coefficient in (jnp.ones(2), jnp.ones((3, 1)), jnp.ones(0)):
         with pytest.raises(Exception, match="batch count"):
@@ -598,7 +600,7 @@ def test_reduction_batches_outer_vmap_with_shared_storage_batch_coefficients_and
 
 
 def test_reduction_batches_per_batch_fused_rounding_and_reused_coefficient_buffers():
-    layout = encode_reduction_layout(**REDUCTION_FIBER, source_size=3, output_size=1)
+    layout = _encode_reduction_records((REDUCTION_FIBER,), source_size=3, output_size=1)
     source = jnp.asarray([[2048, 1, -2048]] * 3, dtype=jnp.float16)
     execute = jax.jit(lambda data, factors: execute_reduction(
         data, (factors,), coefficient_records=(0,), layout=layout, output_size=1))
@@ -768,24 +770,31 @@ def test_mixed_reduction_discrete_result_has_zero_tangent(source_dtype, result_d
 
 
 def test_packed_trace_multi_record_protocol_assembly():
-    first = encode_reduction_layout(
-        source_shape=(2,), source_strides=(1,), source_offset=0,
-        output_shape=(1,), output_strides=(1,), output_offset=1,
-        reduction_axes=(True,), source_size=4, output_size=3)
-    second = encode_reduction_layout(
-        source_shape=(), source_strides=(), source_offset=3,
-        output_shape=(), output_strides=(), output_offset=2,
-        reduction_axes=(), source_size=4, output_size=3)
-    merged = merge_reduction_layouts((first, second), source_size=4, output_size=3)
+    records = (AffineRecord((2,), (1,), 0, (1,), 1), AffineRecord((), (), 3, (), 2))
+    layout = encode_reduction_layout(
+        records, output_shapes=((1,), ()), reduction_axes=((True,), ()),
+        source_size=4, output_size=3,
+    )
     expected = [1, 4, 3, 2, 1, 0, 1, 2, 1, 1, 1, 1, 0, 3, 2]
-    assert merged.tobytes() == b"".join(word.to_bytes(8, "little") for word in expected)
-    np.testing.assert_array_equal(merge_reduction_layouts((first,), source_size=4, output_size=3), first)
-    empty = merge_reduction_layouts((), source_size=4, output_size=3)
+    assert layout.tobytes() == b"".join(word.to_bytes(8, "little") for word in expected)
+    empty = encode_reduction_layout(
+        (), output_shapes=(), reduction_axes=(), source_size=4, output_size=3,
+    )
     np.testing.assert_array_equal(empty.view("<u8"), [1, 4, 3, 0])
-    with pytest.raises(ValueError, match="matching storage sizes"):
-        merge_reduction_layouts((first,), source_size=5, output_size=3)
-    with pytest.raises(ValueError, match="single-record"):
-        merge_reduction_layouts((merged,), source_size=4, output_size=3)
+
+
+@pytest.mark.parametrize("output_shapes,axes", [
+    (((1,),), ((True,), ())),
+    (((1,), ()), ((True,),)),
+    (((1,), (), ()), ((True,), ())),
+    (((1,), ()), ((True,), (), ())),
+])
+def test_reduction_encoder_rejects_mismatched_record_counts(output_shapes, axes):
+    records = (AffineRecord((2,), (1,), 0, (1,), 1), AffineRecord((), (), 3, (), 2))
+    with pytest.raises(ValueError, match="zip"):
+        encode_reduction_layout(records, output_shapes=output_shapes, reduction_axes=axes,
+                                source_size=4, output_size=3)
+
 
 @pytest.mark.parametrize("batch_shape", [(), (2,), (2, 3), (0,), (2, 0)])
 def test_packed_trace_real_trace_subblocks_coefficients_and_batches(batch_shape, monkeypatch):
@@ -799,9 +808,9 @@ def test_packed_trace_real_trace_subblocks_coefficients_and_batches(batch_shape,
     captured = []
     encode = _jax.encode_reduction_layout
 
-    def capture(**fields):
-        captured.append(fields)
-        return encode(**fields)
+    def capture(records, **fields):
+        captured.append(dict(records=records, **fields))
+        return encode(records, **fields)
 
     monkeypatch.setattr(_jax, "encode_reduction_layout", capture)
 
@@ -819,21 +828,14 @@ def test_packed_trace_real_trace_subblocks_coefficients_and_batches(batch_shape,
         expected[..., :2] += first
         expected[..., 1:3] += half * second + 2 * first
         np.testing.assert_array_equal(compiled(source, jnp.float32(half), jnp.int32(2)), expected)
-    assert captured[0]["source_shape"] == (2, 2)
-    assert captured[0]["source_strides"] == (4, 3)
-    assert captured[0]["output_shape"] == (2, 1)
-    assert captured[0]["output_strides"] == (1, 1)
-    assert all("coefficient" not in fields for fields in captured)
-    expected_records = (
-        ((2, 2), (4, 3), 0, 0),
-        ((2, 3), (9, 4), 8, 1),
-        ((2, 2), (4, 3), 0, 1),
+    assert len(captured) == 1
+    assert captured[0] == dict(
+        records=(AffineRecord((2, 2), (4, 3), 0, (1, 1), 0),
+                 AffineRecord((2, 3), (9, 4), 8, (1, 1), 1),
+                 AffineRecord((2, 2), (4, 3), 0, (1, 1), 1)),
+        output_shapes=((2, 1),) * 3, reduction_axes=((False, True),) * 3,
+        source_size=26, output_size=4,
     )
-    assert len(captured) == len(expected_records)
-    for fields, (shape, strides, source_offset, output_offset) in zip(captured, expected_records, strict=True):
-        assert fields == dict(source_shape=shape, source_strides=strides, source_offset=source_offset,
-                             output_shape=(2, 1), output_strides=(1, 1), output_offset=output_offset,
-                             reduction_axes=(False, True), source_size=26, output_size=4)
     assert "tensor0_stride_reduction_f32_cpu_v1" in compiled.lower(
         source, jnp.float32(.5), jnp.int32(2)).as_text()
 

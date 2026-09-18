@@ -14,7 +14,7 @@ import numpy as np
 import pytest
 
 from tensor0._stride._ffi._calls import execute_accumulation, execute_copy, execute_reduction, execute_update
-from tensor0._stride._ffi._descriptor import encode_layout, encode_reduction_layout, merge_reduction_layouts
+from tensor0._stride._ffi._descriptor import encode_layout, encode_reduction_layout
 from tensor0._stride._layout import AffineRecord, INT64_MAX
 
 from ._support import native_available
@@ -53,9 +53,10 @@ def addresses(shape, strides, offset):
 
 def reduction_layout(source_shape=(4, 3), output_shape=(1, 3), output_strides=(3, 1),
                      source_offset=0, source_size=12, output_size=3):
-    return encode_reduction_layout(source_shape=source_shape, source_strides=(3, 1), source_offset=source_offset,
-        output_shape=output_shape, output_strides=output_strides, output_offset=0,
-        reduction_axes=(True, False), source_size=source_size, output_size=output_size)
+    return encode_reduction_layout(
+        (AffineRecord(source_shape, (3, 1), source_offset, output_strides, 0),),
+        output_shapes=(output_shape,), reduction_axes=((True, False),),
+        source_size=source_size, output_size=output_size)
 
 
 def test_noncompact_records_encode_only_addresses():
@@ -153,8 +154,11 @@ def test_reduction_initializes_output_independently_of_input_size(empty):
 
 @requires_native
 def test_multirecord_reduction_uses_one_initialization_without_mode_flags():
-    layouts = (reduction_layout(source_size=24), reduction_layout(source_offset=12, source_size=24))
-    merged = merge_reduction_layouts(layouts, source_size=24, output_size=3)
+    merged = encode_reduction_layout(
+        tuple(AffineRecord((4, 3), (3, 1), offset, (3, 1), 0) for offset in (0, 12)),
+        output_shapes=((1, 3),) * 2, reduction_axes=((True, False),) * 2,
+        source_size=24, output_size=3,
+    )
     assert merged.view("<u8")[3] == 2
     source = jnp.arange(24, dtype=jnp.float32)
     np.testing.assert_array_equal(execute_reduction(source, layout=merged, output_size=3),

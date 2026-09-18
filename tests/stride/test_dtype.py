@@ -22,101 +22,72 @@ def outcome(function):
     return result.dtype.name, result.weak_type
 
 
-def assert_product_types(left, right):
-    left_shape = jax.ShapeDtypeStruct((), left.dtype, weak_type=left.weak_type)
-    right_shape = jax.ShapeDtypeStruct((), right.dtype, weak_type=right.weak_type)
-    expected = outcome(lambda: jax.eval_shape(lambda first, second: first * second,
-                                            left_shape, right_shape))
-    actual = outcome(lambda: _dtype._product_shape(left, right))
-    assert actual == expected
-    if isinstance(expected[0], str):
-        assert _dtype.product_dtype(left, right) == jnp.dtype(expected[0])
-    else:
-        with pytest.raises(expected[0]):
-            _dtype.product_dtype(left, right)
+def assert_normalized_type(source_dtype, factor):
+    coefficient = jnp.asarray(factor)
+    source = jax.ShapeDtypeStruct((), jnp.dtype(source_dtype))
+    coefficient_shape = jax.ShapeDtypeStruct((), coefficient.dtype, weak_type=coefficient.weak_type)
+
+    def reference():
+        result_dtype = jax.eval_shape(jnp.multiply, source, coefficient_shape).dtype
+        if not coefficient.weak_type:
+            return coefficient
+        if (jnp.issubdtype(result_dtype, jnp.complexfloating)
+                and not jnp.issubdtype(coefficient.dtype, jnp.complexfloating)):
+            result_dtype = jnp.real(jnp.zeros((), dtype=result_dtype)).dtype
+        return coefficient.astype(result_dtype)
+
+    assert outcome(lambda: _dtype.normalize_coefficient(source_dtype, factor)) == outcome(reference)
 
 
 @pytest.mark.parametrize("promotion", ["standard", "strict"])
-@pytest.mark.parametrize("left_dtype", DTYPES)
-@pytest.mark.parametrize("right_dtype", DTYPES)
-def test_concrete_types(left_dtype, right_dtype, promotion):
+@pytest.mark.parametrize("source_dtype", DTYPES)
+@pytest.mark.parametrize("factor_dtype", DTYPES)
+def test_concrete_types(source_dtype, factor_dtype, promotion):
     with jax.enable_x64(), jax.numpy_dtype_promotion(promotion):
-        left = jax.ShapeDtypeStruct((), jnp.dtype(left_dtype))
-        right = jax.ShapeDtypeStruct((), jnp.dtype(right_dtype))
-        assert_product_types(left, right)
+        assert_normalized_type(source_dtype, jnp.asarray(1, dtype=factor_dtype))
 
 
 @pytest.mark.parametrize("x64", [False, True])
 @pytest.mark.parametrize("promotion", ["standard", "strict"])
 @pytest.mark.parametrize("source_dtype", ["bool", "int32", "float16", "float32", "complex64"])
 @pytest.mark.parametrize("factor", [True, 2, 1.5, 0.5 + 1j, np.float16(0.5), np.float32(0.5)])
-def test_weak_and_strong_mapping(source_dtype, factor, promotion, x64):
+def test_weak_and_strong_coefficients(source_dtype, factor, promotion, x64):
     with jax.enable_x64(x64), jax.numpy_dtype_promotion(promotion):
-        source = jax.ShapeDtypeStruct((), jnp.dtype(source_dtype))
-        coefficient = jnp.asarray(factor)
-        assert_product_types(source, coefficient)
-        expected = outcome(lambda: jax.eval_shape(lambda value: value * coefficient, source))
-        if isinstance(expected[0], str):
-            assert _dtype.mapping_dtype(source.dtype, factor) == jnp.dtype(expected[0])
-        else:
-            with pytest.raises(expected[0]) as actual:
-                _dtype.mapping_dtype(source.dtype, factor)
-            assert str(actual.value) == expected[1]
-
-
-@pytest.mark.parametrize("dtype", DTYPES)
-def test_absent_mapping_preserves_dtype(dtype):
-    with jax.enable_x64():
-        assert _dtype.mapping_dtype(jnp.dtype(dtype), None) == jnp.dtype(dtype)
-
-
-@pytest.mark.parametrize("x64", [False, True])
-def test_weak_source_and_strong_factor(x64):
-    with jax.enable_x64(x64), jax.numpy_dtype_promotion("strict"):
-        source = jnp.asarray(1.0003)
-        factor = jnp.asarray(1, dtype=jnp.float16)
-        assert source.weak_type and not factor.weak_type
-        assert_product_types(source, factor)
-        assert _dtype.product_dtype(source, factor) == jnp.dtype("float16")
+        assert_normalized_type(source_dtype, factor)
 
 
 def test_cache_respects_configuration():
-    _dtype._binary_type.cache_clear()
-    source = jax.ShapeDtypeStruct((), jnp.dtype("float32"))
+    _dtype._multiplication_dtype.cache_clear()
+    source_dtype = jnp.dtype("float32")
+    factor = jnp.asarray(1, dtype=source_dtype)
     for x64 in (False, True):
         for promotion in ("standard", "strict"):
             with jax.enable_x64(x64), jax.numpy_dtype_promotion(promotion):
-                assert _dtype.product_dtype(source, source) == jnp.dtype("float32")
-    assert _dtype._binary_type.cache_info().misses == 4
+                assert _dtype.normalize_coefficient(source_dtype, factor).dtype == source_dtype
+    assert _dtype._multiplication_dtype.cache_info().misses == 4
     with jax.enable_x64(False), jax.numpy_dtype_promotion("standard"):
-        assert _dtype.product_dtype(source, source) == jnp.dtype("float32")
-    assert _dtype._binary_type.cache_info().hits == 1
+        assert _dtype.normalize_coefficient(source_dtype, factor).dtype == source_dtype
+    assert _dtype._multiplication_dtype.cache_info().hits == 1
 
 
 def test_cache_ignores_values_but_not_weakness():
     with jax.enable_x64(False), jax.numpy_dtype_promotion("standard"):
-        _dtype._binary_type.cache_clear()
-        source = jnp.ones(3, dtype=jnp.float16)
+        _dtype._multiplication_dtype.cache_clear()
         for factor in (0.0, 1.0, -0.0, float("nan"), float("inf")):
-            assert _dtype.product_dtype(source, jnp.asarray(factor)) == jnp.dtype("float16")
-        assert _dtype._binary_type.cache_info().misses == 1
-        assert _dtype._binary_type.cache_info().hits == 4
-        assert _dtype.product_dtype(source, jnp.asarray(1.0, dtype=jnp.float32)) == jnp.dtype("float32")
-        assert _dtype._binary_type.cache_info().misses == 2
+            assert _dtype.normalize_coefficient(jnp.float16, factor).dtype == jnp.dtype("float16")
+        assert _dtype._multiplication_dtype.cache_info().misses == 1
+        assert _dtype._multiplication_dtype.cache_info().hits == 4
+        factor = jnp.asarray(1.0, dtype=jnp.float32)
+        assert _dtype.normalize_coefficient(jnp.float16, factor).dtype == factor.dtype
+        assert _dtype._multiplication_dtype.cache_info().misses == 2
 
 
-def test_type_resolution_accepts_traced_operands():
-    def operation(source, coefficient):
-        result_dtype = _dtype.product_dtype(source, coefficient)
-        assert result_dtype == _dtype.mapping_dtype(source.dtype, coefficient)
-        return jnp.asarray(source * coefficient, dtype=result_dtype)
-
+def test_normalization_accepts_strong_traced_coefficients():
     with jax.enable_x64(False), jax.numpy_dtype_promotion("standard"):
-        source = jnp.asarray([1, 2, 3], dtype=jnp.float16)
-        coefficient = jnp.asarray(0.5, dtype=jnp.float32)
-        result = jax.jit(operation)(source, coefficient)
-        np.testing.assert_array_equal(result, source * coefficient)
-        assert result.dtype == jnp.dtype("float32")
+        coefficient = jnp.asarray([0, 0.5, 1], dtype=jnp.float32)
+        result = jax.jit(lambda value: _dtype.normalize_coefficient(jnp.float16, value))(coefficient)
+        np.testing.assert_array_equal(result, coefficient)
+        assert result.dtype == coefficient.dtype
 
 
 @pytest.mark.parametrize("source_dtype", DTYPES)

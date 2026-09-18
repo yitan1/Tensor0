@@ -7,7 +7,7 @@ import pytest
 
 import tensor0.operations.contractions.primitives as contractions
 import tensor0.operations.transforms as transforms
-from tensor0._stride._ops._reduction import _strided_tensortrace
+from tensor0._stride._tensor_ops import _strided_tensortrace
 from tests.stride._support import native_available
 from tensor0 import (
     ComplexSpace,

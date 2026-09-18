@@ -1,3 +1,12 @@
+// Preserve uncovered output storage; an in-place batch needs no initialization.
+template <typename Result>
+void InitializeUpdateOutput(const scalar::Value<Result>* base,
+                            scalar::Value<Result>* result, uint64_t output_size) {
+  if (output_size != 0 && result != base) {
+    std::memcpy(result, base, output_size * sizeof(scalar::Value<Result>));
+  }
+}
+
 template <typename Result, typename Alpha, typename Beta, typename SourceMap, typename BaseMap>
 void ExecuteUpdateRecord(
     const layout::Record& record,
@@ -51,6 +60,7 @@ void ExecuteUpdateRecord(
   }
 }
 
+// Synchronously execute one complete batch, including output initialization.
 template <typename Result, typename Alpha, typename Beta, typename SourceMap, typename BaseMap>
 void ExecuteUpdate(
     const std::vector<layout::Record>& records,
@@ -59,9 +69,7 @@ void ExecuteUpdate(
     uint64_t output_size, scalar::Value<Alpha> alpha, scalar::Value<Beta> beta,
     const SourceMap& source_map, const BaseMap& base_map) {
   static_assert(std::is_same_v<typename BaseMap::InputDtype, Result>);
-  if (output_size != 0 && result != base) {
-    std::memcpy(result, base, output_size * sizeof(scalar::Value<Result>));
-  }
+  InitializeUpdateOutput<Result>(base, result, output_size);
   for (const auto& record : records) {
     if (layout::ElementCount(record) == 0) continue;
     const auto program = layout::CompileGeneratedRecord(
@@ -74,6 +82,7 @@ void ExecuteUpdate(
   }
 }
 
+// Synchronously execute complete batches, initializing each output exactly once.
 template <typename Result, typename Alpha, typename Beta, typename SourceMap, typename BaseMap>
 void ExecuteUpdateBatches(
     const std::vector<layout::Record>& records,

@@ -1,4 +1,4 @@
-"""Packed affine transforms with separate layout and coefficient operands."""
+"""Packed tensor transforms and trace with separate layout and coefficients."""
 
 from collections.abc import Iterable
 from math import prod
@@ -8,10 +8,10 @@ from jax import Array
 import jax.numpy as jnp
 from jax.typing import DTypeLike
 
-from ... import _native
-from .._dtype import normalize_coefficient
-from .._jax import accumulation_p, copy_p, update_p
-from .._layout import AffineRecord, contiguous_strides
+from .. import _native
+from ._dtype import normalize_coefficient
+from ._jax import accumulation_p, copy_p, reduction_p, update_p
+from ._layout import AffineRecord, contiguous_strides
 
 
 def _strided_affine_transform(
@@ -191,4 +191,90 @@ def _strided_grouped_transform(
         return update_p.bind(arena, result, jnp.int32(1), jnp.int32(0), records=tuple(unpack_records))
     return copy_p.bind(
         arena, records=tuple(unpack_records), output_size=destination_layout.total_dim, dtype=result_dtype,
+    )
+
+
+def _strided_tensortrace(
+    source: Array, *, destination_size: int,
+    source_subblocks: tuple[_native.SubblockStructure, ...],
+    destination_subblocks: tuple[_native.SubblockStructure, ...],
+    entries: Iterable[tuple[int, int, object]], result_dtype: DTypeLike,
+    permutation: tuple[int, ...], num_open_out: int, num_open_in: int, trace_count: int,
+) -> Array:
+    """Submit packed trace contributions through one native reduction call.
+
+    Paired-axis strides are added as in the old trace producer. Layout bytes and
+    scalar coefficient operands remain separate; None and one omit scaling,
+    while zero skips the contribution. Weak coefficients use source-based JAX resolution.
+    Native mixed arithmetic and cross-record writeback, not legacy preconversion
+    or record-local partial sums, define the numerical contract. Source AD supports
+    same-kind floating/complex changes and F16/BF16/F32/F64/C64/C128 real/complex crossings.
+    Coefficient AD requires F16/BF16/F32/F64/C64/C128 results and differentiated
+    coefficients; fixed source storage may also be integer/bool. Fixed coefficients
+    retain their dtypes. Conjugation and production routing are not introduced
+    by this adapter.
+    """
+    if not isinstance(source, (Array, jax.core.Tracer)):
+        raise TypeError("trace source must be a JAX Array or Tracer")
+    if source.ndim == 0:
+        raise ValueError("trace source requires a storage dimension")
+    counts = (num_open_out, num_open_in, trace_count)
+    if any(type(count) is not int or count < 0 for count in counts):
+        raise ValueError("trace axis counts must be nonnegative integers")
+    rank = num_open_out + num_open_in + 2 * trace_count
+    if permutation and (any(type(axis) is not int for axis in permutation)
+                        or sorted(permutation) != list(range(rank))):
+        raise ValueError("trace permutation must contain each source axis once")
+    open_rank = num_open_out + num_open_in
+    domain_open_start = num_open_out + trace_count
+    trace_output_start = domain_open_start + num_open_in
+    open_axes = (*range(num_open_out), *range(domain_open_start, trace_output_start))
+    records = []
+    output_shapes = []
+    reduction_axes = []
+    coefficients = []
+    coefficient_records = []
+    for record_index, (source_index, destination_index, coefficient) in enumerate(entries):
+        if (type(source_index) is not int or not 0 <= source_index < len(source_subblocks)
+                or type(destination_index) is not int
+                or not 0 <= destination_index < len(destination_subblocks)):
+            raise ValueError("trace subblock index is out of bounds")
+        source_subblock = source_subblocks[source_index]
+        destination_subblock = destination_subblocks[destination_index]
+        source_sizes = tuple(source_subblock.sizes)
+        source_strides = tuple(source_subblock.strides)
+        if len(source_sizes) != rank or len(source_strides) != rank:
+            raise ValueError("trace source subblock rank is inconsistent")
+        if permutation:
+            source_sizes = tuple(source_sizes[axis] for axis in permutation)
+            source_strides = tuple(source_strides[axis] for axis in permutation)
+        logical_shape = tuple(source_sizes[axis] for axis in open_axes)
+        logical_source_strides = tuple(source_strides[axis] for axis in open_axes)
+        for trace_index in range(trace_count):
+            left_axis = num_open_out + trace_index
+            right_axis = trace_output_start + trace_index
+            if source_sizes[left_axis] != source_sizes[right_axis]:
+                raise ValueError("trace source subblock axes have inconsistent sizes")
+            logical_shape += (source_sizes[left_axis],)
+            logical_source_strides += (source_strides[left_axis] + source_strides[right_axis],)
+        destination_sizes = tuple(destination_subblock.sizes)
+        if logical_shape[:open_rank] != destination_sizes:
+            raise ValueError("trace destination subblock shape is inconsistent")
+        records.append(AffineRecord(
+            logical_shape, logical_source_strides, source_subblock.offset,
+            tuple(destination_subblock.strides) + (1,) * trace_count,
+            destination_subblock.offset,
+        ))
+        output_shapes.append(destination_sizes + (1,) * trace_count)
+        reduction_axes.append((False,) * open_rank + (True,) * trace_count)
+        if coefficient is not None:
+            factor = normalize_coefficient(source.dtype, coefficient)
+            if factor.ndim != 0:
+                raise ValueError("trace coefficients must be scalars shared across storage batches")
+            coefficients.append(factor)
+            coefficient_records.append(record_index)
+    return reduction_p.bind(
+        source, *coefficients, coefficient_records=tuple(coefficient_records),
+        records=tuple(records), output_shapes=tuple(output_shapes), reduction_axes=tuple(reduction_axes),
+        output_size=destination_size, dtype=jax.dtypes.canonicalize_dtype(result_dtype),
     )

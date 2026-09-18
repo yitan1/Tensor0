@@ -20,6 +20,7 @@ ffi::Future ExecuteMapTasks(
           record, true, true, source_item_size, result_item_size);
       layout::AppendGeneratedSubdomains(program, workers, &programs);
     }
+    // Initialize the complete batch once, before any subdomain can write.
     initialize();
     const auto count = programs.size();
     return ExecuteTasks(thread_pool, count, workers,
@@ -42,7 +43,7 @@ ffi::Future ExecuteCopyBatches(
     uint64_t source_size, uint64_t output_size, uint64_t batch_count) {
   if (batch_count == 1 && output_size != 0) {
     return ExecuteMapTasks(thread_pool, records, sizeof(*source), sizeof(*result),
-        [=] { std::fill_n(result, output_size, scalar::Value<Result>{}); },
+        [=] { InitializeCopyOutput<Result>(result, output_size); },
         [=](const auto& record) { ExecuteCopyRecord<Source, Result>(record, source, result); });
   }
   return ExecuteBatchTasks(thread_pool, batch_count, output_size,
@@ -65,9 +66,7 @@ ffi::Future ExecuteUpdateTasks(
     SourceMap source_map, BaseMap base_map) {
   if (batch_count == 1 && output_size != 0) {
     return ExecuteMapTasks(thread_pool, records, sizeof(*source), sizeof(*result),
-        [=] {
-          if (result != base) std::memcpy(result, base, output_size * sizeof(*result));
-        },
+        [=] { InitializeUpdateOutput<Result>(base, result, output_size); },
         [=, alpha_value = *alpha, beta_value = *beta](const auto& record) {
           ExecuteUpdateRecord<Result, Alpha, Beta>(
               record, source, base, result, alpha_value, beta_value, source_map, base_map);

@@ -8,7 +8,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from tensor0._stride._ops import _transform
+from tensor0._stride import _tensor_ops as _transform
 
 from ._support import native_available
 

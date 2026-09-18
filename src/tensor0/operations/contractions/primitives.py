@@ -7,7 +7,7 @@ from typing import TypeAlias, cast
 import jax.numpy as jnp
 
 from ... import _native
-from ..._stride._ops._reduction import _strided_tensortrace
+from ..._stride._tensor_ops import _strided_tensortrace
 from ...structure.layout import get_degeneracystructure, get_sectorstructure
 from ...structure.spaces import hom, sector_spec, storage_dim
 from ...tensor.dense import _trivial_dense_array

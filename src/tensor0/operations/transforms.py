@@ -9,7 +9,7 @@ from jax import Array
 import jax.numpy as jnp
 
 from .. import _native
-from .._stride._ops._transform import _strided_affine_transform, _strided_tree_transform
+from .._stride._tensor_ops import _strided_affine_transform, _strided_tree_transform
 from ..structure.layout import (
     _sectorstructure_key,
     get_degeneracystructure,

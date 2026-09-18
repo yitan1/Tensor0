@@ -1,3 +1,9 @@
+// Initialize the entire batch, never an individual record or parallel subdomain.
+template <typename Result>
+void InitializeCopyOutput(scalar::Value<Result>* result, uint64_t output_size) {
+  if (output_size != 0) std::fill_n(result, output_size, scalar::Value<Result>{});
+}
+
 template <typename Source, typename Result = Source>
 void ExecuteCopyRecord(const layout::Record& record, const scalar::Value<Source>* source,
                        scalar::Value<Result>* result) {
@@ -9,10 +15,11 @@ void ExecuteCopyRecord(const layout::Record& record, const scalar::Value<Source>
   }
 }
 
+// Synchronously execute one complete batch, including output initialization.
 template <typename Source, typename Result = Source>
 void ExecuteCopy(const std::vector<layout::Record>& records, const scalar::Value<Source>* source,
                  scalar::Value<Result>* result, uint64_t output_size) {
-  if (output_size != 0) std::fill_n(result, output_size, scalar::Value<Result>{});
+  InitializeCopyOutput<Result>(result, output_size);
   for (const auto& record : records) {
     if (layout::ElementCount(record) == 0) continue;
     const auto program = layout::CompileGeneratedRecord(

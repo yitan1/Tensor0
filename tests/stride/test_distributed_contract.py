@@ -180,8 +180,8 @@ def run_transform(mode):
     from tensor0.structure import get_degeneracystructure
     import tensor0.operations.transforms as transforms
     import tensor0.operations.contractions.primitives as contractions
-    from tensor0._stride._ops._transform import _strided_affine_transform, _strided_tree_transform
-    from tensor0._stride._ops._reduction import _strided_tensortrace
+    from tensor0._stride._tensor_ops import _strided_affine_transform, _strided_tree_transform
+    from tensor0._stride._tensor_ops import _strided_tensortrace
     from tests.stride.test_grouped_transform_contract import oracle
 
     jax.config.update("jax_enable_x64", True)

@@ -65,7 +65,10 @@ def test_map_and_axis_reduction_still_reject_overlap():
     layout = encode_layout((OVERLAP,), source_size=4, output_size=5)
     with pytest.raises(Exception, match='injective'):
         execute_copy(jnp.ones(4), layout=layout, output_size=5).block_until_ready()
-    axis_layout = encode_reduction_layout(source_shape=(2, 2), source_strides=(1, 2), source_offset=0, output_shape=(2, 2), output_strides=(1, 1), output_offset=1, reduction_axes=(False, False), source_size=4, output_size=5)
+    axis_layout = encode_reduction_layout(
+        (AffineRecord((2, 2), (1, 2), 0, (1, 1), 1),),
+        output_shapes=((2, 2),), reduction_axes=((False, False),),
+        source_size=4, output_size=5)
     with pytest.raises(Exception, match='injective'):
         jax.ffi.ffi_call(operation_target('reduction', jnp.dtype('float32')), jax.ShapeDtypeStruct((1, 5), jnp.float32))(jnp.ones((1, 4)), layout=axis_layout, coefficient_records=np.asarray([], np.int64)).block_until_ready()
 

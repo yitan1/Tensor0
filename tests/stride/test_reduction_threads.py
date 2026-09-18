@@ -9,7 +9,7 @@ import pytest
 
 from tensor0._stride import StridedView, dotu, reduce_sum, enable_threads, get_num_threads, set_num_threads
 from tensor0._stride._ffi._calls import execute_accumulation, execute_dot, execute_reduction
-from tensor0._stride._ffi._descriptor import encode_layout, encode_reduction_layout, merge_reduction_layouts
+from tensor0._stride._ffi._descriptor import encode_layout, encode_reduction_layout
 from tensor0._stride._layout import AffineRecord
 from ._support import native_available
 
@@ -33,18 +33,15 @@ def restore_worker_limit():
 def _encode_thread_layout(accumulation, records, source_size, output_size):
     if accumulation:
         return encode_layout(records, source_size=source_size, output_size=output_size)
-    layouts = []
-    for record in records:
-        axes = tuple(stride == 0 for stride in record.destination_strides)
-        layouts.append(encode_reduction_layout(
-            source_shape=record.logical_shape, source_strides=record.source_strides,
-            source_offset=record.source_offset,
-            output_shape=tuple(1 if reduced else extent for extent, reduced in zip(record.logical_shape, axes)),
-            output_strides=tuple(stride or 1 for stride in record.destination_strides),
-            output_offset=record.destination_offset, reduction_axes=axes,
-            source_size=source_size, output_size=output_size,
-        ))
-    return merge_reduction_layouts(tuple(layouts), source_size=source_size, output_size=output_size)
+    axes = tuple(tuple(stride == 0 for stride in record.destination_strides) for record in records)
+    return encode_reduction_layout(
+        tuple(AffineRecord(record.logical_shape, record.source_strides, record.source_offset,
+                           tuple(stride or 1 for stride in record.destination_strides),
+                           record.destination_offset) for record in records),
+        output_shapes=tuple(tuple(1 if reduced else extent for extent, reduced in zip(record.logical_shape, flags))
+                            for record, flags in zip(records, axes)),
+        reduction_axes=axes, source_size=source_size, output_size=output_size,
+    )
 
 
 BATCH_BATCHES = 17
@@ -106,7 +103,7 @@ def test_batch_parallel_coefficients(accumulation, dtype, factor_dtype, batch_sh
 @pytest.mark.parametrize("batches,source_size,output_size", [(0, BATCH_SIZE, BATCH_SIZE), (17, 0, BATCH_SIZE), (17, BATCH_SIZE, 0)])
 def test_batch_empty_initialization(accumulation, batches, source_size, output_size):
     layout = (encode_layout((), source_size=source_size, output_size=output_size) if accumulation else
-              merge_reduction_layouts((), source_size=source_size, output_size=output_size))
+              encode_reduction_layout((), output_shapes=(), reduction_axes=(), source_size=source_size, output_size=output_size))
     operation = execute_accumulation if accumulation else execute_reduction
     result = jax.jit(lambda source: operation(source, layout=layout, output_size=output_size))(
         jnp.ones((batches, source_size), dtype=jnp.float32))

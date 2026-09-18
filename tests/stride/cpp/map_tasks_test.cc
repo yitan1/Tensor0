@@ -161,6 +161,55 @@ void CheckEmptyAndBatchScheduling() {
   }
 }
 
+void CheckBatchInitialization() {
+  constexpr uint64_t size = 65536, batches = 7;
+  const auto record = layout::BuildLayout({3}, {1}, 1, {2}, 2, size, size, 0);
+  for (int64_t threads : {1, 4}) {
+    for (bool empty : {false, true}) {
+      const std::vector<layout::Record> records = empty
+          ? std::vector<layout::Record>{} : std::vector<layout::Record>{record};
+      testing::ThreadPool pool(threads);
+      std::vector<float> source(batches * size), base(batches * size);
+      std::vector<float> copied(batches * size, 99), expected_copy(batches * size, 0);
+      std::array<float, batches> alpha{}, beta{};
+      for (uint64_t batch = 0; batch < batches; ++batch) {
+        alpha[batch] = batch % 3;
+        beta[batch] = (batch + 1) % 3;
+        for (uint64_t index = 0; index < size; ++index) {
+          source[batch * size + index] = batch + index % 17;
+          base[batch * size + index] = batch + index % 13;
+        }
+        if (!empty) {
+          for (uint64_t index = 0; index < 3; ++index) {
+            expected_copy[batch * size + 2 + 2 * index] = source[batch * size + 1 + index];
+          }
+        }
+      }
+      Complete(pool, native::ExecuteCopyBatches<scalar::F32, scalar::F32>(
+          pool.get(), records, source.data(), copied.data(), size, size, batches), threads == 4);
+      assert(copied == expected_copy);
+      auto expected = base;
+      if (!empty) {
+        for (uint64_t batch = 0; batch < batches; ++batch) {
+          for (uint64_t index = 0; index < 3; ++index) {
+            const auto destination = batch * size + 2 + 2 * index;
+            expected[destination] = alpha[batch] * expected_copy[destination] +
+                                    beta[batch] * base[destination];
+          }
+        }
+      }
+      for (bool alias : {false, true}) {
+        auto result = alias ? base : std::vector<float>(batches * size, 99);
+        Complete(pool, native::ExecuteUpdateTasks<scalar::F32, scalar::F32, scalar::F32>(
+            pool.get(), records, source.data(), alias ? result.data() : base.data(),
+            result.data(), size, size, batches, alpha.data(), batches, beta.data(), batches,
+            expression::Identity<scalar::F32>{}, expression::Identity<scalar::F32>{}), threads == 4);
+        assert(result == expected);
+      }
+    }
+  }
+}
+
 void CheckWorkerLimit() {
   constexpr uint64_t size = UINT64_C(1) << 20;
   const auto record = layout::BuildLayout({size}, {1}, 0, {1}, 0, size, size, 0);
@@ -170,15 +219,15 @@ void CheckWorkerLimit() {
     const auto workers = std::min<uint64_t>(4, limit);
     assert(native::AvailableWorkerCount(pool.get()) == workers);
     std::atomic<uint64_t> visited{0};
-    bool initialized = false;
+    int initializations = 0;
     auto future = native::ExecuteMapTasks(pool.get(), {record}, 4, 4,
-        [&] { initialized = true; }, [&](const auto& domain) {
-          assert(initialized);
+        [&] { ++initializations; }, [&](const auto& domain) {
+          assert(initializations == 1);
           visited.fetch_add(layout::ElementCount(domain));
         });
     assert(pool.tasks.size() == (workers == 1 ? 0 : workers));
     Complete(pool, std::move(future), workers > 1);
-    assert(visited == size);
+    assert(visited == size && initializations == 1);
     visited = 0;
     auto batches = native::ExecuteBatchTasks(pool.get(), 9, size,
         [&](auto, auto count) { visited.fetch_add(count); });
@@ -191,6 +240,7 @@ void CheckWorkerLimit() {
 
 int main() {
   CheckWorkerLimit();
+  CheckBatchInitialization();
   CheckCopyAndUpdate();
   CheckAliasedStorageAndLifetime();
   CheckEmptyAndBatchScheduling();

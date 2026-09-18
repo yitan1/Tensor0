@@ -41,8 +41,8 @@ from tensor0 import (
     twist,
 )
 from tensor0._stride import StridedView, add, materialize
-from tensor0._stride._ops import _transform
-from tensor0._stride._ops._transform import _strided_affine_transform, _strided_tree_transform
+from tensor0._stride import _tensor_ops as _transform
+from tensor0._stride._tensor_ops import _strided_affine_transform, _strided_tree_transform
 from tests.stride._support import native_available
 from tensor0.structure import get_degeneracystructure, get_sectorstructure
 from tests.cases import (
