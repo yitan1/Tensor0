@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+from dataclasses import FrozenInstanceError
+from math import prod
+
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
 
 from tensor0._stride import StridedView, materialize
+from tensor0._stride._layout import INT64_MAX, INT64_MIN, UINT64_MAX, contiguous_strides
 
 
 def _addresses(view: StridedView) -> list[int]:
@@ -37,6 +41,8 @@ def test_strided_view_binds_jax_data_and_affine_metadata() -> None:
     assert view.batch_shape == (2,)
     with pytest.raises(TypeError, match="unhashable"):
         hash(view)
+    with pytest.raises(FrozenInstanceError):
+        view.offset = 0
 
 
 def test_strided_view_from_dense_preserves_batch_and_logical_order() -> None:
@@ -66,6 +72,10 @@ def test_strided_view_rejects_non_jax_and_out_of_bounds_data() -> None:
         StridedView(jnp.arange(8), (3,), (2,), 4)
     with pytest.raises(ValueError, match="offset exceeds storage size"):
         StridedView(jnp.arange(8), (0,), (1,), 9)
+    with pytest.raises(ValueError, match="at least one storage axis"):
+        StridedView(jnp.asarray(1), (), (), 0)
+    with pytest.raises(ValueError, match="dense data shape"):
+        StridedView.from_dense(jnp.arange(4), (3,))
 
 
 def test_strided_view_is_a_pytree_with_only_data_as_dynamic_child() -> None:
@@ -168,3 +178,147 @@ def test_strided_view_can_flow_as_a_jitted_pytree_argument() -> None:
     actual = jax.jit(lambda value: value.data + value.offset)(view)
 
     np.testing.assert_array_equal(actual, data + 2)
+
+
+@pytest.mark.parametrize("leaf", [object(), None, jax.ShapeDtypeStruct((12,), jnp.float32)])
+def test_pytree_rebuild_accepts_metadata_without_relaxing_constructor(leaf) -> None:
+    view = StridedView(jnp.arange(12, dtype=jnp.float32), (2, 3), (1, 4), 2)
+    _, tree = jax.tree.flatten(view)
+    rebuilt = jax.tree.unflatten(tree, [leaf])
+    assert isinstance(rebuilt, StridedView)
+    assert rebuilt.data is leaf
+    assert (rebuilt.sizes, rebuilt.strides, rebuilt.offset) == ((2, 3), (1, 4), 2)
+    with pytest.raises(FrozenInstanceError):
+        rebuilt.offset = 0
+    with pytest.raises(TypeError, match="data must be a JAX Array"):
+        StridedView(leaf, view.sizes, view.strides, view.offset)
+
+
+def test_view_lower_compile_and_eval_shape() -> None:
+    view = StridedView(jnp.arange(12, dtype=jnp.float32), (2, 3), (1, 4), 2)
+
+    def transform(value):
+        return value._with_data(value.data + 1)
+
+    actual = jax.jit(transform).lower(view).compile()(view)
+    np.testing.assert_array_equal(actual.data, view.data + 1)
+    assert (actual.sizes, actual.strides, actual.offset) == ((2, 3), (1, 4), 2)
+    abstract = jax.eval_shape(transform, view)
+    assert isinstance(abstract, StridedView)
+    assert isinstance(abstract.data, jax.ShapeDtypeStruct)
+    assert abstract.data.shape == view.data.shape
+    assert abstract.data.dtype == view.data.dtype
+    assert (abstract.sizes, abstract.strides, abstract.offset) == (view.sizes, view.strides, view.offset)
+
+
+@pytest.mark.parametrize("shape,expected", [
+    ((), ()), ((4,), (1,)), ((2, 3), (3, 1)),
+    ((2, 0, 3), (3, 3, 1)), ((0, 0), (1, 1)), ((1,) * 12, (1,) * 12),
+])
+def test_contiguous_strides(shape, expected) -> None:
+    assert contiguous_strides(shape) == expected
+
+
+@pytest.mark.parametrize("storage_shape,sizes,strides,offset", [
+    ((12,), (3,), (-2,), 8),
+    ((1,), (3, 4), (0, 0), 0),
+    ((1,), (), (), 0),
+    ((0,), (0,), (INT64_MIN,), 0),
+    ((3,), (0,), (INT64_MAX,), 3),
+    ((1,), (1,) * 12, (INT64_MAX,) * 12, 0),
+    ((1,), (UINT64_MAX,), (0,), 0),
+])
+def test_view_metadata_boundaries(storage_shape, sizes, strides, offset) -> None:
+    data = jnp.arange(prod(storage_shape), dtype=jnp.float32).reshape(storage_shape)
+    view = StridedView(data, sizes, strides, offset)
+    assert view.data is data
+    assert (view.sizes, view.strides, view.offset) == (sizes, strides, offset)
+    assert view.rank == len(sizes)
+    assert view.element_count == prod(sizes)
+    assert view.storage_size == storage_shape[-1]
+    assert view.batch_shape == storage_shape[:-1]
+
+
+@pytest.mark.parametrize("sizes,strides,offset,error", [
+    ([2], (1,), 0, TypeError),
+    ((True,), (1,), 0, TypeError),
+    ((-1,), (1,), 0, ValueError),
+    ((UINT64_MAX + 1,), (0,), 0, ValueError),
+    ((2,), [1], 0, TypeError),
+    ((2,), (False,), 0, TypeError),
+    ((1,), (INT64_MIN - 1,), 0, ValueError),
+    ((1,), (INT64_MAX + 1,), 0, ValueError),
+    ((2,), (), 0, ValueError),
+    ((1,), (1,), True, TypeError),
+    ((1,), (1,), -1, ValueError),
+    ((0,), (1,), UINT64_MAX + 1, ValueError),
+    ((2,), (-1,), 0, ValueError),
+])
+def test_invalid_view_metadata(sizes, strides, offset, error) -> None:
+    with pytest.raises(error):
+        StridedView(jnp.arange(8), sizes, strides, offset)
+
+
+@pytest.mark.parametrize("shape,sizes,storage_shape", [
+    ((2, 12), (3, 4), (2, 12)),
+    ((), (), (1,)),
+    ((2, 0, 3), (0, 3), (2, 0)),
+])
+def test_from_dense_flat_scalar_and_empty_layouts(shape, sizes, storage_shape) -> None:
+    data = jnp.arange(prod(shape), dtype=jnp.float32).reshape(shape)
+    view = StridedView.from_dense(data, sizes)
+    assert view.data.shape == storage_shape
+    assert (view.sizes, view.strides, view.offset) == (sizes, contiguous_strides(sizes), 0)
+    np.testing.assert_array_equal(view.data, np.asarray(data).reshape(storage_shape))
+
+
+@pytest.mark.parametrize("indices", [(-1, -2), (slice(0, 0), slice(None))])
+def test_negative_index_and_empty_subview(indices) -> None:
+    view = StridedView(jnp.arange(30), (3, 4), (4, 1), 2)
+    actual = view.subview(*indices)
+    expected = np.asarray(_addresses(view)).reshape(view.sizes)[indices]
+    assert actual.data is view.data
+    assert actual.sizes == expected.shape
+    np.testing.assert_array_equal(np.asarray(_addresses(actual)).reshape(actual.sizes), expected)
+
+
+@pytest.mark.parametrize("sizes,strides,new_sizes", [
+    ((1, 1), (INT64_MAX, INT64_MIN), ()),
+    ((2, 3), (0, 0), (6,)),
+])
+def test_singleton_and_broadcast_reshape(sizes, strides, new_sizes) -> None:
+    view = StridedView(jnp.arange(24), sizes, strides, 0)
+    actual = view.reshape(new_sizes)
+    assert actual.data is view.data
+    assert actual.sizes == new_sizes
+    assert _addresses(actual) == _addresses(view)
+
+
+@pytest.mark.parametrize("method,args,error", [
+    ("permute", ([1, 0],), TypeError),
+    ("permute", ((0, 0),), ValueError),
+    ("subview", (slice(None),), IndexError),
+    ("subview", (True, slice(None)), TypeError),
+    ("subview", (2, slice(None)), IndexError),
+    ("subview", (slice(None), 0.5), TypeError),
+    ("subview", (slice(None, None, 0), slice(None)), ValueError),
+    ("reshape", ((7,),), ValueError),
+])
+def test_invalid_view_transforms(method, args, error) -> None:
+    view = StridedView(jnp.arange(6), (2, 3), (1, 2), 0)
+    with pytest.raises(error):
+        getattr(view, method)(*args)
+
+
+def test_singleton_slice_stride_overflow() -> None:
+    view = StridedView(jnp.ones(1), (1,), (INT64_MAX,), 0)
+    with pytest.raises(ValueError, match="subview stride exceeds int64"):
+        view.subview(slice(None, None, 2))
+
+
+def test_jitted_view_permute_and_rebind() -> None:
+    view = StridedView(jnp.arange(12, dtype=jnp.float32), (2, 3), (1, 4), 2)
+    actual = jax.jit(lambda value: value.permute((1, 0))._with_data(value.data + 1))(view)
+    assert isinstance(actual, StridedView)
+    assert (actual.sizes, actual.strides, actual.offset) == ((3, 2), (4, 1), 2)
+    np.testing.assert_array_equal(actual.data, view.data + 1)

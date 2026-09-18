@@ -1,357 +1,184 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-from functools import lru_cache
 
 import jax
 import jax.numpy as jnp
-from jax.typing import DTypeLike
 import numpy as np
 import pytest
 
-from tensor0 import _native
-import tensor0._stride._native as native_module
-from tensor0._stride._testing import (
-    _native_alias_pointers_for_tests,
-    _reset_native_alias_pointers_for_tests,
-    native_available,
-)
-from tensor0._stride._plan import (
-    CompleteMode,
-    AffineRecord,
-    StridedOutputInit,
-    StridedScalarKind,
-    StridedWriteKind,
-    build_affine_plan,
-)
-from tensor0._stride._ops._selected_scale import _build_strided_scale_plan, _selected_scale_alias, _selected_scale_native_descriptor, build_selected_scale_plan
-from tests.stride._fixtures import execute_update_scale
+from tensor0._stride import StridedView, scale
+from tensor0._stride._ffi._descriptor import encode_layout
+from tensor0._stride._ffi._registration import operation_target
+from tensor0._stride._jax import update_p
+from tensor0._stride._layout import AffineRecord
+
+from ._support import native_available
 
 
-pytestmark = pytest.mark.skipif(
-    not native_available(),
-    reason="the Tensor0 extension was built without JAX FFI headers",
-)
+pytestmark = pytest.mark.skipif(not native_available(), reason="native CPU stride is unavailable")
 
 
-@lru_cache(maxsize=1)
-def _alias_operation_mismatch_target() -> str:
-    native_module._ensure_selected_scale_alias_registered("float32")
-    registration = _native._stride_prepared_registration()
-    target = "tensor0_stride_selected_scale_alias_operation_mismatch_for_tests"
-    jax.ffi.register_ffi_target(
-        target,
-        {
-                "instantiate": registration["instantiate"],
-            "execute": registration["execute_selected_scale_alias_f32"],
-        },
-        platform="cpu",
-        api_version=1,
-    )
-    return target
-
-
-def _call_alias_target(
-    target: str,
-    base: jax.Array,
-    factor: jax.Array,
-    descriptor: bytes,
-) -> jax.Array:
-    layout = tuple(range(base.ndim))
-    call = jax.ffi.ffi_call(
-        target,
-        jax.ShapeDtypeStruct(base.shape, base.dtype),
-        input_layouts=(layout, (0,)),
-        output_layouts=layout,
-        input_output_aliases={0: 0},
-        vmap_method="expand_dims",
-        custom_call_api_version=4,
-    )
-    attribute = np.frombuffer(descriptor, dtype=np.uint8).copy()
-    return call(base, factor, descriptor=attribute)
-
-
-def _multi_record_selected_scale_plan(
-    dtype: DTypeLike = jnp.float32,
-):
-    static = build_affine_plan(
-        records=(
-            AffineRecord((3,), (2,), 0, (2,), 0),
-            AffineRecord((2,), (2,), 1, (2,), 1),
-        ),
-        output_size=5,
-        coverage=CompleteMode.COMPLETE_UNIQUE,
-        source_size=5,
-        source_dtype=dtype,
-        result_dtype=dtype,
-        output_init=StridedOutputInit.PRESERVE_BASE,
-        write_kind=StridedWriteKind.ASSIGN,
-        scalar_kind=StridedScalarKind.STATIC_SCALE_CAST,
-    )
-    return build_selected_scale_plan(static)
-
-
-@pytest.mark.parametrize("dtype", (jnp.float32, jnp.complex64))
-def test_alias_selected_scale_primitive_covers_multi_record_batch_and_vmap(
-    dtype: DTypeLike,
-) -> None:
-    plan = _multi_record_selected_scale_plan(dtype)
+@pytest.mark.parametrize("dtype", [jnp.float32, jnp.complex64])
+@pytest.mark.parametrize("mapped", [False, True])
+def test_unified_update_multirecord_scale_batches(dtype, mapped):
+    records = (AffineRecord((3,), (2,), 0, (2,), 0), AffineRecord((2,), (2,), 1, (2,), 1))
     base = jnp.arange(20, dtype=jnp.float32).reshape(4, 5).astype(dtype)
-    if jnp.dtype(dtype) == jnp.dtype(jnp.complex64):
+    factors = jnp.asarray([1.25, -.75, .5, -1], dtype=dtype)
+    if dtype == jnp.complex64:
         base = base + 1j * (base / 7)
-        factors = jnp.asarray(
-            [1.25 - 0.5j, -0.75 + 0.25j, 0.5 + 1j, -1 - 0.5j],
-            dtype=dtype,
-        )
-    else:
-        factors = jnp.asarray([1.25, -0.75, 0.5, -1], dtype=dtype)
-    execute_alias = lambda old, factor: _selected_scale_alias(
-        old,
-        factor,
-        plan=plan,
-    )
-    execute_ordinary = lambda old, factor: execute_update_scale(
-        old,
-        factor,
-        plan=plan,
-    )
-
-    actual = jax.jit(jax.vmap(execute_alias))(base, factors)
-    expected = jax.jit(jax.vmap(execute_ordinary))(base, factors)
-
-    np.testing.assert_array_equal(np.asarray(actual), np.asarray(expected))
+        factors = factors + jnp.asarray([-.5j, .25j, 1j, -.5j], dtype=dtype)
+    operation = lambda old, factor: update_p.bind(old, old, factor, jnp.int32(0), records=records)
+    if mapped:
+        operation = jax.vmap(operation)
+    original = np.asarray(base).copy()
+    np.testing.assert_allclose(jax.jit(operation)(base, factors), base * factors[:, None], rtol=2e-6, atol=1e-6)
+    np.testing.assert_array_equal(base, original)
 
 
-def test_alias_selected_scale_primitive_matches_jvp_vjp_and_nested_ad() -> None:
-    plan = _build_strided_scale_plan((5,), (2,), 1, 12, "float32")
+def test_public_scale_batched_ad_and_nested_pullback():
     base = jnp.linspace(-2, 3, 24, dtype=jnp.float32).reshape(2, 12)
-    factor = jnp.asarray([1.25, -0.75], dtype=jnp.float32)
-    base_tangent = jnp.linspace(1, -1, 24, dtype=jnp.float32).reshape(2, 12)
-    factor_tangent = jnp.asarray([-0.5, 0.25], dtype=jnp.float32)
+    factors = jnp.asarray([1.25, -.75], dtype=jnp.float32)
+    directions = (jnp.linspace(1, -1, 24, dtype=jnp.float32).reshape(2, 12), jnp.asarray([-.5, .25]))
     cotangent = jnp.linspace(-3, 2, 24, dtype=jnp.float32).reshape(2, 12)
-    alias = lambda old, value: _selected_scale_alias(
-        old,
-        value,
-        plan=plan,
-    )
-    ordinary = lambda old, value: execute_update_scale(old, value, plan=plan)
+    native = lambda old, factor: scale(StridedView(old, (5,), (2,), 1), factor).data
+    reference = lambda old, factor: old.at[:, 1:11:2].set(old[:, 1:11:2] * factor[:, None])
 
-    alias_jvp = jax.jvp(alias, (base, factor), (base_tangent, factor_tangent))
-    ordinary_jvp = jax.jvp(
-        ordinary,
-        (base, factor),
-        (base_tangent, factor_tangent),
-    )
-    for actual, expected in zip(alias_jvp, ordinary_jvp, strict=True):
-        np.testing.assert_array_equal(np.asarray(actual), np.asarray(expected))
+    def derivatives(function, old, factor):
+        forward = jax.jvp(function, (old, factor), directions)
+        reverse = jax.vjp(function, old, factor)[1](cotangent)
+        pullback = lambda cot: jax.vjp(lambda value: function(value, factor), old)[1](cot)[0]
+        nested = jax.jvp(pullback, (cotangent,), (jnp.ones_like(cotangent),))
+        return forward, reverse, nested
 
-    _, alias_pullback = jax.vjp(alias, base, factor)
-    _, ordinary_pullback = jax.vjp(ordinary, base, factor)
-    for actual, expected in zip(
-        alias_pullback(cotangent),
-        ordinary_pullback(cotangent),
-        strict=True,
-    ):
-        np.testing.assert_array_equal(np.asarray(actual), np.asarray(expected))
-
-    alias_base_pullback = lambda value: jax.vjp(
-        lambda old: alias(old, factor),
-        base,
-    )[1](value)[0]
-    ordinary_base_pullback = lambda value: jax.vjp(
-        lambda old: ordinary(old, factor),
-        base,
-    )[1](value)[0]
-    alias_nested = jax.jvp(
-        alias_base_pullback,
-        (cotangent,),
-        (jnp.ones_like(cotangent),),
-    )
-    ordinary_nested = jax.jvp(
-        ordinary_base_pullback,
-        (cotangent,),
-        (jnp.ones_like(cotangent),),
-    )
-    for actual, expected in zip(alias_nested, ordinary_nested, strict=True):
-        np.testing.assert_array_equal(np.asarray(actual), np.asarray(expected))
+    actual = jax.jit(lambda old, factor: derivatives(native, old, factor))(base, factors)
+    expected = derivatives(reference, base, factors)
+    for result, wanted in zip(jax.tree.leaves(actual), jax.tree.leaves(expected), strict=True):
+        np.testing.assert_allclose(result, wanted, rtol=2e-6, atol=2e-6)
 
 
-def test_alias_selected_scale_primitive_donation_reuses_batched_base() -> None:
-    plan = _build_strided_scale_plan((5,), (2,), 1, 12, "float32")
-    execute = jax.jit(
-        lambda base, factor: _selected_scale_alias(
-            base,
-            factor,
-            plan=plan,
-        ),
-        donate_argnums=(0,),
-    )
+def test_donation_reuses_batched_scale_base_buffer():
     base = jnp.arange(36, dtype=jnp.float32).reshape(3, 12)
-    factor = jnp.asarray([2, -1, 0.5], dtype=jnp.float32)
-    expected = execute_update_scale(base, factor, plan=plan)
-    expected.block_until_ready()
+    factor = jnp.asarray([2, -1, .5], dtype=jnp.float32)
+    expected = np.asarray(base).copy()
+    expected[:, 1:11:2] *= np.asarray(factor)[:, None]
+    original_factor = np.asarray(factor).copy()
     pointer = base.unsafe_buffer_pointer()
-    compiled = execute.lower(base, factor).compile()
-
-    _reset_native_alias_pointers_for_tests()
+    compiled = jax.jit(lambda old, value: scale(StridedView(old, (5,), (2,), 1), value).data,
+                       donate_argnums=(0,)).lower(base, factor).compile()
     actual = compiled(base, factor)
     actual.block_until_ready()
-
-    native_base, _, native_factor, native_result = (
-        _native_alias_pointers_for_tests()
-    )
-    np.testing.assert_array_equal(np.asarray(actual), np.asarray(expected))
+    np.testing.assert_array_equal(actual, expected)
+    np.testing.assert_array_equal(factor, original_factor)
     assert base.is_deleted()
-    assert native_factor == factor.unsafe_buffer_pointer()
-    assert pointer == native_base == native_result == actual.unsafe_buffer_pointer()
+    assert actual.unsafe_buffer_pointer() == pointer
     memory = compiled.memory_analysis()
-    assert memory is not None
-    assert memory.alias_size_in_bytes == actual.nbytes
-    assert memory.temp_size_in_bytes == 0
+    assert memory is not None and memory.alias_size_in_bytes == actual.nbytes
 
 
-def test_alias_selected_scale_primitive_matches_special_complex_values() -> None:
-    plan = _build_strided_scale_plan((9,), (1,), 0, 9, "complex64")
-    base = jnp.asarray(
-        [
-            0 + 0j,
-            -0.0 + 0j,
-            complex(np.nextafter(np.float32(0), np.float32(1)), 0),
-            complex(np.inf, 1),
-            complex(-np.inf, -2),
-            complex(np.nan, 3),
-            complex(3e38, -3e38),
-            complex(1.5, -2.25),
-            complex(-7, 0.5),
-        ],
-        dtype=jnp.complex64,
-    )
-    factors = (
-        jnp.asarray(np.nan + 1j, dtype=jnp.complex64),
-        jnp.asarray(3e38 + 3e38j, dtype=jnp.complex64),
-        jnp.asarray(1.25 - 0.75j, dtype=jnp.complex64),
-    )
-    for factor in factors:
-        actual = jax.jit(
-            lambda value: _selected_scale_alias(
-                value,
-                factor,
-                plan=plan,
-            )
-        )(base)
-        expected = jax.jit(
-            lambda value: execute_update_scale(value, factor, plan=plan)
-        )(base)
-        np.testing.assert_array_equal(
-            np.asarray(actual).view(np.uint32),
-            np.asarray(expected).view(np.uint32),
-        )
+@pytest.mark.parametrize("factor", [complex(np.nan, 1), complex(3e38, 3e38), 1.25 - .75j])
+def test_donated_and_preserved_inputs_share_complex_arithmetic(factor):
+    values = jnp.asarray([
+        0j, complex(-0., 0.), complex(np.nextafter(np.float32(0), np.float32(1)), 0),
+        complex(np.inf, 1), complex(-np.inf, -2), complex(np.nan, 3),
+        complex(3e38, -3e38), 1.5 - 2.25j, -7 + .5j,
+    ], dtype=jnp.complex64)
+    coefficient = jnp.asarray(factor, dtype=jnp.complex64)
+    operation = lambda old, value: scale(StridedView(old, (9,), (1,), 0), value).data
+    expected = jax.jit(operation)(values, coefficient)
+    donated = jnp.array(values, copy=True)
+    actual = jax.jit(operation, donate_argnums=(0,))(donated, coefficient)
+    actual.block_until_ready()
+    assert donated.is_deleted()
+    for result, wanted in ((actual.real, expected.real), (actual.imag, expected.imag)):
+        np.testing.assert_allclose(result, wanted, rtol=2e-6, atol=1e-6, equal_nan=True)
 
 
-def test_alias_selected_scale_primitive_concurrent_calls_are_independent() -> None:
-    plan = _build_strided_scale_plan((32,), (2,), 0, 64, "float32")
-    execute = jax.jit(
-        lambda base, factor: _selected_scale_alias(
-            base,
-            factor,
-            plan=plan,
-        )
-    )
+@pytest.mark.parametrize("donate", [False, True])
+def test_concurrent_calls_to_one_prepared_executable_are_independent(donate):
+    operation = jax.jit(lambda old, value: scale(StridedView(old, (32,), (2,), 0), value).data,
+                        donate_argnums=(0,) if donate else ())
+    compiled = operation.lower(jax.ShapeDtypeStruct((64,), jnp.float32),
+                               jax.ShapeDtypeStruct((), jnp.float32)).compile()
 
-    def run(index: int) -> np.ndarray:
-        base = jnp.arange(64, dtype=jnp.float32) + index
-        factor = jnp.asarray(index + 1, dtype=jnp.float32)
-        return np.asarray(execute(base, factor))
+    def run(index):
+        host = np.arange(64, dtype=np.float32) + index
+        base = jnp.asarray(host)
+        result = np.asarray(compiled(base, jnp.float32(index + 1)))
+        if donate:
+            assert base.is_deleted()
+        else:
+            np.testing.assert_array_equal(base, host)
+        expected = host.copy()
+        expected[::2] *= index + 1
+        np.testing.assert_array_equal(result, expected)
+        return result
 
     with ThreadPoolExecutor(max_workers=4) as executor:
-        actual = list(executor.map(run, range(8)))
-    for index, value in enumerate(actual):
-        base = jnp.arange(64, dtype=jnp.float32) + index
-        expected = execute_update_scale(
-            base,
-            jnp.asarray(index + 1, dtype=jnp.float32),
-            plan=plan,
-        )
-        np.testing.assert_array_equal(value, np.asarray(expected))
+        results = list(executor.map(run, range(8)))
+    assert len(results) == 8
 
 
-def test_alias_selected_scale_target_requires_pointer_alias() -> None:
-    plan = _build_strided_scale_plan((8,), (1,), 0, 8, "float32")
-    descriptor = _selected_scale_native_descriptor(plan)
-    assert descriptor is not None
-    target = native_module._ensure_selected_scale_alias_registered("float32")
+@pytest.mark.parametrize("reuse_base", [False, True])
+def test_same_update_target_accepts_separate_output_and_base_reuse(reuse_base):
+    records = (AffineRecord((3,), (2,), 0, (2,), 1),)
+    layout = encode_layout(records, source_size=8, output_size=8)
     call = jax.ffi.ffi_call(
-        target,
-        jax.ShapeDtypeStruct((8,), jnp.float32),
-        input_layouts=((0,), (0,)),
-        output_layouts=(0,),
-        vmap_method="expand_dims",
-        custom_call_api_version=4,
+        operation_target("update", np.dtype(jnp.float32)), jax.ShapeDtypeStruct((2, 8), jnp.float32),
+        input_output_aliases={1: 0} if reuse_base else {},
     )
-    base = jnp.arange(8, dtype=jnp.float32)
-    factor = jnp.asarray([2], dtype=jnp.float32)
-    attribute = np.frombuffer(descriptor, dtype=np.uint8).copy()
-
-    with pytest.raises(Exception, match="requires base/result pointer equality"):
-        call(base, factor, descriptor=attribute).block_until_ready()
-
-
-def test_alias_selected_scale_target_rejects_mutated_descriptor() -> None:
-    plan = _build_strided_scale_plan((8,), (1,), 0, 8, "float32")
-    descriptor = _selected_scale_native_descriptor(plan)
-    assert descriptor is not None
-    mutated = bytearray(descriptor)
-    mutated[0] ^= 0xFF
-    target = native_module._ensure_selected_scale_alias_registered("float32")
-
-    with pytest.raises(Exception, match="descriptor magic mismatch"):
-        _call_alias_target(
-            target,
-            jnp.arange(8, dtype=jnp.float32),
-            jnp.asarray([2], dtype=jnp.float32),
-            bytes(mutated),
-        ).block_until_ready()
+    operation = jax.jit(lambda source, base, alpha, beta: call(source, base, alpha, beta, layout=layout),
+                        donate_argnums=(1,) if reuse_base else ())
+    source = jnp.arange(16, dtype=jnp.float32).reshape(2, 8)
+    base = jnp.arange(16, dtype=jnp.float32).reshape(2, 8) + 20
+    original_source, original_base = np.asarray(source).copy(), np.asarray(base).copy()
+    expected = original_base.copy()
+    expected[:, 1:6:2] = 2 * original_source[:, :5:2] - original_base[:, 1:6:2]
+    pointer = base.unsafe_buffer_pointer()
+    actual = operation(source, base, jnp.float32(2), jnp.float32(-1))
+    actual.block_until_ready()
+    np.testing.assert_array_equal(actual, expected)
+    np.testing.assert_array_equal(source, original_source)
+    if reuse_base:
+        assert base.is_deleted() and actual.unsafe_buffer_pointer() == pointer
+    else:
+        np.testing.assert_array_equal(base, original_base)
 
 
-def test_alias_selected_scale_target_rejects_descriptor_dtype_mismatch() -> None:
-    plan = _build_strided_scale_plan((8,), (1,), 0, 8, "float32")
-    descriptor = _selected_scale_native_descriptor(plan)
-    assert descriptor is not None
-    target = native_module._ensure_selected_scale_alias_registered("complex64")
-
-    with pytest.raises(Exception, match="descriptor dtype does not match"):
-        _call_alias_target(
-            target,
-            jnp.arange(8, dtype=jnp.float32).astype(jnp.complex64),
-            jnp.asarray([2], dtype=jnp.complex64),
-            descriptor,
-        ).block_until_ready()
+@pytest.mark.parametrize("factor", [0, 2])
+def test_update_rejects_source_only_alias_even_for_zero_contribution(factor):
+    layout = encode_layout((AffineRecord((8,), (1,), 0, (1,), 0),), source_size=8, output_size=8)
+    call = jax.ffi.ffi_call(operation_target("update", np.dtype(jnp.float32)),
+                            jax.ShapeDtypeStruct((1, 8), jnp.float32), input_output_aliases={0: 0})
+    source = jnp.arange(8, dtype=jnp.float32).reshape(1, 8)
+    base = source + 20
+    with pytest.raises(Exception, match="unsupported source/result alias"):
+        call(source, base, jnp.float32(factor), jnp.float32(0), layout=layout).block_until_ready()
+    np.testing.assert_array_equal(source, np.arange(8).reshape(1, 8))
+    np.testing.assert_array_equal(base, np.arange(8).reshape(1, 8) + 20)
 
 
-def test_alias_selected_scale_target_rejects_storage_size_mismatch() -> None:
-    plan = _build_strided_scale_plan((8,), (1,), 0, 8, "float32")
-    descriptor = _selected_scale_native_descriptor(plan)
-    assert descriptor is not None
-    target = native_module._ensure_selected_scale_alias_registered("float32")
-
-    with pytest.raises(Exception, match="storage size does not match descriptor"):
-        _call_alias_target(
-            target,
-            jnp.arange(9, dtype=jnp.float32),
-            jnp.asarray([2], dtype=jnp.float32),
-            descriptor,
-        ).block_until_ready()
-
-
-def test_alias_selected_scale_target_rejects_prepared_operation_mismatch() -> None:
-    plan = _build_strided_scale_plan((8,), (1,), 0, 8, "float32")
-    descriptor = _selected_scale_native_descriptor(plan)
-    assert descriptor is not None
-
-    with pytest.raises(Exception, match="operation does not match FFI target"):
-        _call_alias_target(
-            _alias_operation_mismatch_target(),
-            jnp.arange(8, dtype=jnp.float32),
-            jnp.asarray([2], dtype=jnp.float32),
-            descriptor,
-        ).block_until_ready()
+@pytest.mark.parametrize("invalid", ["version", "truncated", "storage_size", "buffer_dtype"])
+def test_update_ffi_validation_with_base_alias(invalid):
+    layout = encode_layout((AffineRecord((8,), (1,), 0, (1,), 0),), source_size=8, output_size=8)
+    dtype, shape = jnp.float32, (1, 8)
+    if invalid == "version":
+        layout[0] = 99
+        message = "unsupported native layout version"
+    elif invalid == "truncated":
+        layout = layout[:-1]
+        message = "layout rank exceeds descriptor length"
+    elif invalid == "storage_size":
+        shape = (1, 9)
+        message = "buffer dimensions do not match layout"
+    else:
+        dtype = jnp.complex64
+        message = "dtype|element type"
+    call = jax.ffi.ffi_call(operation_target("update", np.dtype(jnp.float32)),
+                            jax.ShapeDtypeStruct(shape, dtype), input_output_aliases={1: 0})
+    source = jnp.arange(shape[-1], dtype=jnp.float32).reshape(shape).astype(dtype)
+    base = source + 20
+    with pytest.raises(Exception, match=message):
+        call(source, base, jnp.float32(2), jnp.float32(0), layout=layout).block_until_ready()
+    np.testing.assert_array_equal(source, np.arange(shape[-1]).reshape(shape))
+    np.testing.assert_array_equal(base, np.arange(shape[-1]).reshape(shape) + 20)

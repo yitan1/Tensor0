@@ -1,94 +1,32 @@
-"""Explicit materialization of immutable affine views."""
+"""Materialize a view through the native CPU copy/conversion path."""
 
-from __future__ import annotations
-
-from functools import lru_cache
-from math import prod
-
+import jax
 from jax import Array
-import jax.numpy as jnp
 from jax.typing import DTypeLike
 
-from .._map import _execute_map
-from .._plan import (
-    CompleteMode,
-    AffinePlan,
-    AffineRecord,
-    build_affine_plan,
-    contiguous_strides,
-)
+from .._jax import copy_p
+from .._layout import AffineRecord, contiguous_strides
 from .._view import StridedView
 
 
-@lru_cache(maxsize=1_024)
-def build_materialize_plan(
-    *,
-    sizes: tuple[int, ...],
-    strides: tuple[int, ...],
-    offset: int,
-    source_size: int,
-    source_dtype: DTypeLike,
-    result_dtype: DTypeLike,
-) -> AffinePlan:
-    """Build one certified affine map into a fresh compact destination."""
+def materialize(view: StridedView, *, dtype: DTypeLike | None = None) -> Array:
+    """Copy selected values into compact storage, converting at each write.
 
-    destination_strides = contiguous_strides(sizes)
-    record = AffineRecord(
-        logical_shape=sizes,
-        source_strides=strides,
-        source_offset=offset,
-        destination_strides=destination_strides,
-        destination_offset=0,
-    )
-    return build_affine_plan(
-        records=(record,),
-        output_size=prod(sizes),
-        coverage=CompleteMode.COMPLETE_UNIQUE,
-        source_size=source_size,
-        source_dtype=source_dtype,
-        result_dtype=result_dtype,
-    )
-
-
-def _execute_materialize(
-    data: Array,
-    *,
-    sizes: tuple[int, ...],
-    strides: tuple[int, ...],
-    offset: int,
-    result_dtype: DTypeLike,
-) -> Array:
-    plan = build_materialize_plan(
-        sizes=sizes,
-        strides=strides,
-        offset=offset,
-        source_size=data.shape[-1],
-        source_dtype=data.dtype,
-        result_dtype=result_dtype,
-    )
-    flat = _execute_map(data, plan=plan)
-    return jnp.reshape(flat, (*data.shape[:-1], *sizes))
-
-
-def materialize(
-    view: StridedView,
-    *,
-    dtype: DTypeLike | None = None,
-) -> Array:
-    """Materialize one affine view as a fresh compact JAX Array."""
-
+    Conversion uses native scalar rules; same-dtype copy preserves stored bits.
+    AD supports floating/complex conversions, including real/complex crossings.
+    Reverse mode projects onto the real component for real inputs, or embeds
+    real cotangents with zero imaginary part for complex inputs, then converts
+    each cotangent to source dtype before address accumulation.
+    CPU NamedSharding supports batch partitioning with complete packed storage
+    on each device. Forward and JVP use local Copy; reverse mode uses local
+    address accumulation. Integer/bool results have float0 zero tangents.
+    """
     if not isinstance(view, StridedView):
         raise TypeError("materialize requires a StridedView")
-    return _execute_materialize(
-        view.data,
-        sizes=view.sizes,
-        strides=view.strides,
-        offset=view.offset,
-        result_dtype=(view.data.dtype if dtype is None else dtype),
+    result_dtype = view.data.dtype if dtype is None else jax.dtypes.canonicalize_dtype(dtype)
+    result = copy_p.bind(
+        view.data, records=(AffineRecord(
+            view.sizes, view.strides, view.offset, contiguous_strides(view.sizes), 0,
+        ),), output_size=view.element_count, dtype=result_dtype,
     )
-
-
-__all__ = [
-    "build_materialize_plan",
-    "materialize",
-]
+    return result.reshape((*view.batch_shape, *view.sizes))

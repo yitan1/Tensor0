@@ -9,6 +9,7 @@ from jax import Array
 import jax.numpy as jnp
 
 from .. import _native
+from .._stride._ops._transform import _strided_affine_transform, _strided_tree_transform
 from ..structure.layout import (
     _sectorstructure_key,
     get_degeneracystructure,
@@ -17,7 +18,6 @@ from ..structure.layout import (
 from ..tensor.dense import _trivial_dense_array
 from ..tensor.storage import _require_jax_storage_data
 from ..tensor.tensor_map import TensorMap
-from ._strided import _strided_affine_transform, _strided_tree_transform
 
 Permutation: TypeAlias = tuple[tuple[int, ...], tuple[int, ...]]
 _TransformerCache: TypeAlias = OrderedDict[object, _native.TreeTransformer]

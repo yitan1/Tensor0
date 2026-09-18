@@ -1,711 +1,414 @@
 from __future__ import annotations
 
+from math import prod
+
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from tensor0._stride._plan import CompleteMode, AffineRecord
-from tensor0._stride._map import _execute_map
-from tensor0._stride._testing import (
-    _native_call_count_for_tests,
-    _reset_native_call_count_for_tests,
-    native_available,
+from tensor0._stride import StridedView, materialize
+from tensor0._stride._jax import accumulation_p, copy_p
+from tensor0._stride._layout import AffineRecord
+
+from ._support import native_available
+
+
+pytestmark = pytest.mark.skipif(not native_available(), reason="native CPU stride is unavailable")
+
+PARTITIONS = (
+    AffineRecord((4, 2), (4, 1), 0, (4, 1), 2),
+    AffineRecord((4, 2), (4, 1), 2, (4, 1), 0),
 )
-from tensor0._stride._plan import (
-    build_affine_plan,
-    transpose_same_dtype_plan,
-)
-
-from ._fixtures import (
-    contiguous_dtype_plan,
-    dtype_transpose_plan,
-    partial_mixed_plan,
-    rank4_avx2_shape_plan,
-    two_record_noncompact_plan,
-)
-from ._oracle import execute_reference
-
-
-pytestmark = pytest.mark.skipif(
-    not native_available(),
-    reason="the Tensor0 extension was built without JAX FFI headers",
-)
+PARTIAL = (AffineRecord((16,), (2,), 1, (3,), 2),)
+LAYOUTS = [
+    pytest.param(PARTITIONS, (1.25, -.5), 16, 16, id="partitions"),
+    pytest.param(PARTITIONS, (1.25, -.5), 20, 16, id="unread-tail"),
+    pytest.param(PARTIAL, (.5,), 32, 50, id="partial"),
+    pytest.param((AffineRecord((2, 8, 3, 12), (96, 1, 192, 8), 0, (288, 36, 12, 1), 0),),
+                 (1.25,), 576, 576, id="rank4"),
+    pytest.param((AffineRecord((5, 7), (1, 5), 0, (7, 1), 0),),
+                 (.75,), 35, 35, id="transpose"),
+    pytest.param((AffineRecord((2, 2), (1, 1), 0, (2, 1), 1),),
+                 (1.25,), 5, 6, id="repeated-reads"),
+    pytest.param((AffineRecord((3, 2), (0, -1), 1, (2, 1), 0),),
+                 (-.5,), 3, 6, id="broadcast-negative"),
+]
 
 
-def _assert_float_close(actual: object, expected: object) -> None:
-    actual_array = np.asarray(actual)
-    expected_array = np.asarray(expected)
-    assert actual_array.dtype == expected_array.dtype
-    np.testing.assert_allclose(actual_array, expected_array, rtol=2e-6, atol=1e-6)
+def reference_transform(source, records, factors, output_size, dtype):
+    result = jnp.zeros(source.shape[:-1] + (output_size,), dtype=dtype)
+    for record, factor in zip(records, factors, strict=True):
+        source_indices = np.full(record.logical_shape, record.source_offset, dtype=np.int32)
+        destination_indices = np.full(record.logical_shape, record.destination_offset, dtype=np.int32)
+        for axis, size in enumerate(record.logical_shape):
+            shape = (1,) * axis + (size,) + (1,) * (len(record.logical_shape) - axis - 1)
+            indices = np.arange(size, dtype=np.int32).reshape(shape)
+            source_indices += indices * record.source_strides[axis]
+            destination_indices += indices * record.destination_strides[axis]
+        values = source[..., source_indices.ravel()] * factor
+        if not jnp.issubdtype(dtype, jnp.complexfloating):
+            values = jnp.real(values)
+        result = result.at[..., destination_indices.ravel()].set(values.astype(dtype))
+    return result
 
 
-@pytest.mark.parametrize(
-    "scale",
-    [
-        complex(1.25, -0.75),
-        complex(.125, 1.0),
-        complex(2.5, -0.0),
-        complex(3., 3.),
-    ],
-)
-def test_complex_native_finite_values_match_jax_scalar_oracle(
-    scale: complex,
-) -> None:
-    values = jnp.asarray(
-        [0.0, -0.0, 1.25, -2.5, .125, 2.0, -2.0],
-        dtype=jnp.float32,
-    )
-    cotangent = jnp.asarray(
-        [
-            0.0 - 0.0j,
-            -0.0 + 0.0j,
-            1.25 + 0.0j,
-            0.0 + 2.5j,
-            .125 + 1.0j,
-            3.0 + 3.0j,
-            -3.0 - 3.0j,
-        ],
-        dtype=jnp.complex64,
-    )
-    template = contiguous_dtype_plan(jnp.complex64, scale, size=values.size)
-    mixed = build_affine_plan(
-        records=template.records,
-        output_size=template.output_size,
-        coverage=template.coverage,
-        source_size=template.source_size,
-        source_dtype=jnp.float32,
-        result_dtype=jnp.complex64,
-    )
-    native = lambda value: _execute_map(value, plan=mixed)
-    reference = lambda value: execute_reference(value, mixed)
-
-    actual_forward, actual_reverse = jax.jit(
-        lambda value, cot: (
-            native(value),
-            jax.vjp(native, value)[1](cot)[0],
-        )
-    )(values, cotangent)
-    expected_forward = reference(values)
-    expected_reverse = jax.vjp(reference, values)[1](cotangent)[0]
-
-    _assert_float_close(actual_forward, expected_forward)
-    _assert_float_close(actual_reverse, expected_reverse)
-
-    same_dtype = contiguous_dtype_plan(jnp.complex64, scale, size=cotangent.size)
-    actual_same = jax.jit(
-        lambda value: _execute_map(value, plan=same_dtype)
-    )(cotangent)
-    expected_same = execute_reference(cotangent, same_dtype)
-    _assert_float_close(actual_same, expected_same)
+def assert_close(actual, expected):
+    assert actual.shape == expected.shape
+    assert actual.dtype == expected.dtype
+    tolerance = 2e-3 if actual.dtype == jnp.float16 else 2e-6
+    np.testing.assert_allclose(actual, expected, rtol=tolerance, atol=tolerance)
 
 
-def test_complex_native_finite_values_match_jax_accuracy() -> None:
-    rng = np.random.default_rng(20260825)
-    values = (
-        rng.standard_normal(131_072).astype(np.float32)
-        + 1j * rng.standard_normal(131_072).astype(np.float32)
-    ).astype(np.complex64)
-    bound = contiguous_dtype_plan(
-        jnp.complex64,
-        1.25 - 0.75j,
-        size=values.size,
-    )
-    source = jnp.asarray(values)
-
-    actual = jax.jit(
-        lambda value: _execute_map(
-            value,
-            plan=bound,
-        )
-    )(source)
-    expected = execute_reference(source, bound)
-
-    _assert_float_close(actual, expected)
+def assert_native_calls(lowered, count):
+    text = lowered.as_text().lower()
+    assert text.count("custom_call") == count
+    assert "tensor0_stride_" in text
+    assert "gather" not in text and "scatter" not in text
 
 
-def test_complex_native_large_finite_product_matches_jax() -> None:
-    maximum = np.finfo(np.float32).max / 16
-    source = jnp.asarray([complex(maximum, -maximum)], dtype=jnp.complex64)
-    bound = contiguous_dtype_plan(
-        jnp.complex64,
-        complex(3., 3.),
-        size=1,
-    )
-
-    actual = jax.jit(
-        lambda value: _execute_map(
-            value,
-            plan=bound,
-        )
-    )(source)
-    expected = execute_reference(source, bound)
-
-    _assert_float_close(actual, expected)
-
-
-@pytest.mark.parametrize(
-    ("source_dtype", "result_dtype"),
-    [(jnp.float32, jnp.float32), (jnp.float16, jnp.float32)],
-)
-def test_native_vjp_matches_reference_zero(
-    source_dtype: jnp.dtype,
-    result_dtype: jnp.dtype,
-) -> None:
-    template = contiguous_dtype_plan(result_dtype, 1.0, size=1)
-    bound = build_affine_plan(
-        records=template.records,
-        output_size=template.output_size,
-        coverage=template.coverage,
-        source_size=1,
-        source_dtype=source_dtype,
-        result_dtype=result_dtype,
-    )
-    source = jnp.ones((1,), dtype=source_dtype)
-    cotangent = jnp.asarray([-0.0], dtype=result_dtype)
-    native = lambda value: _execute_map(value, plan=bound)
-    reference = lambda value: execute_reference(value, bound)
-
-    actual = jax.jit(lambda cot: jax.vjp(native, source)[1](cot)[0])(cotangent)
-    expected = jax.vjp(reference, source)[1](cotangent)[0]
-
-    _assert_float_close(actual, expected)
-    hlo = str(
-        jax.jit(lambda cot: jax.vjp(native, source)[1](cot)[0])
-        .lower(cotangent)
-        .compiler_ir()
-    ).lower()
-    assert hlo.count("custom_call") == 1
-    assert "stablehlo.compare" not in hlo
-    assert "stablehlo.select" not in hlo
-    assert "tensor0_normalize_signed_zero" not in hlo
-
-
-def test_complex_native_vjp_preserves_zero_components() -> None:
-    bound = contiguous_dtype_plan(jnp.complex64, 1.0, size=3)
-    source = jnp.ones((3,), dtype=jnp.complex64)
-    cotangent = jnp.asarray(
-        [complex(-0.0, 1.0), complex(1.0, -0.0), complex(-0.0, -0.0)],
-        dtype=jnp.complex64,
-    )
-    native = lambda value: _execute_map(value, plan=bound)
-    reference = lambda value: execute_reference(value, bound)
-
-    actual = jax.jit(lambda cot: jax.vjp(native, source)[1](cot)[0])(cotangent)
-    expected = jax.vjp(reference, source)[1](cotangent)[0]
-
-    _assert_float_close(actual, expected)
-
-
-def test_zero_cotangent_pullback_has_identity_jvp() -> None:
-    bound = contiguous_dtype_plan(jnp.float32, 1.0, size=1)
-    source = jnp.ones((1,), dtype=jnp.float32)
-    cotangent = jnp.zeros((1,), dtype=jnp.float32)
-    tangent = jnp.ones((1,), dtype=jnp.float32)
-    native = lambda value: _execute_map(value, plan=bound)
-    reference = lambda value: execute_reference(value, bound)
-
-    actual = jax.jit(
-        lambda cot, dot: jax.jvp(
-            lambda item: jax.vjp(native, source)[1](item)[0],
-            (cot,),
-            (dot,),
-        )
-    )(cotangent, tangent)
-    expected = jax.jvp(
-        lambda item: jax.vjp(reference, source)[1](item)[0],
-        (cotangent,),
-        (tangent,),
-    )
-
-    _assert_float_close(actual[0], expected[0])
-    _assert_float_close(actual[1], expected[1])
-
-
-def test_zero_cotangent_pullback_has_identity_linear_transpose() -> None:
-    bound = contiguous_dtype_plan(jnp.float32, 1.0, size=1)
-    source = jnp.ones((1,), dtype=jnp.float32)
-    cotangent = jnp.zeros((1,), dtype=jnp.float32)
-    transpose_cotangent = jnp.ones((1,), dtype=jnp.float32)
-    native = lambda value: _execute_map(value, plan=bound)
-    reference = lambda value: execute_reference(value, bound)
-    native_pullback = lambda cot: jax.vjp(native, source)[1](cot)[0]
-    reference_pullback = lambda cot: jax.vjp(reference, source)[1](cot)[0]
-
-    actual = jax.linear_transpose(native_pullback, cotangent)(transpose_cotangent)[0]
-    actual_jit = jax.jit(
-        lambda ct: jax.linear_transpose(native_pullback, cotangent)(ct)[0]
-    )(transpose_cotangent)
-    expected = jax.linear_transpose(reference_pullback, cotangent)(transpose_cotangent)[
-        0
-    ]
-
-    _assert_float_close(actual, expected)
-    _assert_float_close(actual_jit, expected)
-
-
-@pytest.mark.parametrize(
-    ("source_dtype", "result_dtype"),
-    [
-        (jnp.float16, jnp.float32),
-        (jnp.float32, jnp.complex64),
-        (jnp.complex64, jnp.float32),
-    ],
-)
-@pytest.mark.filterwarnings("ignore:Casting complex values to real")
-def test_mixed_affine_native_forward_and_transpose_match_jax_oracle(
-    source_dtype: jnp.dtype,
-    result_dtype: jnp.dtype,
-) -> None:
-    template = two_record_noncompact_plan()
-    bound = build_affine_plan(
-        records=template.records,
-        output_size=template.output_size,
-        coverage=template.coverage,
-        source_size=template.source_size,
-        source_dtype=source_dtype,
-        result_dtype=result_dtype,
-    )
-    source = jnp.linspace(-3.0, 4.0, bound.source_size, dtype=jnp.float32)
-    source = source.astype(source_dtype)
+@pytest.mark.parametrize("records,factors,source_size,output_size", LAYOUTS)
+@pytest.mark.parametrize("source_dtype,result_dtype", [
+    (jnp.float32, jnp.float32), (jnp.float16, jnp.float32),
+    (jnp.float32, jnp.complex64), (jnp.complex64, jnp.float32),
+    (jnp.complex64, jnp.complex64),
+])
+def test_affine_forward_jvp_vjp_and_linear_transpose(
+    records, factors, source_size, output_size, source_dtype, result_dtype,
+):
+    factors = tuple(jnp.asarray(value, dtype=jnp.float32) for value in factors)
+    source = jnp.linspace(-3, 4, source_size).astype(source_dtype)
+    direction = jnp.full_like(source, .5)
+    cotangent = jnp.linspace(-2, 3, output_size).astype(result_dtype)
     if source_dtype == jnp.complex64:
-        source = source * jnp.complex64(1.0 + 0.375j)
-    cotangent = jnp.linspace(
-        -2.0,
-        3.0,
-        bound.output_size,
-        dtype=jnp.float32,
-    ).astype(result_dtype)
+        source = source * jnp.complex64(1 + .375j)
+        direction = direction * jnp.complex64(.75 - .5j)
     if result_dtype == jnp.complex64:
-        cotangent = cotangent * jnp.complex64(0.75 + 1.25j)
-
-    native = lambda value: _execute_map(
-        value,
-        plan=bound,
+        cotangent = cotangent * jnp.complex64(.75 + 1.25j)
+    native = lambda value: accumulation_p.bind(
+        value, *factors, records=records, coefficient_records=tuple(range(len(records))),
+        output_size=output_size, dtype=np.dtype(result_dtype),
     )
-    reference = lambda value: execute_reference(value, bound)
-    compiled = jax.jit(
-        lambda value, cot: (
-            native(value),
-            jax.vjp(native, value)[1](cot)[0],
-        )
+    reference = lambda value: reference_transform(value, records, factors, output_size, result_dtype)
+    forward = jax.jit(lambda value, tangent: jax.jvp(native, (value,), (tangent,)))
+    for actual, expected in zip(forward(source, direction),
+                                jax.jvp(reference, (source,), (direction,)), strict=True):
+        assert_close(actual, expected)
+    assert_native_calls(forward.lower(source, direction), 2)
+    reverse = jax.jit(lambda value, cot: (native(value), jax.vjp(native, value)[1](cot)[0]))
+    actual, gradient = reverse(source, cotangent)
+    assert_close(actual, reference(source))
+    expected_gradient = jax.vjp(reference, source)[1](cotangent)[0]
+    assert_close(gradient, expected_gradient)
+    assert_close(jax.jit(lambda cot: jax.linear_transpose(native, source)(cot)[0])(cotangent),
+                 expected_gradient)
+    assert_native_calls(reverse.lower(source, cotangent), 2)
+    used = np.zeros(source_size, dtype=bool)
+    for record in records:
+        for index in np.ndindex(record.logical_shape):
+            used[record.source_offset + sum(item * stride for item, stride in
+                                           zip(index, record.source_strides, strict=True))] = True
+    np.testing.assert_array_equal(np.asarray(gradient)[~used], 0)
+
+
+@pytest.mark.parametrize("factor", [1.25 - .75j, .125 + 1j, complex(2.5, -0.), 3 + 3j])
+@pytest.mark.parametrize("source_dtype", [jnp.float32, jnp.complex64])
+def test_complex_factor_uses_bilinear_not_conjugated_transpose(factor, source_dtype):
+    source = jnp.asarray([0, -0., 1.25, -2.5, .125, 2, -2], dtype=source_dtype)
+    if source_dtype == jnp.complex64:
+        source = source * jnp.complex64(1 + .375j)
+    cotangent = jnp.asarray([complex(-0., -0.), 1j, 1.25, 2.5j, .125 + 1j, 3 + 3j, -3 - 3j])
+    coefficient = jnp.asarray(factor, dtype=jnp.complex64)
+    native = lambda value: accumulation_p.bind(
+        value, coefficient, records=(AffineRecord((7,), (1,), 0, (1,), 0),),
+        coefficient_records=(0,), output_size=7, dtype=np.dtype(jnp.complex64),
     )
-    actual_forward, actual_reverse = compiled(source, cotangent)
-    expected_forward = reference(source)
-    expected_reverse = jax.vjp(reference, source)[1](cotangent)[0]
-    np.testing.assert_allclose(
-        np.asarray(actual_forward),
-        np.asarray(expected_forward),
-        rtol=2e-3 if source_dtype == jnp.float16 else 1e-6,
-        atol=2e-3 if source_dtype == jnp.float16 else 1e-6,
+    reference = lambda value: (value * coefficient).astype(jnp.complex64)
+    actual, gradient = jax.jit(lambda value, cot: (native(value), jax.vjp(native, value)[1](cot)[0]))(
+        source, cotangent,
     )
-    np.testing.assert_allclose(
-        np.asarray(actual_reverse),
-        np.asarray(expected_reverse),
-        rtol=2e-3 if source_dtype == jnp.float16 else 1e-6,
-        atol=2e-3 if source_dtype == jnp.float16 else 1e-6,
+    assert_close(actual, reference(source))
+    assert_close(gradient, jax.vjp(reference, source)[1](cotangent)[0])
+
+
+def test_real_to_complex_transpose_has_explicit_bilinear_result():
+    native = lambda value: accumulation_p.bind(
+        value, jnp.complex64(2 + 3j), records=(AffineRecord((1,), (1,), 0, (1,), 0),),
+        coefficient_records=(0,), output_size=1, dtype=np.dtype(jnp.complex64),
     )
-    hlo = str(compiled.lower(source, cotangent).compiler_ir()).lower()
-    assert hlo.count("custom_call") == 2
-    assert "gather" not in hlo
-    assert "scatter" not in hlo
+    source, cotangent = jnp.asarray([1.25]), jnp.asarray([5 + 7j])
+    np.testing.assert_array_equal(jax.jit(native)(source), [2.5 + 3.75j])
+    np.testing.assert_array_equal(jax.jit(lambda cot: jax.vjp(native, source)[1](cot)[0])(cotangent), [-11])
 
 
-def test_mixed_affine_native_partial_reverse_zero_fills_source_gradient() -> None:
-    template = partial_mixed_plan()
-    bound = build_affine_plan(
-        records=template.records,
-        output_size=template.output_size,
-        coverage=template.coverage,
-        source_size=template.source_size,
-        source_dtype=jnp.float32,
-        result_dtype=jnp.complex64,
+@pytest.mark.parametrize("large_product", [False, True])
+def test_complex_finite_product_accuracy(large_product):
+    if large_product:
+        maximum = np.finfo(np.float32).max / 16
+        source = jnp.asarray([complex(maximum, -maximum)], dtype=jnp.complex64)
+        factor = jnp.complex64(3 + 3j)
+    else:
+        rng = np.random.default_rng(20260825)
+        source = jnp.asarray(rng.standard_normal(131072) + 1j * rng.standard_normal(131072), dtype=jnp.complex64)
+        factor = jnp.complex64(1.25 - .75j)
+    actual = jax.jit(lambda value: accumulation_p.bind(
+        value, factor, records=(AffineRecord((source.size,), (1,), 0, (1,), 0),),
+        coefficient_records=(0,), output_size=source.size, dtype=np.dtype(jnp.complex64),
+    ))(source)
+    assert_close(actual, source * factor)
+
+
+@pytest.mark.parametrize("scaled", [False, True])
+@pytest.mark.parametrize("source_dtype,result_dtype", [
+    (jnp.float32, jnp.float32), (jnp.float16, jnp.float32), (jnp.complex64, jnp.complex64),
+])
+def test_zero_cotangent_pullback_remains_linear(scaled, source_dtype, result_dtype):
+    parameters = dict(records=(AffineRecord((3,), (1,), 0, (1,), 0),),
+                      output_size=3, dtype=np.dtype(result_dtype))
+    if scaled:
+        native = lambda value: accumulation_p.bind(value, jnp.float32(1), coefficient_records=(0,), **parameters)
+    else:
+        native = lambda value: copy_p.bind(value, **parameters)
+    source = jnp.ones(3, dtype=source_dtype)
+    cotangent = jnp.asarray([-0., 0., -0.], dtype=result_dtype)
+    if result_dtype == jnp.complex64:
+        cotangent = jnp.asarray([complex(-0., 1), complex(1, -0.), complex(-0., -0.)], dtype=result_dtype)
+    direction = jnp.ones_like(cotangent)
+    pullback = lambda cot: jax.vjp(native, source)[1](cot)[0]
+    expected = lambda cot: jax.vjp(lambda value: value.astype(result_dtype), source)[1](cot)[0]
+    for actual, reference in zip(jax.jit(lambda cot, tangent: jax.jvp(pullback, (cot,), (tangent,)))(cotangent, direction),
+                                 jax.jvp(expected, (cotangent,), (direction,)), strict=True):
+        assert_close(actual, reference)
+    output_cotangent = jnp.ones_like(source)
+    assert_close(jax.jit(lambda cot: jax.linear_transpose(pullback, cotangent)(cot)[0])(output_cotangent),
+                 jax.linear_transpose(expected, cotangent)(output_cotangent)[0])
+    lowered = jax.jit(pullback).lower(cotangent)
+    assert_native_calls(lowered, 1)
+    text = lowered.as_text().lower()
+    assert "stablehlo.compare" not in text and "stablehlo.select" not in text
+
+
+@pytest.mark.parametrize("mode", ["jvp", "vjp"])
+def test_vmap_batches_affine_derivatives_without_unrolling_records(mode):
+    factors = (jnp.float32(1.25), jnp.float32(-.5))
+    native = lambda value: accumulation_p.bind(
+        value, *factors, records=PARTITIONS, coefficient_records=(0, 1), output_size=16, dtype=np.dtype(jnp.float32),
     )
-    source = jnp.linspace(-1.0, 2.0, bound.source_size, dtype=jnp.float32)
-    cotangent = jnp.linspace(
-        -2.0, 3.0, bound.output_size, dtype=jnp.float32
-    ) * jnp.complex64(0.5 + 1.5j)
-    native = lambda value: _execute_map(
-        value,
-        plan=bound,
+    reference = lambda value: reference_transform(value, PARTITIONS, factors, 16, jnp.float32)
+    source = jnp.arange(48, dtype=jnp.float32).reshape(3, 16)
+    direction = jnp.linspace(-2, 3, 48).reshape(3, 16)
+    if mode == "jvp":
+        derivative = lambda operation, value, tangent: jax.jvp(operation, (value,), (tangent,))
+    else:
+        derivative = lambda operation, value, tangent: jax.vjp(operation, value)[1](tangent)[0]
+    compiled = jax.jit(jax.vmap(lambda value, tangent: derivative(native, value, tangent)))
+    actual = compiled(source, direction)
+    expected = jax.vmap(lambda value, tangent: derivative(reference, value, tangent))(source, direction)
+    for result, wanted in zip(jax.tree.leaves(actual), jax.tree.leaves(expected), strict=True):
+        assert_close(result, wanted)
+    assert_native_calls(compiled.lower(source, direction), 2 if mode == "jvp" else 1)
+
+
+@pytest.mark.parametrize("dtype", [jnp.float32, jnp.int32])
+def test_zero_and_integer_tangents(dtype):
+    source = jnp.arange(35, dtype=dtype)
+    record = AffineRecord((5, 7), (1, 5), 0, (7, 1), 0)
+    native = lambda value: accumulation_p.bind(
+        value, jnp.asarray(-1, dtype=dtype), records=(record,), coefficient_records=(0,),
+        output_size=35, dtype=np.dtype(dtype),
     )
-    reference = lambda value: execute_reference(value, bound)
-    actual = jax.jit(lambda value: jax.vjp(native, source)[1](value)[0])(cotangent)
-    expected = jax.vjp(reference, source)[1](cotangent)[0]
-    np.testing.assert_allclose(np.asarray(actual), np.asarray(expected))
-    covered = np.zeros(bound.source_size, dtype=bool)
-    covered[1 : 1 + 2 * 16 : 2] = True
-    np.testing.assert_array_equal(np.asarray(actual)[~covered], 0)
+    tangent_dtype = jax.dtypes.float0 if dtype == jnp.int32 else dtype
+    direction = jnp.zeros(source.shape, dtype=tangent_dtype)
+    primal, tangent = jax.jit(lambda value, dot: jax.jvp(native, (value,), (dot,)))(source, direction)
+    np.testing.assert_array_equal(primal, -source.reshape(7, 5).T.ravel())
+    assert tangent.shape == (35,) and tangent.dtype == tangent_dtype
+    if dtype == jnp.float32:
+        np.testing.assert_array_equal(tangent, 0)
 
 
-def test_f32_c64_native_transpose_uses_jax_bilinear_complex_scale() -> None:
-    bound = build_affine_plan(
-        records=(AffineRecord((1,), (1,), 0, (1,), 0, 2.0 + 3j),),
-        output_size=1,
-        coverage=CompleteMode.COMPLETE_UNIQUE,
-        source_size=1,
-        source_dtype=jnp.float32,
-        result_dtype=jnp.complex64,
-    )
-    source = jnp.asarray([1.25], dtype=jnp.float32)
-    cotangent = jnp.asarray([5.0 + 7.0j], dtype=jnp.complex64)
-    native = lambda value: _execute_map(
-        value,
-        plan=bound,
-    )
-    forward, reverse = jax.jit(
-        lambda value, cot: (
-            native(value),
-            jax.vjp(native, value)[1](cot)[0],
-        )
-    )(source, cotangent)
-    np.testing.assert_array_equal(
-        np.asarray(forward),
-        np.asarray([2.5 + 3.75j], dtype=np.complex64),
-    )
-    np.testing.assert_array_equal(
-        np.asarray(reverse),
-        np.asarray([-11.0], dtype=np.float32),
-    )
+COPY_FLOATS = ("float16", "bfloat16", "float32", "float64")
 
 
-def test_jitted_jvp_uses_the_same_native_plan_for_the_tangent() -> None:
-    bound = two_record_noncompact_plan()
-    source = jnp.arange(bound.source_size, dtype=jnp.float32)
-    tangent = jnp.linspace(1.0, 2.0, bound.source_size, dtype=jnp.float32)
-    apply = lambda value: _execute_map(
-        value,
-        plan=bound,
-    )
-    compiled = jax.jit(
-        lambda primal, direction: jax.jvp(
-            apply,
-            (primal,),
-            (direction,),
-        )
-    )
 
-    _reset_native_call_count_for_tests()
-    primal, tangent_result = compiled(source, tangent)
-    primal.block_until_ready()
-    tangent_result.block_until_ready()
-
-    np.testing.assert_allclose(
-        np.asarray(primal),
-        np.asarray(execute_reference(source, bound)),
-    )
-    np.testing.assert_allclose(
-        np.asarray(tangent_result),
-        np.asarray(execute_reference(tangent, bound)),
-    )
-    assert _native_call_count_for_tests() == 2
-    hlo = str(compiled.lower(source, tangent).compiler_ir()).lower()
-    assert hlo.count("custom_call") == 2
-    assert "gather" not in hlo
-    assert "scatter" not in hlo
+COPY_CROSS_PAIRS = [(source, result) for real in COPY_FLOATS for complex_dtype in ("complex64", "complex128")
+               for source, result in ((real, complex_dtype), (complex_dtype, real))]
 
 
-def test_partial_plan_native_jvp_zero_fills_primal_and_tangent_natively() -> None:
-    bound = partial_mixed_plan()
-    source = jnp.arange(bound.source_size, dtype=jnp.float32)
-    tangent = jnp.linspace(-2.0, 2.0, bound.source_size, dtype=jnp.float32)
-    apply = lambda value: _execute_map(value, plan=bound)
-    compiled = jax.jit(
-        lambda primal, direction: jax.jvp(
-            apply,
-            (primal,),
-            (direction,),
-        )
-    )
 
-    _reset_native_call_count_for_tests()
-    primal, tangent_result = compiled(source, tangent)
-    primal.block_until_ready()
-    tangent_result.block_until_ready()
-
-    np.testing.assert_array_equal(
-        np.asarray(primal),
-        np.asarray(execute_reference(source, bound)),
-    )
-    np.testing.assert_array_equal(
-        np.asarray(tangent_result),
-        np.asarray(execute_reference(tangent, bound)),
-    )
-    assert _native_call_count_for_tests() == 2
+COPY_PAIRS = [(source, result) for source in COPY_FLOATS for result in COPY_FLOATS if source != result] + [
+    ("complex64", "complex128"), ("complex128", "complex64"), *COPY_CROSS_PAIRS]
 
 
-def test_jitted_vjp_and_linear_transpose_use_the_reversed_native_plan() -> None:
-    bound = two_record_noncompact_plan()
-    reverse = transpose_same_dtype_plan(bound)
-    source = jnp.arange(bound.source_size, dtype=jnp.float32)
-    cotangent = jnp.linspace(-2.0, 3.0, bound.output_size, dtype=jnp.float32)
-    apply = lambda value: _execute_map(
-        value,
-        plan=bound,
-    )
 
-    def value_and_pullback(
-        value: jax.Array,
-        output_cotangent: jax.Array,
-    ) -> tuple[jax.Array, jax.Array]:
-        primal, pullback = jax.vjp(apply, value)
-        return primal, pullback(output_cotangent)[0]
-
-    compiled = jax.jit(value_and_pullback)
-    _reset_native_call_count_for_tests()
-    primal, source_cotangent = compiled(source, cotangent)
-    primal.block_until_ready()
-    source_cotangent.block_until_ready()
-
-    np.testing.assert_allclose(
-        np.asarray(primal),
-        np.asarray(execute_reference(source, bound)),
-    )
-    expected_cotangent = execute_reference(cotangent, reverse)
-    np.testing.assert_allclose(
-        np.asarray(source_cotangent),
-        np.asarray(expected_cotangent),
-    )
-    assert _native_call_count_for_tests() == 2
-    hlo = str(compiled.lower(source, cotangent).compiler_ir()).lower()
-    assert hlo.count("custom_call") == 2
-    assert "gather" not in hlo
-    assert "scatter" not in hlo
-
-    transposed = jax.linear_transpose(apply, source)(cotangent)[0]
-    np.testing.assert_allclose(
-        np.asarray(transposed),
-        np.asarray(expected_cotangent),
-    )
+def copy_converted(value, dtype):
+    if jnp.issubdtype(jnp.dtype(dtype), jnp.floating):
+        value = jnp.real(value)
+    return value.astype(dtype)
 
 
-def test_rank4_tiled_vjp_exercises_the_reversed_kernel() -> None:
-    bound = rank4_avx2_shape_plan()
-    reverse = transpose_same_dtype_plan(bound)
-    source = jnp.arange(bound.source_size, dtype=jnp.float32)
-    cotangent = jnp.linspace(-1.0, 1.0, bound.output_size, dtype=jnp.float32)
-    apply = lambda value: _execute_map(
-        value,
-        plan=bound,
-    )
 
-    def pullback(
-        value: jax.Array,
-        output_cotangent: jax.Array,
-    ) -> jax.Array:
-        _, apply_pullback = jax.vjp(apply, value)
-        return apply_pullback(output_cotangent)[0]
-
-    _reset_native_call_count_for_tests()
-    actual = jax.jit(pullback)(source, cotangent)
-    actual.block_until_ready()
-
-    np.testing.assert_allclose(
-        np.asarray(actual),
-        np.asarray(execute_reference(cotangent, reverse)),
-    )
-    assert _native_call_count_for_tests() == 1
-
-
-def test_complex_vjp_uses_the_nonconjugated_reversed_plan() -> None:
-    bound = dtype_transpose_plan(jnp.complex64, 0.75 - 0.5j)
-    reverse = transpose_same_dtype_plan(bound)
-    source = (
-        jnp.linspace(-2.0, 2.0, bound.source_size, dtype=jnp.float32)
-        + 1j * jnp.linspace(3.0, -1.0, bound.source_size, dtype=jnp.float32)
-    ).astype(jnp.complex64)
-    cotangent = (
-        jnp.linspace(1.0, -2.0, bound.output_size, dtype=jnp.float32)
-        + 1j * jnp.linspace(-4.0, 2.0, bound.output_size, dtype=jnp.float32)
-    ).astype(jnp.complex64)
-    apply = lambda value: _execute_map(
-        value,
-        plan=bound,
-    )
-
-    def value_and_pullback(
-        value: jax.Array,
-        output_cotangent: jax.Array,
-    ) -> tuple[jax.Array, jax.Array]:
-        primal, pullback = jax.vjp(apply, value)
-        return primal, pullback(output_cotangent)[0]
-
-    _reset_native_call_count_for_tests()
-    primal, source_cotangent = jax.jit(value_and_pullback)(
-        source,
-        cotangent,
-    )
-    primal.block_until_ready()
-    source_cotangent.block_until_ready()
-
-    np.testing.assert_allclose(
-        np.asarray(primal),
-        np.asarray(execute_reference(source, bound)),
-        rtol=1e-6,
-        atol=1e-6,
-    )
-    np.testing.assert_allclose(
-        np.asarray(source_cotangent),
-        np.asarray(execute_reference(cotangent, reverse)),
-        rtol=1e-6,
-        atol=1e-6,
-    )
-    assert _native_call_count_for_tests() == 2
+@pytest.mark.parametrize("source_dtype,result_dtype", COPY_PAIRS)
+@pytest.mark.parametrize("batch_shape", [(), (2,), (2, 0)])
+@pytest.mark.parametrize("shape,strides,offset", [((2, 2), (1, -1), 1), ((4,), (0,), 2)])
+def test_copy_mixed_jvp_vjp_transpose(source_dtype, result_dtype, batch_shape, shape, strides, offset):
+    with jax.enable_x64():
+        source = jnp.arange(prod(batch_shape) * 4, dtype=jnp.float32).astype(source_dtype).reshape((*batch_shape, 4))
+        if source_dtype.startswith("complex"):
+            source = source * (1 + 2j)
+        addresses = np.asarray([offset + sum(index * stride for index, stride in zip(coordinate, strides))
+                                for coordinate in np.ndindex(shape)]).reshape(shape)
+        run = lambda values: materialize(StridedView(values, shape, strides, offset), dtype=result_dtype)
+        reference = lambda values: copy_converted(values[..., addresses], result_dtype)
+        tangent = jnp.ones_like(source)
+        for actual, expected in zip(jax.jit(lambda values: jax.jvp(run, (values,), (tangent,)))(source),
+                                    jax.jvp(reference, (source,), (tangent,)), strict=True):
+            assert actual.dtype == expected.dtype
+            np.testing.assert_array_equal(actual, expected)
+        cotangent = jnp.ones((*batch_shape, *shape), dtype=result_dtype)
+        if result_dtype.startswith("complex"):
+            cotangent = cotangent * (2 + 3j)
+        expected = jax.vjp(reference, source)[1](cotangent)[0]
+        for reverse in (jax.vjp(run, source)[1], jax.linear_transpose(run, source)):
+            actual = jax.jit(reverse)(cotangent)[0]
+            assert actual.dtype == source.dtype
+            np.testing.assert_array_equal(actual, expected)
+        transpose = lambda values: jax.linear_transpose(run, source)(values)[0]
+        np.testing.assert_array_equal(jax.jvp(transpose, (cotangent,), (cotangent,))[1], expected)
 
 
-def test_vmap_of_jvp_batches_metadata_instead_of_calls() -> None:
-    bound = two_record_noncompact_plan()
-    source = jnp.arange(3 * bound.source_size, dtype=jnp.float32).reshape(
-        3, bound.source_size
-    )
-    tangent = jnp.full_like(source, 0.5)
-    apply = lambda value: _execute_map(
-        value,
-        plan=bound,
-    )
-    compiled = jax.jit(
-        jax.vmap(
-            lambda primal, direction: jax.jvp(
-                apply,
-                (primal,),
-                (direction,),
-            )
-        )
-    )
 
-    _reset_native_call_count_for_tests()
-    primal, tangent_result = compiled(source, tangent)
-    primal.block_until_ready()
-    tangent_result.block_until_ready()
-
-    expected_primal = jax.vmap(lambda value: execute_reference(value, bound))(source)
-    expected_tangent = jax.vmap(lambda value: execute_reference(value, bound))(tangent)
-    np.testing.assert_allclose(np.asarray(primal), np.asarray(expected_primal))
-    np.testing.assert_allclose(
-        np.asarray(tangent_result),
-        np.asarray(expected_tangent),
-    )
-    assert _native_call_count_for_tests() == 2
-    hlo = str(compiled.lower(source, tangent).compiler_ir()).lower()
-    assert hlo.count("custom_call") == 2
+@pytest.mark.parametrize("source_dtype,result_dtype,cotangent,expected", [
+    ("float32", "float64", [1 + 2**-24, -1], 0),
+    ("float64", "float32", [16777216, 1, -16777216], 1),
+])
+def test_transpose_cast_precedes_accumulation(source_dtype, result_dtype, cotangent, expected):
+    with jax.enable_x64():
+        source = jnp.zeros(1, dtype=source_dtype)
+        run = lambda values: materialize(StridedView(values, (len(cotangent),), (0,), 0), dtype=result_dtype)
+        cotangent = jnp.asarray(cotangent, dtype=result_dtype)
+        actual = jax.jit(jax.linear_transpose(run, source))(cotangent)[0]
+        np.testing.assert_array_equal(actual, [expected])
+        text = jax.jit(jax.linear_transpose(run, source)).lower(cotangent).as_text()
+        assert "stablehlo.convert" in text
+        assert "stride_accumulation_" in text
 
 
-def test_vmap_of_vjp_batches_the_reversed_plan_once() -> None:
-    bound = two_record_noncompact_plan()
-    reverse = transpose_same_dtype_plan(bound)
-    source = jnp.arange(3 * bound.source_size, dtype=jnp.float32).reshape(
-        3,
-        bound.source_size,
-    )
-    cotangent = jnp.linspace(
-        -2.0,
-        3.0,
-        3 * bound.output_size,
-        dtype=jnp.float32,
-    ).reshape(3, bound.output_size)
-    apply = lambda value: _execute_map(
-        value,
-        plan=bound,
-    )
-    compiled = jax.jit(
-        jax.vmap(
-            lambda value, output_cotangent: jax.vjp(
-                apply,
-                value,
-            )[1](output_cotangent)[0]
-        )
-    )
 
-    _reset_native_call_count_for_tests()
-    actual = compiled(source, cotangent)
-    actual.block_until_ready()
-
-    expected = jax.vmap(lambda value: execute_reference(value, reverse))(cotangent)
-    np.testing.assert_allclose(np.asarray(actual), np.asarray(expected))
-    assert _native_call_count_for_tests() == 1
-    hlo = str(compiled.lower(source, cotangent).compiler_ir()).lower()
-    assert hlo.count("custom_call") == 1
+def test_multiple_records_and_outer_vmap():
+    records = (AffineRecord((2,), (1,), 0, (1,), 0), AffineRecord((2,), (-1,), 1, (1,), 2))
+    run = lambda values: copy_p.bind(values, records=records, output_size=5, dtype=jnp.dtype("float16"))
+    reference = lambda values: jnp.concatenate((values[..., [0, 1, 1, 0]].astype(jnp.float16),
+                                               jnp.zeros((*values.shape[:-1], 1), dtype=jnp.float16)), axis=-1)
+    source = jnp.arange(6, dtype=jnp.float32).reshape(2, 3)
+    cotangent = jnp.ones((2, 5), dtype=jnp.float16)
+    np.testing.assert_array_equal(jax.jit(jax.vmap(run))(source), reference(source))
+    actual = jax.jit(jax.vjp(jax.vmap(run), source)[1])(cotangent)[0]
+    np.testing.assert_array_equal(actual, jax.vjp(reference, source)[1](cotangent)[0])
 
 
-def test_zero_and_integer_tangents_have_explicit_jax_behavior() -> None:
-    bound = two_record_noncompact_plan()
-    source = jnp.arange(bound.source_size, dtype=jnp.float32)
-    apply = lambda value: _execute_map(
-        value,
-        plan=bound,
-    )
-    zero_tangent = jax.jit(
-        lambda value: jax.jvp(
-            apply,
-            (value,),
-            (jnp.zeros_like(value),),
-        )[1]
-    )(source)
-    np.testing.assert_array_equal(np.asarray(zero_tangent), 0)
 
-    integer = dtype_transpose_plan(jnp.int32, -1)
-    integer_source = jnp.arange(integer.source_size, dtype=jnp.int32)
-    integer_tangent = jnp.zeros(
-        integer_source.shape,
-        dtype=jax.dtypes.float0,
-    )
-    integer_apply = lambda value: _execute_map(
-        value,
-        plan=integer,
-    )
-    integer_primal, result_tangent = jax.jit(
-        lambda value, tangent: jax.jvp(
-            integer_apply,
-            (value,),
-            (tangent,),
-        )
-    )(integer_source, integer_tangent)
-
-    np.testing.assert_array_equal(
-        np.asarray(integer_primal),
-        np.asarray(execute_reference(integer_source, integer)),
-    )
-    assert result_tangent.dtype == jax.dtypes.float0
-    assert result_tangent.shape == (integer.output_size,)
+def test_empty_layout_and_zero_tangent():
+    run = lambda source: materialize(StridedView(source, (0,), (1,), 0), dtype=jnp.float16)
+    source = jnp.zeros(0, dtype=jnp.float32)
+    np.testing.assert_array_equal(jax.vjp(run, source)[1](jnp.zeros(0, dtype=jnp.float16))[0], source)
+    result, tangent = jax.jvp(lambda unused: run(source), (jnp.float32(1),), (jnp.float32(1),))
+    assert result.dtype == tangent.dtype == jnp.float16
+    assert result.shape == tangent.shape == (0,)
 
 
-def test_reverse_plan_with_uncovered_source_tail_uses_native_zero_fill() -> None:
-    complete = two_record_noncompact_plan()
-    bound = build_affine_plan(
-        records=complete.records,
-        output_size=complete.output_size,
-        coverage=complete.coverage,
-        source_size=complete.source_size + 4,
-        source_dtype=jnp.float32,
-        result_dtype=jnp.float32,
-    )
-    source = jnp.arange(bound.source_size, dtype=jnp.float32)
-    cotangent = jnp.ones((bound.output_size,), dtype=jnp.float32)
-    apply = lambda value: _execute_map(
-        value,
-        plan=bound,
-    )
 
-    def value_and_pullback(
-        value: jax.Array,
-        output_cotangent: jax.Array,
-    ) -> tuple[jax.Array, jax.Array]:
-        primal, pullback = jax.vjp(apply, value)
-        return primal, pullback(output_cotangent)[0]
+@pytest.mark.parametrize("source_dtype,result_dtype", [("float32", "bool"),
+                                                       ("complex64", "int32"), ("float32", "int32")])
+def test_discrete_conversion_has_zero_tangent(source_dtype, result_dtype):
+    source = jnp.ones(1, dtype=source_dtype)
+    run = lambda values: materialize(StridedView(values, (1,), (1,), 0), dtype=result_dtype)
+    result, tangent = jax.jvp(run, (source,), (source,))
+    assert tangent.dtype == jax.dtypes.float0 and tangent.shape == result.shape
+    np.testing.assert_array_equal(jax.grad(lambda value: jnp.sum(run(value).astype(jnp.float32)))(source),
+                                  jnp.zeros_like(source))
 
-    compiled = jax.jit(value_and_pullback)
-    _reset_native_call_count_for_tests()
-    _, source_cotangent = compiled(source, cotangent)
-    source_cotangent.block_until_ready()
 
-    reverse = transpose_same_dtype_plan(bound)
-    np.testing.assert_allclose(
-        np.asarray(source_cotangent),
-        np.asarray(execute_reference(cotangent, reverse)),
-    )
-    np.testing.assert_array_equal(np.asarray(source_cotangent[-4:]), 0)
-    assert _native_call_count_for_tests() == 2
-    hlo = str(compiled.lower(source, cotangent).compiler_ir()).lower()
-    assert hlo.count("custom_call") == 2
-    assert "gather" not in hlo
-    assert "scatter" not in hlo
+
+@pytest.mark.parametrize("source_dtype,result_dtype", COPY_CROSS_PAIRS)
+@pytest.mark.parametrize("batch_shape", [(), (2, 3), (0,), (2, 0)])
+def test_cross_kind_multirecord_higher_derivatives(source_dtype, result_dtype, batch_shape):
+    with jax.enable_x64():
+        source = (jnp.arange(prod(batch_shape) * 3) % 4 / 4).astype(source_dtype).reshape((*batch_shape, 3))
+        if source_dtype.startswith("complex"):
+            source = source + 1j * (source + .5)
+        records = (AffineRecord((2,), (1,), 0, (2,), 0),
+                   AffineRecord((2,), (-1,), 1, (2,), 1),
+                   AffineRecord((0,), (1,), 3, (1,), 5))
+        def run(values):
+            return copy_p.bind(values, records=records, output_size=5, dtype=jnp.dtype(result_dtype))
+        def reference(values):
+            selected = copy_converted(values[..., [0, 1, 1, 0]], result_dtype)
+            return jnp.concatenate((selected, jnp.zeros((*values.shape[:-1], 1), dtype=result_dtype)), axis=-1)
+        cotangent = jnp.full((*batch_shape, 5), 2 + 3j if result_dtype.startswith("complex") else 2, dtype=result_dtype)
+        reverse = lambda values: jax.linear_transpose(run, source)(values)[0]
+        expected_reverse = lambda values: jax.vjp(reference, source)[1](values)[0]
+        for actual, expected in zip(jax.jvp(reverse, (cotangent,), (cotangent,)),
+                                    jax.jvp(expected_reverse, (cotangent,), (cotangent,)), strict=True):
+            np.testing.assert_allclose(actual, expected, rtol=1e-3, atol=1e-3)
+        actual = jax.jit(jax.linear_transpose(reverse, cotangent))(source)[0]
+        expected = jax.vjp(expected_reverse, cotangent)[1](source)[0]
+        assert actual.dtype == cotangent.dtype
+        np.testing.assert_allclose(actual, expected, rtol=1e-3, atol=1e-3)
+        def objective(function, values):
+            result = function(values)
+            return jnp.real(jnp.sum(result * jnp.conj(result)))
+        gradient = jax.grad(lambda values: objective(run, values))
+        reference_gradient = jax.grad(lambda values: objective(reference, values))
+        directions = jnp.ones_like(source)
+        np.testing.assert_allclose(jax.jit(gradient)(source), reference_gradient(source), rtol=1e-3, atol=1e-3)
+        np.testing.assert_allclose(jax.jvp(gradient, (source,), (directions,))[1],
+                                   jax.jvp(reference_gradient, (source,), (directions,))[1], rtol=1e-3, atol=1e-3)
+
+
+
+@pytest.mark.parametrize("source_dtype,result_dtype", COPY_CROSS_PAIRS)
+def test_cross_kind_empty_and_symbolic_zero(source_dtype, result_dtype):
+    with jax.enable_x64():
+        source = jnp.empty(0, dtype=source_dtype)
+        run = lambda values: materialize(StridedView(values, (0,), (1,), 0), dtype=result_dtype)
+        result, pullback = jax.vjp(run, source)
+        gradient = jax.jit(pullback)(result)[0]
+        assert gradient.shape == (0,) and gradient.dtype == source.dtype
+        frozen = lambda values: run(jax.lax.stop_gradient(values))
+        tangent = jax.jvp(frozen, (source,), (source,))[1]
+        assert tangent.shape == (0,) and tangent.dtype == result.dtype
+
+
+
+@pytest.mark.parametrize("source_dtype,result_dtype", [("float32", "complex128"), ("complex128", "float32")])
+def test_cross_kind_vmap_and_lowering(source_dtype, result_dtype):
+    with jax.enable_x64():
+        source = jnp.arange(6).astype(source_dtype).reshape((2, 3))
+        if source_dtype.startswith("complex"):
+            source = source + 2j
+        run = lambda values: materialize(StridedView(values, (2, 2), (1, 1), 0), dtype=result_dtype)
+        reference = lambda values: copy_converted(values[jnp.asarray([[0, 1], [1, 2]])], result_dtype)
+        cotangent = jnp.full((2, 2, 2), 2 + 3j if result_dtype.startswith("complex") else 2, dtype=result_dtype)
+        mapped = jax.vmap(run)
+        gradient = jax.jit(jax.vjp(mapped, source)[1])(cotangent)[0]
+        np.testing.assert_allclose(gradient, jax.vjp(jax.vmap(reference), source)[1](cotangent)[0])
+        text = jax.jit(jax.linear_transpose(mapped, source)).lower(cotangent).as_text()
+        assert "tensor0_stride_accumulation_" in text
+        for operation in ("stablehlo.gather", "stablehlo.scatter", "tensor0_stride_update"):
+            assert operation not in text
+
+
+
+def test_imaginary_cotangent_is_not_a_real_source_contribution():
+    source = jnp.ones(1, dtype=jnp.float32)
+    run = lambda values: materialize(StridedView(values, (2,), (0,), 0), dtype=jnp.complex64)
+    gradient = jax.jit(jax.vjp(run, source)[1])(jnp.asarray([1 + 2j, 3 - 4j], jnp.complex64))[0]
+    np.testing.assert_array_equal(gradient, [4])
+
+
+
+def test_real_output_cotangent_embeds_with_zero_imaginary_part():
+    source = jnp.asarray([1 + 2j], dtype=jnp.complex64)
+    run = lambda values: materialize(StridedView(values, (2,), (0,), 0), dtype=jnp.float32)
+    gradient = jax.jit(jax.vjp(run, source)[1])(jnp.asarray([1, 3], jnp.float32))[0]
+    np.testing.assert_array_equal(gradient, [4 + 0j])

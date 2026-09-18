@@ -5,24 +5,22 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-import tensor0._stride._ops._materialize as materialize_module
 from tensor0 import SU2Irrep, hom, space
 from tensor0._stride import StridedView, materialize
-from tensor0._stride._map import _execute_map
-from tensor0._stride._testing import (
-    _native_call_count_for_tests,
-    _reset_native_call_count_for_tests,
-    native_available,
-)
-from tensor0._stride._ops._materialize import build_materialize_plan
-from tensor0._stride._map_routing import (
-    RouteKind,
-    build_affine_route_features,
-    decide_fresh_map_route,
-)
+from tensor0._stride._ffi._calls import execute_copy
+from tensor0._stride._ffi._descriptor import encode_layout
+from tensor0._stride._layout import AffineRecord
 from tensor0.structure import get_degeneracystructure
 
-from ._oracle import legacy_materialize
+from ._support import native_available
+
+
+def reference_materialize(storage, sizes, strides, offset):
+    indices = np.full(sizes, offset, dtype=np.int32)
+    for axis, (size, stride) in enumerate(zip(sizes, strides, strict=True)):
+        shape = (1,) * axis + (size,) + (1,) * (len(sizes) - axis - 1)
+        indices += np.arange(size, dtype=np.int32).reshape(shape) * stride
+    return storage[..., indices]
 
 
 def _view(
@@ -57,7 +55,7 @@ def test_static_contiguous_materialization_uses_native_on_cpu() -> None:
 @pytest.mark.skipif(not native_available(), reason="native CPU stride is unavailable")
 def test_static_sliced_permuted_materialization_and_cast_use_native() -> None:
     source = jnp.arange(20, dtype=jnp.float32)
-    expected = legacy_materialize(source, (2, 3), (1, 4), 2).astype(
+    expected = reference_materialize(source, (2, 3), (1, 4), 2).astype(
         jnp.complex64
     )
     function = jax.jit(
@@ -67,14 +65,13 @@ def test_static_sliced_permuted_materialization_and_cast_use_native() -> None:
         )
     )
 
-    _reset_native_call_count_for_tests()
     actual = function(source)
     actual.block_until_ready()
 
     np.testing.assert_array_equal(np.asarray(actual), np.asarray(expected))
     assert actual.dtype == jnp.complex64
-    assert _native_call_count_for_tests() == 1
     hlo = str(function.lower(source).compiler_ir("stablehlo")).lower()
+    assert "tensor0_stride_copy_c64_cpu_v1" in hlo
     assert hlo.count("custom_call") == 1
     assert "gather" not in hlo
     assert "scatter" not in hlo
@@ -109,41 +106,26 @@ def test_materialize_requires_a_bound_view() -> None:
     with pytest.raises(TypeError, match="materialize requires a StridedView"):
         materialize(source)  # type: ignore[arg-type]
 
-    plan = build_materialize_plan(
-        sizes=(2, 3),
-        strides=(1, 4),
-        offset=2,
-        source_size=source.size,
-        source_dtype=jnp.float32,
-        result_dtype=jnp.float32,
-    )
-    with pytest.raises(TypeError, match="_execute_map source.*JAX Array"):
-        _execute_map(source, plan=plan)
+    with pytest.raises(TypeError, match="data must be a JAX Array"):
+        StridedView(source, (2, 3), (1, 4), 2)
 
 
-def test_small_concrete_materialization_enters_unified_executor(monkeypatch) -> None:
+def test_small_concrete_materialization_matches_compiled_copy() -> None:
     source = jnp.arange(20, dtype=jnp.float32)
-    real_strided_copy = materialize_module._execute_map
-    calls = 0
-
-    def counted_strided_copy(*args, **kwargs):
-        nonlocal calls
-        calls += 1
-        return real_strided_copy(*args, **kwargs)
-
-    monkeypatch.setattr(materialize_module, "_execute_map", counted_strided_copy)
     actual = materialize(
         _view(source, (2, 3), (1, 4), 2),
     )
 
     np.testing.assert_array_equal(
         np.asarray(actual),
-        np.asarray(legacy_materialize(source, (2, 3), (1, 4), 2)),
+        np.asarray(reference_materialize(source, (2, 3), (1, 4), 2)),
     )
-    assert calls == 1
+    compiled = jax.jit(lambda value: materialize(_view(value, (2, 3), (1, 4), 2)))
+    np.testing.assert_array_equal(actual, compiled(source))
+    assert "tensor0_stride_copy_f32_cpu_v1" in str(compiled.lower(source).compiler_ir("stablehlo"))
 
 
-def test_materialize_jit_jvp_vjp_linear_transpose_and_vmap_match_legacy() -> None:
+def test_materialize_jit_jvp_vjp_linear_transpose_and_vmap_match_reference() -> None:
     source = jnp.linspace(-1, 1, 20, dtype=jnp.float32)
     tangent = jnp.linspace(1, 2, 20, dtype=jnp.float32)
     cotangent = jnp.linspace(-2, 1, 6, dtype=jnp.float32).reshape(2, 3)
@@ -153,38 +135,38 @@ def test_materialize_jit_jvp_vjp_linear_transpose_and_vmap_match_legacy() -> Non
             _view(value, (2, 3), (1, 4), 2),
         )
 
-    def legacy(value):
-        return legacy_materialize(value, (2, 3), (1, 4), 2)
+    def reference(value):
+        return reference_materialize(value, (2, 3), (1, 4), 2)
 
     migrated_primal, migrated_tangent = jax.jvp(
         migrated,
         (source,),
         (tangent,),
     )
-    legacy_primal, legacy_tangent = jax.jvp(
-        legacy,
+    reference_primal, reference_tangent = jax.jvp(
+        reference,
         (source,),
         (tangent,),
     )
     migrated_vjp = jax.vjp(migrated, source)[1](cotangent)[0]
-    legacy_vjp = jax.vjp(legacy, source)[1](cotangent)[0]
+    reference_vjp = jax.vjp(reference, source)[1](cotangent)[0]
     migrated_transpose = jax.linear_transpose(
         migrated,
         jnp.zeros_like(source),
     )(cotangent)[0]
-    legacy_transpose = jax.linear_transpose(
-        legacy,
+    reference_transpose = jax.linear_transpose(
+        reference,
         jnp.zeros_like(source),
     )(cotangent)[0]
     batch = jnp.stack((source, 2 * source, -source))
 
-    np.testing.assert_array_equal(migrated_primal, legacy_primal)
-    np.testing.assert_array_equal(migrated_tangent, legacy_tangent)
-    np.testing.assert_array_equal(migrated_vjp, legacy_vjp)
-    np.testing.assert_array_equal(migrated_transpose, legacy_transpose)
+    np.testing.assert_array_equal(migrated_primal, reference_primal)
+    np.testing.assert_array_equal(migrated_tangent, reference_tangent)
+    np.testing.assert_array_equal(migrated_vjp, reference_vjp)
+    np.testing.assert_array_equal(migrated_transpose, reference_transpose)
     np.testing.assert_array_equal(
         jax.jit(jax.vmap(migrated))(batch),
-        jax.jit(jax.vmap(legacy))(batch),
+        jax.jit(jax.vmap(reference))(batch),
     )
 
 
@@ -203,7 +185,7 @@ def test_mixed_materialize_jit_jvp_vjp_and_vmap_match_explicit_cast() -> None:
         )
 
     def explicit(value):
-        return legacy_materialize(value, (2, 3), (3, 1), 0).astype(
+        return reference_materialize(value, (2, 3), (3, 1), 0).astype(
             jnp.complex64
         )
 
@@ -228,7 +210,7 @@ def test_subblock_metadata_can_be_materialized_directly() -> None:
     layout = get_degeneracystructure(target)
     subblock = layout.subblockstructure[0]
     source = jnp.arange(layout.total_dim, dtype=jnp.float32)
-    expected = legacy_materialize(
+    expected = reference_materialize(
         source,
         tuple(subblock.sizes),
         tuple(subblock.strides),
@@ -247,49 +229,12 @@ def test_subblock_metadata_can_be_materialized_directly() -> None:
 
 
 @pytest.mark.skipif(not native_available(), reason="native CPU stride is unavailable")
-def test_partial_materialization_uses_native_primary_route() -> None:
-    sizes = (64, 64)
-    plan = build_materialize_plan(
-        sizes=sizes,
-        strides=(1, 64),
-        offset=0,
-        source_size=64 * 64 + 1,
-        source_dtype=jnp.float32,
-        result_dtype=jnp.float32,
-    )
-    features = build_affine_route_features(
-        plan,
-        source_shape=(plan.source_size,),
-        platform="cpu",
-        native_runtime_available=True,
-    )
-    decision = decide_fresh_map_route(features)
-
-    assert decision.route is RouteKind.NATIVE
-    assert decision.reason == "native_cpu_primary"
-
-
-@pytest.mark.skipif(not native_available(), reason="native CPU stride is unavailable")
-def test_large_partial_materialization_uses_native_primary_route() -> None:
-    sizes = (512, 512)
-    strides = (1, 512)
+@pytest.mark.parametrize("side", [64, 512])
+def test_partial_materialization_uses_native_copy(side) -> None:
+    sizes = (side, side)
+    strides = (1, side)
     copied = sizes[0] * sizes[1]
     source = jnp.arange(copied + 1, dtype=jnp.float32)
-    plan = build_materialize_plan(
-        sizes=sizes,
-        strides=strides,
-        offset=0,
-        source_size=source.size,
-        source_dtype=source.dtype,
-        result_dtype=source.dtype,
-    )
-    features = build_affine_route_features(
-        plan,
-        source_shape=tuple(source.shape),
-        platform="cpu",
-        native_runtime_available=True,
-    )
-    decision = decide_fresh_map_route(features)
     function = jax.jit(
         lambda value: materialize(
             _view(value, sizes, strides, 0),
@@ -297,26 +242,162 @@ def test_large_partial_materialization_uses_native_primary_route() -> None:
     )
 
     hlo = str(function.lower(source).compiler_ir("stablehlo")).lower()
-    _reset_native_call_count_for_tests()
     actual = function(source)
     actual.block_until_ready()
 
-    assert decision.route is RouteKind.NATIVE
-    assert decision.reason == "native_cpu_primary"
+    assert "tensor0_stride_copy_f32_cpu_v1" in hlo
     assert hlo.count("custom_call") == 1
     assert "gather" not in hlo
     assert "scatter" not in hlo
-    assert _native_call_count_for_tests() == 1
     np.testing.assert_array_equal(
         np.asarray(actual),
         np.asarray(source[:-1].reshape(sizes).T),
     )
 
-    _reset_native_call_count_for_tests()
     eager = materialize(
         _view(source, sizes, strides, 0),
     )
     eager.block_until_ready()
 
-    assert _native_call_count_for_tests() == 1
     np.testing.assert_array_equal(eager, actual)
+
+
+@pytest.mark.parametrize("sizes,strides,offset", [
+    ((2, 3), (-1, 4), 3),
+    ((2, 3), (0, 1), 2),
+    ((2, 2), (1, 1), 1),
+    ((), (), 2),
+    ((2, 0), (3, 1), 0),
+])
+@pytest.mark.parametrize("batch_count", [0, 1, 3])
+def test_materialize_address_layouts_and_batches(sizes, strides, offset, batch_count) -> None:
+    source = jnp.arange(batch_count * 16, dtype=jnp.float32).reshape(batch_count, 16)
+    view = StridedView(source, sizes, strides, offset)
+    expected = reference_materialize(source, sizes, strides, offset)
+    actual = jax.jit(materialize)(view)
+    np.testing.assert_array_equal(actual, expected)
+    assert actual.shape == (batch_count, *sizes)
+
+
+@pytest.mark.parametrize("strides", [(0, 1), (1, 1)])
+def test_materialize_repeated_reads_accumulate_source_gradient(strides) -> None:
+    source = jnp.arange(8, dtype=jnp.float32)
+    cotangent = jnp.array([[1., 2.], [3., 4.]])
+
+    def operation(data):
+        return materialize(StridedView(data, (2, 2), strides, 1))
+
+    def reference(data):
+        return reference_materialize(data, (2, 2), strides, 1)
+
+    actual = jax.jit(lambda data: jax.vjp(operation, data)[1](cotangent)[0])(source)
+    expected = jax.vjp(reference, source)[1](cotangent)[0]
+    np.testing.assert_array_equal(actual, expected)
+
+
+CONVERSION_DTYPES = (
+    "bool", "int8", "int16", "int32", "int64", "uint8", "uint16", "uint32", "uint64",
+    "float16", "bfloat16", "float32", "float64", "complex64", "complex128",
+)
+
+
+
+@pytest.mark.parametrize("source_dtype", CONVERSION_DTYPES)
+@pytest.mark.parametrize("result_dtype", CONVERSION_DTYPES)
+def test_materialize_conversion_dtype_pairs(source_dtype, result_dtype):
+    with jax.enable_x64():
+        values = np.arange(12) % 7
+        if source_dtype.startswith("complex"):
+            values = values + 1j * (values + 1)
+        source = jnp.asarray(values, dtype=source_dtype)
+        view = StridedView(source, (2, 3), (1, -3), 9)
+        selected = source[jnp.asarray([[9, 6, 3], [10, 7, 4]])]
+        if jnp.iscomplexobj(selected) and result_dtype not in ("bool", "complex64", "complex128"):
+            selected = selected.real
+        expected = selected.astype(result_dtype)
+        for execute in (materialize, jax.jit(materialize, static_argnames="dtype")):
+            actual = execute(view, dtype=result_dtype)
+            assert actual.dtype == jnp.dtype(result_dtype)
+            np.testing.assert_array_equal(actual, expected)
+
+
+
+@pytest.mark.parametrize("batch_shape", [(), (2,), (2, 3), (0,), (2, 0, 3)])
+@pytest.mark.parametrize("shape,strides,offset", [((2, 3), (0, -1), 4), ((), (), 1), ((0,), (1,), 6)])
+def test_materialize_conversion_batch_broadcast_scalar_and_empty(batch_shape, shape, strides, offset):
+    source = jnp.broadcast_to(jnp.arange(6, dtype=jnp.float32) + .5, (*batch_shape, 6))
+    view = StridedView(source, shape, strides, offset)
+    indices = np.asarray([
+        offset + sum(index * stride for index, stride in zip(coordinate, strides, strict=True))
+        for coordinate in np.ndindex(shape)
+    ], dtype=np.int64).reshape(shape)
+    expected = np.asarray(source)[..., indices].astype(np.int16)
+    actual = jax.jit(lambda value: materialize(value, dtype="int16"))(view)
+    assert actual.shape == (*batch_shape, *shape)
+    np.testing.assert_array_equal(actual, expected)
+
+
+
+def test_materialize_conversion_float_integer_boundaries():
+    source = jnp.asarray([np.nan, np.inf, -np.inf, -1.9, 1.9, 128, -129], dtype=jnp.float32)
+    view = StridedView(source, (7,), (1,), 0)
+    np.testing.assert_array_equal(materialize(view, dtype="int8"), [0, 127, -128, -1, 1, 127, -128])
+    np.testing.assert_array_equal(materialize(view, dtype="uint8"), [0, 255, 0, 0, 1, 128, 0])
+
+
+
+def test_materialize_conversion_integer_narrowing_and_complex_projection():
+    integers = StridedView(jnp.asarray([255, 256, 257, -1], dtype=jnp.int32), (4,), (1,), 0)
+    np.testing.assert_array_equal(materialize(integers, dtype="uint8"), [255, 0, 1, 255])
+    source = jnp.asarray([complex(0, 2), complex(3, np.nan), complex(np.inf, 7)], dtype=jnp.complex64)
+    view = StridedView(source, (3,), (1,), 0)
+    np.testing.assert_array_equal(materialize(view, dtype="float32"), [0, 3, np.inf])
+    np.testing.assert_array_equal(materialize(view, dtype="bool"), [True, True, True])
+
+
+
+@pytest.mark.parametrize("dtype", ["float16", "bfloat16"])
+def test_materialize_conversion_low_precision_rounding(dtype):
+    source = jnp.asarray([0., -0., 1.00048828125, 1.00390625, 65520., np.inf, -np.inf, np.nan])
+    view = StridedView(source, (8,), (1,), 0)
+    actual = np.asarray(materialize(view, dtype=dtype))
+    expected = np.asarray(source.astype(dtype))
+    np.testing.assert_array_equal(actual[:-1].view(np.uint16), expected[:-1].view(np.uint16))
+    assert np.isnan(actual[-1])
+
+
+
+@pytest.mark.parametrize("x64", [False, True])
+def test_materialize_conversion_output_dtype_resolution(x64):
+    with jax.enable_x64(x64):
+        view = StridedView(jnp.arange(3, dtype=jnp.int32), (3,), (1,), 0)
+        actual = materialize(view, dtype="float64")
+        assert actual.dtype == jnp.dtype("float64" if x64 else "float32")
+
+
+
+def test_materialize_conversion_partial_multirecord_conversion_and_zero_initialization():
+    layout = encode_layout((
+        AffineRecord((2,), (-1,), 2, (1,), 1),
+        AffineRecord((1,), (1,), 0, (1,), 4),
+    ), source_size=3, output_size=6)
+    actual = execute_copy(jnp.asarray([5.5, 6.5, 7.5]), layout=layout, output_size=6, dtype="int16")
+    np.testing.assert_array_equal(actual, [0, 7, 6, 0, 5, 0])
+
+
+
+def test_materialize_conversion_external_vmap_and_target():
+    execute = jax.jit(jax.vmap(lambda row: materialize(StridedView(row, (3,), (-2,), 8), dtype="int16")))
+    source = jnp.arange(24, dtype=jnp.float32).reshape(2, 12) + .5
+    np.testing.assert_array_equal(execute(source), np.asarray(source)[:, [8, 6, 4]].astype(np.int16))
+    assert "tensor0_stride_copy_s16_cpu_v1" in execute.lower(source).as_text()
+
+
+
+def test_materialize_conversion_unsupported_dtype():
+    view = StridedView(jnp.ones(3, dtype=jnp.float32), (3,), (1,), 0)
+    with pytest.raises(NotImplementedError, match="does not support"):
+        materialize(view, dtype=jnp.float8_e4m3fn)
+    unsupported = StridedView(jnp.ones(3, dtype=jnp.float8_e4m3fn), (3,), (1,), 0)
+    with pytest.raises(Exception, match="unsupported scalar dtype"):
+        materialize(unsupported, dtype="float32").block_until_ready()

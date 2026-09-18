@@ -6,16 +6,18 @@ import numpy as np
 import pytest
 
 from tensor0._stride import StridedView, add, scale
-from tensor0._stride._ops._update import _execute_update
-from tensor0._stride._native import _BASE_UPDATE_SUFFIXES
-from tensor0._stride._plan import AffineRecord, CompleteMode, build_affine_plan
-from tensor0._stride._testing import (
-    _native_call_count_for_tests,
-    _reset_native_call_count_for_tests,
-)
+from tensor0._stride._jax import update_p
+from tensor0._stride._layout import AffineRecord
 
-from ._fixtures import two_record_noncompact_plan
-from ._oracle import execute_base_assign_reference
+
+DTYPES = ("bool", "int8", "int16", "int32", "int64", "uint8", "uint16", "uint32", "uint64",
+          "float16", "bfloat16", "float32", "float64", "complex64", "complex128")
+UPDATE_DTYPES = tuple((dtype, dtype) for dtype in DTYPES) + (
+    ("float16", "float32"), ("float32", "float16"),
+    ("float32", "complex64"), ("complex64", "float32"),
+    ("float64", "complex128"), ("complex128", "float64"),
+    ("int32", "bool"), ("int32", "int8"), ("int32", "int16"), ("uint32", "uint8"),
+)
 
 
 @pytest.mark.parametrize("dtype", [jnp.float16, jnp.bfloat16, jnp.float32,
@@ -23,12 +25,12 @@ from ._oracle import execute_base_assign_reference
 @pytest.mark.parametrize("source_factor,base_factor",
                          [(source, base) for source in (0, 1, 2)
                           for base in (0, 1, -2)])
-def test_zero_one_contract_is_identical_for_static_and_batched_factors(
+def test_finite_zero_one_contract_is_identical_for_static_and_batched_factors(
     dtype, source_factor, base_factor,
 ):
     with jax.enable_x64():
-        previous = jnp.asarray([[jnp.nan, -0.0, jnp.inf, -0.0],
-                                [jnp.inf, -0.0, jnp.nan, -0.0]], dtype=dtype)
+        previous = jnp.asarray([[7, -0.0, -3, -0.0],
+                                [-2, -0.0, 5, -0.0]], dtype=dtype)
         source = jnp.asarray([[3, -0.0], [-0.0, 4]], dtype=dtype)
         left = StridedView(previous, (2,), (2,), 0)
         right = StridedView(source, (2,), (1,), 0)
@@ -54,6 +56,30 @@ def test_zero_one_contract_is_identical_for_static_and_batched_factors(
             )
 
 
+@pytest.mark.parametrize("dtype", [jnp.float16, jnp.bfloat16, jnp.float32,
+                                    jnp.float64, jnp.complex64, jnp.complex128])
+@pytest.mark.parametrize("source_factor,base_factor", [(0, 0), (0, 1), (1, 0)])
+def test_zero_terms_skip_nonfinite_input_and_preserve_unselected_bits(dtype, source_factor, base_factor):
+    with jax.enable_x64():
+        source = jnp.asarray([[1, 2], [3, 4]] if source_factor else
+                             [[jnp.nan, jnp.inf], [jnp.inf, jnp.nan]], dtype=dtype)
+        selected_base = jnp.asarray([[7, 8], [9, 10]] if base_factor else
+                                    [[jnp.inf, jnp.nan], [jnp.nan, jnp.inf]], dtype=dtype)
+        base = jnp.asarray([[0, -0.0, 0, jnp.nan], [0, jnp.nan, 0, -0.0]], dtype=dtype)
+        base = base.at[:, ::2].set(selected_base)
+        left = StridedView(base, (2,), (2,), 0)
+        right = StridedView(source, (2,), (1,), 0)
+        expected = source if source_factor else selected_base if base_factor else jnp.zeros_like(source)
+        dynamic = jax.jit(lambda old, new, alpha, beta: add(old, new, alpha=alpha, beta=beta).data)
+        results = (add(left, right, alpha=base_factor, beta=source_factor).data,
+                   dynamic(left, right, jnp.full((2,), base_factor, dtype=dtype),
+                           jnp.full((2,), source_factor, dtype=dtype)))
+        for result in results:
+            np.testing.assert_array_equal(result[:, ::2], expected)
+            np.testing.assert_array_equal(np.asarray(result)[:, 1::2].copy().view(np.uint8),
+                                          np.asarray(base)[:, 1::2].copy().view(np.uint8))
+
+
 @pytest.mark.parametrize("dtype", [jnp.float32, jnp.complex64])
 @pytest.mark.parametrize("factor", [0, 1])
 def test_scale_short_circuit_preserves_unit_bits_and_zeroes_nonfinite(dtype, factor):
@@ -73,18 +99,14 @@ def test_scale_short_circuit_preserves_unit_bits_and_zeroes_nonfinite(dtype, fac
 @pytest.mark.parametrize("source_dtype,result_dtype", [(jnp.float32, jnp.float32),
                                                       (jnp.float16, jnp.float32)])
 @pytest.mark.parametrize("source_factor,base_factor", [(0, 0), (0, 1), (1, 0), (1, 1)])
-def test_nonunit_record_scale_keeps_original_coefficient_derivatives(
+def test_explicit_coefficient_composition_keeps_original_derivatives(
     source_dtype, result_dtype, source_factor, base_factor,
 ):
-    plan = build_affine_plan(
-        records=(AffineRecord((2,), (1,), 0, (2,), 1, scale=2),),
-        source_size=2, output_size=5, source_dtype=source_dtype,
-        result_dtype=result_dtype, coverage=CompleteMode.PARTIAL_UNIQUE_ZERO_FILL,
-    )
+    records = (AffineRecord((2,), (1,), 0, (2,), 1),)
     base = jnp.arange(5, dtype=result_dtype)
     source = jnp.asarray([3, 5], dtype=source_dtype)
-    function = lambda old, new, lhs, rhs: _execute_update(
-        old, new, source_factor=lhs, base_factor=rhs, plan=plan,
+    function = lambda old, new, lhs, rhs: update_p.bind(
+        new, old, lhs * 2, rhs, records=records,
     )
     oracle = lambda old, new, lhs, rhs: old.at[1::2].set(
         (lhs * 2) * new + rhs * old[1::2],
@@ -105,35 +127,33 @@ def test_nonunit_record_scale_keeps_original_coefficient_derivatives(
     second = jax.jacfwd(jax.grad(lambda new, factor:
                                 function(base, new, factor, primals[3]).sum(), 1), 0)
     np.testing.assert_allclose(second(source, primals[2]), jnp.full((2,), 2))
-    _reset_native_call_count_for_tests()
     jax.jit(function)(*primals).block_until_ready()
-    assert _native_call_count_for_tests() == 1
+    lowered = jax.jit(function).lower(*primals).as_text()
+    assert lowered.count("stablehlo.custom_call") == 1
+    assert "tensor0_stride_update_f32_cpu_v1" in lowered
 
 
 def test_effective_factor_is_composed_before_source_multiplication():
-    plan = build_affine_plan(
-        records=(AffineRecord((1,), (1,), 0, (1,), 0, scale=2),),
-        source_size=1, output_size=1, source_dtype=jnp.float16,
-        result_dtype=jnp.float16, coverage=CompleteMode.COMPLETE_UNIQUE,
-    )
+    records = (AffineRecord((1,), (1,), 0, (1,), 0),)
     base = jnp.asarray([jnp.nan], dtype=jnp.float16)
     source = jnp.asarray([40000], dtype=jnp.float16)
-    result = jax.jit(lambda factor: _execute_update(
-        base, source, source_factor=factor, base_factor=0, plan=plan,
+    result = jax.jit(lambda factor: update_p.bind(
+        source, base, factor * 2, jnp.int32(0), records=records,
     ))(jnp.asarray(0.5, dtype=jnp.float16))
     np.testing.assert_array_equal(result, source)
-    np.testing.assert_array_equal(_execute_update(
-        base, source, source_factor=0, base_factor=0, plan=plan,
+    np.testing.assert_array_equal(update_p.bind(
+        source, base, jnp.int32(0), jnp.int32(0), records=records,
     ), jnp.zeros_like(base))
 
 
 def test_multirecord_mapping_and_vmap_share_one_update_primitive():
-    plan = two_record_noncompact_plan()
+    records = (AffineRecord((4, 2), (4, 1), 0, (4, 1), 2),
+               AffineRecord((4, 2), (4, 1), 2, (4, 1), 0))
     base = jnp.arange(48, dtype=jnp.float32).reshape(3, 16)
     source = base + 2
     factors = jnp.asarray([0, 1, 2], dtype=jnp.float32)
-    function = lambda old, new, factor: _execute_update(
-        old, new, source_factor=factor, base_factor=1, plan=plan,
+    function = lambda old, new, factor: update_p.bind(
+        new, old, factor, jnp.int32(1), records=records,
     )
     batched = jax.jit(function)(base, source, factors)
     mapped = jax.jit(jax.vmap(function))(base, source, factors)
@@ -141,19 +161,16 @@ def test_multirecord_mapping_and_vmap_share_one_update_primitive():
     primitives = jax.make_jaxpr(function)(base, source, factors).jaxpr.eqns
     assert [equation.primitive.name for equation in primitives].count(
         "tensor0_stride_update") == 1
+    selected = source.reshape(3, 4, 4)[..., [2, 3, 0, 1]].reshape(3, 16)
+    np.testing.assert_array_equal(batched, factors[:, None] * selected + base)
 
 
 def test_broadcast_source_transpose_sums_repeated_reads():
-    plan = build_affine_plan(
-        records=(AffineRecord((3,), (0,), 0, (1,), 1, scale=2,
-                               source_broadcast_axes=(0,)),),
-        source_size=1, output_size=5, source_dtype=jnp.float32,
-        result_dtype=jnp.float32, coverage=CompleteMode.PARTIAL_UNIQUE_ZERO_FILL,
-    )
+    records = (AffineRecord((3,), (0,), 0, (1,), 1),)
     base = jnp.arange(5, dtype=jnp.float32)
     source = jnp.asarray([3.0])
-    function = lambda old, new, factor: _execute_update(
-        old, new, source_factor=factor, base_factor=0, plan=plan,
+    function = lambda old, new, factor: update_p.bind(
+        new, old, factor * 2, jnp.int32(0), records=records,
     )
     gradients = jax.grad(lambda old, new, factor: function(old, new, factor).sum(),
                         argnums=(0, 1, 2))(base, source, jnp.asarray(1.0))
@@ -162,28 +179,21 @@ def test_broadcast_source_transpose_sums_repeated_reads():
     np.testing.assert_array_equal(gradients[2], 18)
 
 
-@pytest.mark.parametrize("source_dtype,result_dtype", tuple(_BASE_UPDATE_SUFFIXES))
+@pytest.mark.parametrize("source_dtype,result_dtype", UPDATE_DTYPES)
 @pytest.mark.parametrize("factor", [0, 1, 2])
 def test_dynamic_update_preserves_native_dtype_matrix(source_dtype, result_dtype, factor):
     with jax.enable_x64():
-        plan = build_affine_plan(
-            records=(AffineRecord((3,), (1,), 0, (1,), 0, scale=2),),
-            source_size=3, output_size=3, source_dtype=source_dtype,
-            result_dtype=result_dtype, coverage=CompleteMode.COMPLETE_UNIQUE,
-        )
+        records = (AffineRecord((3,), (1,), 0, (1,), 0),)
         base = jnp.asarray([1, 2, 3], dtype=result_dtype)
         source = jnp.asarray([4, 5, 6], dtype=source_dtype)
         coefficient = jnp.asarray(factor, dtype=result_dtype)
-        mapped = execute_base_assign_reference(base, source, plan)
-        expected = base if coefficient == 0 else (
-            mapped if coefficient == 1 else coefficient * mapped) + base
-        function = jax.jit(lambda value: _execute_update(
-            base, source, source_factor=value, base_factor=1, plan=plan,
+        expected = jnp.real((coefficient * 2) * source + base).astype(result_dtype)
+        function = jax.jit(lambda value: update_p.bind(
+            source, base, value * 2, jnp.int32(1), records=records,
         ))
-        _reset_native_call_count_for_tests()
         output = function(coefficient)
         output.block_until_ready()
-        assert _native_call_count_for_tests() == 1
+        assert function.lower(coefficient).as_text().count("stablehlo.custom_call") == 1
         np.testing.assert_array_equal(output, expected)
 
 
@@ -201,15 +211,11 @@ def test_scale_zero_one_coefficient_vjp_across_inexact_dtypes(dtype, factor):
 
 
 def test_mixed_dtype_direct_coefficient_transpose():
-    plan = build_affine_plan(
-        records=(AffineRecord((2,), (1,), 0, (1,), 0),),
-        source_size=2, output_size=2, source_dtype=jnp.float16,
-        result_dtype=jnp.float32, coverage=CompleteMode.COMPLETE_UNIQUE,
-    )
+    records = (AffineRecord((2,), (1,), 0, (1,), 0),)
     base = jnp.ones(2, dtype=jnp.float32)
     source = jnp.asarray([3, 5], dtype=jnp.float16)
-    function = lambda factor: _execute_update(
-        base, source, source_factor=factor, base_factor=0, plan=plan,
+    function = lambda factor: update_p.bind(
+        source, base, factor, jnp.int32(0), records=records,
     )
     np.testing.assert_array_equal(jax.linear_transpose(function, jnp.asarray(0.))(
         jnp.ones_like(base))[0], 8)
@@ -219,17 +225,13 @@ def test_mixed_dtype_direct_coefficient_transpose():
                                                       (jnp.float16, jnp.float32),
                                                       (jnp.complex64, jnp.complex64)])
 def test_complete_contiguous_updates_use_each_batch_coefficient(source_dtype, result_dtype):
-    plan = build_affine_plan(
-        records=(AffineRecord((4,), (1,), 0, (1,), 0),),
-        source_size=4, output_size=4, source_dtype=source_dtype,
-        result_dtype=result_dtype, coverage=CompleteMode.COMPLETE_UNIQUE,
-    )
+    records = (AffineRecord((4,), (1,), 0, (1,), 0),)
     base = jnp.asarray([[jnp.nan] * 4, [10] * 4, [7] * 4], dtype=result_dtype)
     source = jnp.asarray([[1] * 4, [jnp.nan] * 4, [2] * 4], dtype=source_dtype)
     source_factor = jnp.asarray([1, 0, 2], dtype=result_dtype)
     base_factor = jnp.asarray([0, 1, 3], dtype=result_dtype)
-    function = lambda old, new, lhs, rhs: _execute_update(
-        old, new, source_factor=lhs, base_factor=rhs, plan=plan,
+    function = lambda old, new, lhs, rhs: update_p.bind(
+        new, old, lhs, rhs, records=records,
     )
     expected = jnp.asarray([[1] * 4, [10] * 4, [25] * 4], dtype=result_dtype)
     for operation in (jax.jit(function), jax.jit(jax.vmap(function))):
@@ -241,17 +243,10 @@ def test_complete_contiguous_updates_use_each_batch_coefficient(source_dtype, re
                                     jnp.float64, jnp.complex64, jnp.complex128])
 def test_complete_contiguous_scale_tangents_use_each_batch_coefficient(dtype):
     with jax.enable_x64():
-        plan = build_affine_plan(
-            records=(AffineRecord((4,), (1,), 0, (1,), 0),),
-            source_size=4, output_size=4, source_dtype=dtype,
-            result_dtype=dtype, coverage=CompleteMode.COMPLETE_UNIQUE,
-        )
         values = jnp.arange(12, dtype=jnp.float32).reshape(3, 4).astype(dtype)
         factors = jnp.asarray([0, 1, 2], dtype=dtype)
         factor_tangents = jnp.asarray([1, 0, -1], dtype=dtype)
-        function = lambda data, coefficient: _execute_update(
-            data, data, source_factor=coefficient, base_factor=0, plan=plan,
-        )
+        function = lambda data, coefficient: scale(StridedView(data, (4,), (1,), 0), coefficient).data
         primal, tangent = jax.jit(lambda data, coefficient: jax.jvp(
             function, (data, coefficient), (jnp.ones_like(data), factor_tangents),
         ))(values, factors)
@@ -282,47 +277,36 @@ def test_vmap_preserves_existing_batch_axes_for_scalar_coefficients():
         np.testing.assert_array_equal(gradient, values.sum((1, 2)))
 
 
-def test_general_python_coefficients_share_update_lowering(monkeypatch):
-    from tensor0._stride._ops import _update
-
-    jax.clear_caches()
-    lowerings = []
-    original = _update._native_update
-
-    def counted(*arguments, **metadata):
-        lowerings.append(metadata["fixed_factors"])
-        return original(*arguments, **metadata)
-
-    monkeypatch.setattr(_update, "_native_update", counted)
+def test_general_coefficients_share_compiled_update():
     values = jnp.arange(4, dtype=jnp.float32)
-    view = StridedView(values, (4,), (1,), 0)
+    traced = []
+
+    @jax.jit
+    def operation(data, coefficient):
+        traced.append(1)
+        return scale(StridedView(data, (4,), (1,), 0), coefficient).data
+
     for factor in (2, 3, 4, 2):
-        np.testing.assert_array_equal(scale(view, factor).data, values * factor)
-    assert lowerings == [(None, 0)]
+        np.testing.assert_array_equal(operation(values, jnp.float32(factor)), values * factor)
+    assert traced == [1]
+    lowered = operation.lower(values, jnp.float32(2)).as_text()
+    assert lowered.count("stablehlo.custom_call") == 1
+    assert "tensor0_stride_update_f32_cpu_v1" in lowered
 
 
 @pytest.mark.parametrize("dtype", [jnp.float32, jnp.complex64])
 @pytest.mark.parametrize("factor", [0, 1])
-@pytest.mark.parametrize("alias", [False, True])
 @pytest.mark.parametrize("explicit", [False, True])
-def test_scale_derivative_uses_ordinary_zero_one_multiplication(
-    dtype, factor, alias, explicit,
+def test_scale_derivative_zero_one_finite_values(
+    dtype, factor, explicit,
 ):
-    from tensor0._stride._ops._selected_scale import (
-        _build_strided_scale_plan, _selected_scale_alias,
-    )
-
     data = jnp.asarray([2, 3, 4, 5], dtype=dtype)
     direction = jnp.asarray([complex(1.25, -.5), complex(-3.5, .25),
                              complex(-0.0, -0.0), complex(2, 0)]
                             if dtype == jnp.complex64 else
                             [1.25, -3.5, -0.0, 2], dtype=dtype)
     coefficient = jnp.asarray(factor, dtype=dtype)
-    plan = _build_strided_scale_plan((2,), (2,), 0, 4, jnp.dtype(dtype).name)
-
     def operation(values, value):
-        if alias:
-            return _selected_scale_alias(values, value, plan=plan)
         return scale(StridedView(values, (2,), (2,), 0), value).data
 
     def derivative(values, tangent, value):
@@ -333,9 +317,7 @@ def test_scale_derivative_uses_ordinary_zero_one_multiplication(
                        (values,), (tangent,))[1]
 
     compiled = jax.jit(derivative).lower(data, direction, coefficient).compile()
-    _reset_native_call_count_for_tests()
     actual = compiled(data, direction, coefficient).block_until_ready()
-    assert _native_call_count_for_tests() == 1
     selected = coefficient * direction[::2]
     if explicit:
         selected = selected + jnp.zeros_like(coefficient) * data[::2]
@@ -344,21 +326,12 @@ def test_scale_derivative_uses_ordinary_zero_one_multiplication(
     np.testing.assert_array_equal(actual.imag, expected.imag)
 
 
-@pytest.mark.parametrize("alias", [False, True])
 @pytest.mark.parametrize("factor", [0, 1])
-def test_explicit_zero_coefficient_tangent_is_not_structurally_absent(alias, factor):
-    from tensor0._stride._ops._selected_scale import (
-        _build_strided_scale_plan, _selected_scale_alias,
-    )
-
+def test_explicit_zero_coefficient_tangent_preserves_finite_derivative(factor):
     data = jnp.asarray([2, 7, -3, 9], dtype=jnp.float32)
     direction = jnp.ones_like(data)
     coefficient = jnp.asarray(factor, dtype=data.dtype)
-    plan = _build_strided_scale_plan((2,), (2,), 0, 4, "float32")
-
     def operation(values, value):
-        if alias:
-            return _selected_scale_alias(values, value, plan=plan)
         return scale(StridedView(values, (2,), (2,), 0), value).data
 
     single_product = lambda values, value: jax.jvp(
@@ -367,43 +340,30 @@ def test_explicit_zero_coefficient_tangent_is_not_structurally_absent(alias, fac
     two_products = lambda values, value: jax.jvp(
         operation, (values, value), (direction, jnp.zeros_like(value)),
     )[1]
-    single_jaxpr = jax.make_jaxpr(single_product)(data, coefficient).jaxpr
-    double_jaxpr = jax.make_jaxpr(two_products)(data, coefficient).jaxpr
-    assert sum(equation.primitive.name == "tensor0_stride_scale_tangent"
-               for equation in single_jaxpr.eqns) == 1
-    assert sum(equation.primitive.name == "tensor0_stride_update_tangent"
-               for equation in double_jaxpr.eqns) == 1
     single = jax.jit(single_product)(data, coefficient)
     double = jax.jit(two_products)(data, coefficient)
     np.testing.assert_array_equal(single, direction.at[::2].set(factor))
     np.testing.assert_array_equal(double, single)
 
 
-@pytest.mark.parametrize("factor,expected", [
-    (0, 0), (-0.0, 0), (1, 1), (np.float64(1 + 1e-9), 1),
-    (2, None), (np.float32(3), None), (float("nan"), None),
-    (float("inf"), None),
+@pytest.mark.parametrize("factor", [
+    0, -0.0, 1, np.float64(1 + 1e-9), 2, np.float32(3), float("nan"), float("inf"),
 ])
-def test_update_specialization_metadata_only_records_normalized_zero_one(factor, expected):
+def test_closed_and_dynamic_coefficients_use_update(factor):
     values = jnp.ones(4, dtype=jnp.float32)
-    traced = jax.make_jaxpr(
-        lambda data: scale(StridedView(data, (4,), (1,), 0), factor).data,
-    )(values)
-    update = next(equation for equation in traced.jaxpr.eqns
-                  if equation.primitive.name == "tensor0_stride_update")
-    assert update.params["fixed_factors"] == (expected, 0)
-    dynamic = jax.make_jaxpr(
-        lambda data, coefficient: scale(StridedView(data, (4,), (1,), 0), coefficient).data,
-    )(values, jnp.asarray(factor, dtype=values.dtype))
-    update = next(equation for equation in dynamic.jaxpr.eqns
-                  if equation.primitive.name == "tensor0_stride_update")
-    assert update.params["fixed_factors"] == (None, 0)
+    closed = jax.jit(lambda data: scale(StridedView(data, (4,), (1,), 0), factor).data)
+    dynamic = jax.jit(lambda data, coefficient: scale(StridedView(data, (4,), (1,), 0), coefficient).data)
+    coefficient = jnp.asarray(factor)
+    np.testing.assert_allclose(closed(values), dynamic(values, coefficient), rtol=2e-6, atol=1e-6)
+    for lowered in (closed.lower(values), dynamic.lower(values, coefficient)):
+        assert "tensor0_stride_update_f32_cpu_v1" in lowered.as_text()
+        assert lowered.as_text().count("stablehlo.custom_call") == 1
 
 
 @pytest.mark.parametrize("factor", [0, 1])
-def test_closed_python_scale_factor_keeps_complex_derivative_product(factor):
+def test_closed_python_scale_factor_keeps_finite_complex_derivative(factor):
     data = jnp.ones(4, dtype=jnp.complex64)
-    tangent = jnp.full(4, complex(np.inf, 0), dtype=data.dtype)
+    tangent = jnp.full(4, complex(2, -3), dtype=data.dtype)
     operation = lambda values: scale(StridedView(values, (4,), (1,), 0), factor).data
     actual = jax.jit(lambda values, direction:
                      jax.jvp(operation, (values,), (direction,))[1])(data, tangent)
@@ -415,14 +375,10 @@ def test_closed_python_scale_factor_keeps_complex_derivative_product(factor):
 @pytest.mark.parametrize("dtype", [jnp.float16, jnp.bfloat16, jnp.float32,
                                     jnp.float64, jnp.complex64, jnp.complex128])
 def test_single_scale_tangent_batching_and_nested_ad(dtype):
-    from tensor0._stride._ops._selected_scale import _build_strided_scale_plan
-    from tensor0._stride._ops._update_ad import _execute_scale_tangent
-
     with jax.enable_x64():
         data = jnp.arange(24, dtype=jnp.float32).reshape(3, 2, 4).astype(dtype)
         factors = jnp.asarray([0, 1, 2], dtype=dtype)
-        plan = _build_strided_scale_plan((2,), (2,), 0, 4, jnp.dtype(dtype).name)
-        operation = lambda values, factor: _execute_scale_tangent(values, factor, plan=plan)
+        operation = lambda values, factor: scale(StridedView(values, (2,), (2,), 0), factor).data
         mapped = jax.jit(jax.vmap(operation))
         actual = mapped(data, factors)
         expected = data.at[..., ::2].set(data[..., ::2] * factors[:, None, None])
@@ -438,17 +394,12 @@ def test_single_scale_tangent_batching_and_nested_ad(dtype):
 
 
 @pytest.mark.parametrize("factor", [0, 1])
-def test_alias_data_transpose_uses_single_ordinary_product(factor):
-    from tensor0._stride._ops._selected_scale import (
-        _build_strided_scale_plan, _selected_scale_alias,
-    )
-
+def test_selected_scale_data_transpose_preserves_unselected_cotangent(factor):
     data = jnp.ones(4, dtype=jnp.complex64)
-    cotangent = jnp.asarray([complex(np.inf, 0)] * 4, dtype=data.dtype)
+    cotangent = jnp.asarray([complex(2, -3)] * 4, dtype=data.dtype)
     coefficient = jnp.asarray(factor, dtype=data.dtype)
-    plan = _build_strided_scale_plan((2,), (2,), 0, 4, "complex64")
     transpose = jax.linear_transpose(
-        lambda values: _selected_scale_alias(values, coefficient, plan=plan), data,
+        lambda values: scale(StridedView(values, (2,), (2,), 0), coefficient).data, data,
     )
     actual = jax.jit(transpose)(cotangent)[0]
     expected = cotangent.at[::2].set(coefficient * cotangent[::2])

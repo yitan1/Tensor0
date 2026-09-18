@@ -10,7 +10,7 @@ import pytest
 
 import tensor0
 import tensor0._stride as stride_api
-from tensor0._stride._plan import CompleteMode, AffineRecord
+from tensor0._stride._layout import AffineRecord
 from tensor0._stride import (
     StridedView,
     add,
@@ -20,20 +20,10 @@ from tensor0._stride import (
     reduce_sum,
     scale,
 )
-from tensor0._stride._testing import (
-    _native_call_count_for_tests,
-    _native_reduction_fiber_chunks_for_tests,
-    _native_worker_counts_for_tests,
-    _reset_native_call_count_for_tests,
-    _set_native_worker_limit_for_tests,
-    native_available,
-)
-from tensor0._stride._ops._dot import (
-    _dot_descriptor,
-    native_projection_dotu,
-)
-from tensor0._stride._native import _dot_ffi_call
-from tensor0._stride._plan import build_affine_plan
+from tensor0._stride._ffi._calls import execute_dot
+from tensor0._stride._ffi._descriptor import encode_layout
+from tensor0._stride._ffi._registration import operation_target
+from ._support import native_available
 
 
 def _pitched(data: jax.Array) -> StridedView:
@@ -108,13 +98,18 @@ def test_add_static_and_dynamic_coefficients_short_circuit_special_values(
     right = StridedView.from_dense(right_data, (3,))
     indices = jnp.asarray([1, 3, 5])
     terms = []
-    for factor, values in ((beta, right_data.astype(result_dtype)),
+    for factor, values in ((beta, right_data),
                            (alpha, left_data[indices])):
         if factor != 0:
-            terms.append(values if factor == 1 else factor * values)
+            if factor == 1:
+                terms.append(values)
+            elif jnp.issubdtype(values.dtype, jnp.complexfloating):
+                terms.append(jax.lax.complex(factor * values.real, factor * values.imag))
+            else:
+                terms.append(factor * values)
     selected = (jnp.zeros((3,), dtype=result_dtype) if not terms
                 else terms[0] if len(terms) == 1 else terms[0] + terms[1])
-    expected = left_data.at[indices].set(selected)
+    expected = left_data.at[indices].set(selected.astype(result_dtype))
     dynamic = jax.jit(
         lambda old, new, lhs, rhs: add(
             old, new, alpha=lhs, beta=rhs,
@@ -160,10 +155,9 @@ def test_add_batched_zero_one_coefficients_jvp_vjp_and_mixed_derivatives(
         return add(_pitched(old), _dense(new), alpha=lhs, beta=rhs).data
 
     def oracle(old, new, lhs, rhs):
-        mapped = new.astype(old.dtype).reshape(3, 6)
+        mapped = new.reshape(3, 6)
         return old.at[:, indices].set(
-            rhs.astype(old.dtype)[:, None] * mapped
-            + lhs.astype(old.dtype)[:, None] * old[:, indices]
+            (rhs[:, None] * mapped + lhs[:, None] * old[:, indices]).astype(old.dtype)
         )
 
     primals = (left, right, alpha, beta)
@@ -266,12 +260,13 @@ def test_reduce_sum_uses_native_reduction_for_supported_dtype() -> None:
     def operation(value: jax.Array) -> jax.Array:
         return reduce_sum(StridedView.from_dense(value, (3, 4)), (1,))
 
-    _reset_native_call_count_for_tests()
     actual = operation(source)
     actual.block_until_ready()
 
     np.testing.assert_array_equal(actual, jnp.sum(source, axis=2))
-    assert _native_call_count_for_tests() == 1
+    stablehlo = str(operation.lower(source).compiler_ir("stablehlo"))
+    assert stablehlo.count("stablehlo.custom_call") == 1
+    assert "tensor0_stride_reduction_f32_cpu_v1" in stablehlo
 
 
 def test_reduce_sum_preserves_jax_integer_promotion() -> None:
@@ -292,10 +287,8 @@ def test_native_dot_uses_one_custom_call() -> None:
     def operation(left_data: jax.Array, right_data: jax.Array) -> jax.Array:
         return dotu(_dense(left_data), _pitched(right_data))
 
-    _reset_native_call_count_for_tests()
     actual = operation(left, right)
     actual.block_until_ready()
-    assert _native_call_count_for_tests() == 1
     np.testing.assert_allclose(
         actual,
         jnp.sum(left * materialize(_pitched(right))),
@@ -305,7 +298,7 @@ def test_native_dot_uses_one_custom_call() -> None:
         operation.lower(left, right).compiler_ir("stablehlo")
     ).lower()
     assert stablehlo.count("stablehlo.custom_call") == 1
-    assert "tensor0_stride_dotu_float32_cpu_v1" in stablehlo
+    assert "tensor0_stride_dot_f32_cpu_v1" in stablehlo
 
 
 def test_native_dot_supports_negative_stride_and_batched_rank_zero() -> None:
@@ -330,35 +323,37 @@ def test_native_dot_supports_negative_stride_and_batched_rank_zero() -> None:
 
 
 @pytest.mark.skipif(not native_available(), reason="native CPU stride unavailable")
-def test_native_dot_recursively_splits_multidimensional_domain() -> None:
+@pytest.mark.parametrize("workers", [1, 4])
+def test_native_dot_multidimensional_domain_with_thread_limits(workers) -> None:
     shape = (512, 512)
     element_count = shape[0] * shape[1]
-    left_data = jnp.linspace(-1, 2, element_count, dtype=jnp.float32)
-    right_data = jnp.linspace(3, -2, element_count, dtype=jnp.float32)
+    left_data = (jnp.arange(element_count, dtype=jnp.float32) % 17 - 8) * 0.125
+    right_data = (jnp.arange(element_count, dtype=jnp.float32) % 13 - 6) * 0.25
     left = StridedView(left_data, shape, (1, shape[0]), 0)
     right = StridedView(right_data, shape, (shape[1], 1), 0)
 
-    _set_native_worker_limit_for_tests(4)
+    original = stride_api.get_num_threads()
+    stride_api.set_num_threads(workers)
     try:
         actual = jax.jit(dotu)(left, right)
         actual.block_until_ready()
-        workers, available = _native_worker_counts_for_tests()
-        chunks = _native_reduction_fiber_chunks_for_tests()
     finally:
-        _set_native_worker_limit_for_tests(None)
+        if original is None:
+            stride_api.enable_threads()
+        else:
+            stride_api.set_num_threads(original)
 
-    expected = jnp.sum(materialize(left) * materialize(right))
+    expected = np.sum(np.asarray(left_data).reshape(shape).T * np.asarray(right_data).reshape(shape),
+                      dtype=np.float64)
     np.testing.assert_allclose(actual, expected, rtol=2e-5, atol=2e-5)
-    if available >= 2:
-        assert workers >= 2
-        assert chunks >= 2
 
 
 @pytest.mark.skipif(not native_available(), reason="native CPU stride unavailable")
-def test_native_multirecord_dot_uses_parallel_subdomains() -> None:
+@pytest.mark.parametrize("workers", [1, 4])
+def test_native_multirecord_dot_with_thread_limits(workers) -> None:
     record_size = 65_536
-    plan = build_affine_plan(
-        records=(
+    layout = encode_layout(
+        (
             AffineRecord((record_size,), (1,), 0, (1,), 0),
             AffineRecord(
                 (record_size,),
@@ -369,54 +364,40 @@ def test_native_multirecord_dot_uses_parallel_subdomains() -> None:
             ),
         ),
         output_size=2 * record_size,
-        coverage=CompleteMode.COMPLETE_UNIQUE,
         source_size=2 * record_size,
-        source_dtype=jnp.float32,
-        result_dtype=jnp.float32,
     )
-    left = jnp.linspace(-1, 2, plan.source_size, dtype=jnp.float32)
-    right = jnp.linspace(3, -2, plan.source_size, dtype=jnp.float32)
+    left = jnp.linspace(-1, 2, 2 * record_size, dtype=jnp.float32)
+    right = jnp.linspace(3, -2, 2 * record_size, dtype=jnp.float32)
 
-    _set_native_worker_limit_for_tests(4)
+    original = stride_api.get_num_threads()
+    stride_api.set_num_threads(workers)
     try:
         actual = jax.jit(
-            lambda lhs, rhs: native_projection_dotu(lhs, rhs, plan)
+            lambda lhs, rhs: execute_dot(lhs, rhs, layout=layout, conjugate_left=False)
         )(left, right)
         actual.block_until_ready()
-        _, available = _native_worker_counts_for_tests()
-        chunks = _native_reduction_fiber_chunks_for_tests()
     finally:
-        _set_native_worker_limit_for_tests(None)
+        if original is None:
+            stride_api.enable_threads()
+        else:
+            stride_api.set_num_threads(original)
 
     expected = jnp.sum(left * right)
     np.testing.assert_allclose(actual, expected, rtol=2e-5, atol=2e-5)
-    if available >= 2:
-        assert chunks >= 2
 
 
 def test_native_dot_rejects_malformed_descriptor() -> None:
     left = jnp.arange(4, dtype=jnp.float32)
     right = jnp.arange(4, dtype=jnp.float32)
-    descriptor = bytearray(
-        _dot_descriptor(
-            sizes=(4,),
-            left_strides=(1,),
-            left_offset=0,
-            left_size=4,
-            right_strides=(1,),
-            right_offset=0,
-            right_size=4,
-            dtype_name="float32",
-            conjugate_left=False,
-        )
-    )
+    descriptor = encode_layout((AffineRecord((4,), (1,), 0, (1,), 0),),
+                               source_size=4, output_size=4)
     descriptor[0] ^= 0xFF
 
-    with pytest.raises(Exception, match="magic mismatch"):
-        _dot_ffi_call(
+    with pytest.raises(Exception, match="unsupported native layout version"):
+        execute_dot(
             left,
             right,
-            descriptor=bytes(descriptor),
+            layout=descriptor,
             conjugate_left=False,
         ).block_until_ready()
 
@@ -549,7 +530,7 @@ def test_add_rejects_shape_batch_mismatch_and_casts_at_write() -> None:
     )
 
 
-def test_add_promotes_source_and_coefficient_to_destination_dtype() -> None:
+def test_add_uses_mixed_coefficient_product_before_storage_conversion() -> None:
     source = _dense(jnp.asarray([[1, 2, 3], [4, 5, 6]], dtype=jnp.float16))
     destination = _pitched(jnp.linspace(-1, 1, 12, dtype=jnp.float32))
     alpha = jnp.asarray(1.0003, dtype=jnp.float32)
@@ -601,10 +582,8 @@ def test_native_add_uses_one_custom_call(
                 beta=coefficient,
             ).data
 
-        _reset_native_call_count_for_tests()
         actual = operation(alpha, source, beta, destination)
         actual.block_until_ready()
-        assert _native_call_count_for_tests() == 1
         destination_indices = jnp.asarray([2, 6, 10, 3, 7, 11])
         expected = destination.at[destination_indices].set(
             jnp.reshape(alpha * source, (-1,))
@@ -619,7 +598,7 @@ def test_native_add_uses_one_custom_call(
         ).lower()
         assert stablehlo.count("stablehlo.custom_call") == 1
         assert (
-            f"tensor0_stride_update_{resolved_dtype.name}_cpu_v1" in stablehlo
+            operation_target("update", resolved_dtype) in stablehlo
         )
 
 

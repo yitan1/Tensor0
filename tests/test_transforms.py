@@ -1,10 +1,12 @@
 import math
 import sys
 from collections.abc import Callable
+from types import SimpleNamespace
 from typing import cast
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
 
 import tensor0.operations.transforms as transforms
@@ -38,14 +40,10 @@ from tensor0 import (
     to_dense,
     twist,
 )
-from tensor0._stride import StridedView, materialize
-from tests.stride._fixtures import execute_view_accumulate
-from tensor0._stride._testing import (
-    _native_call_count_for_tests,
-    _reset_native_call_count_for_tests,
-    _set_native_disable_f16_f32_contiguous_simd_for_tests,
-    native_available,
-)
+from tensor0._stride import StridedView, add, materialize
+from tensor0._stride._ops import _transform
+from tensor0._stride._ops._transform import _strided_affine_transform, _strided_tree_transform
+from tests.stride._support import native_available
 from tensor0.structure import get_degeneracystructure, get_sectorstructure
 from tests.cases import (
     InaccessibleVectorData,
@@ -54,6 +52,45 @@ from tests.cases import (
     transform_cases,
     zero_based_float_data_for,
 )
+
+
+@pytest.fixture
+def checked_affine_destinations(monkeypatch):
+    calls = []
+    assert transforms._strided_affine_transform is _strided_affine_transform
+    assert transforms._strided_tree_transform is _strided_tree_transform
+
+    def execute(source, **arguments):
+        arguments["entries"] = tuple(arguments["entries"])
+        destinations = [
+            subblock.offset + sum(index * stride for index, stride in zip(coordinates, subblock.strides, strict=True))
+            for _, destination_index, _ in arguments["entries"]
+            for subblock in (arguments["destination_subblocks"][destination_index],)
+            for coordinates in np.ndindex(tuple(subblock.sizes))
+        ]
+        assert sorted(destinations) == list(range(arguments["output_size"]))
+        calls.append(1)
+        return _strided_affine_transform(source, **arguments)
+
+    monkeypatch.setattr(transforms, "_strided_affine_transform", execute)
+    yield
+    assert calls
+
+
+@pytest.fixture
+def checked_abelian_tree_destinations(monkeypatch):
+    calls = []
+    assert transforms._strided_tree_transform is _strided_tree_transform
+
+    def execute(source, **parameters):
+        assert parameters["transformer"].kind == "abelian"
+        _tree_address_terms(parameters)
+        calls.append(1)
+        return _strided_tree_transform(source, **parameters)
+
+    monkeypatch.setattr(transforms, "_strided_tree_transform", execute)
+    yield
+    assert calls
 
 
 def _assert_dense_transpose(result, tensor, expected_space, axes):
@@ -131,13 +168,13 @@ def _apply_abelian_reference(
             tuple(destination_subblock.strides),
             destination_subblock.offset,
         )
-        result = execute_view_accumulate(
+        result = add(
             destination_view,
             StridedView.from_dense(
                 jnp.asarray(entry.coeff, dtype=result.dtype) * block,
                 destination_view.sizes,
             ),
-        )
+        ).data
     return result
 
 
@@ -176,13 +213,13 @@ def _apply_generic_reference(
                 tuple(destination_subblock.strides),
                 destination_subblock.offset,
             )
-            result = execute_view_accumulate(
+            result = add(
                 destination_view,
                 StridedView.from_dense(
                     transform.reshape(()) * block,
                     destination_view.sizes,
                 ),
-            )
+            ).data
             continue
 
         source_sizes = tuple(source_subblocks[source_indices[0]].sizes)
@@ -210,10 +247,10 @@ def _apply_generic_reference(
                 tuple(destination_subblock.strides),
                 destination_subblock.offset,
             )
-            result = execute_view_accumulate(
+            result = add(
                 destination_view,
                 StridedView.from_dense(block, destination_view.sizes),
-            )
+            ).data
     return result
 
 
@@ -234,8 +271,8 @@ def test_tree_transform_rejects_unsupported_tpu_lowering(factory):
     )
 
     with pytest.raises(
-        RuntimeError,
-        match="tensor0-stride no eligible route: native_device_executor_unavailable",
+        NotImplementedError,
+        match="tensor0_stride_.*not found for platform tpu",
     ):
         run.trace(tensor.storage.data).lower(lowering_platforms=("tpu",))
 
@@ -297,9 +334,15 @@ def test_native_transform_payloads_use_canonical_indices():
 
 
 @pytest.mark.skipif(not native_available(), reason="native CPU stride is unavailable")
-def test_large_abelian_permute_uses_one_native_stride_call_without_indices():
+@pytest.mark.parametrize("dtype", [jnp.float16, jnp.float32, jnp.complex64])
+def test_large_abelian_permute_uses_one_native_stride_call_without_indices(checked_abelian_tree_destinations, dtype):
     tensor, permutation = _large_u1_permute_case()
+    source = tensor.storage.data.astype(dtype)
+    if dtype == jnp.complex64:
+        source = source + 1j * source
+    tensor = TensorMap(tensor.space, source)
     destination = tensor.space.permute(*permutation)
+    _, oracle = _tree_functions(_tree_parameters_for(tensor.space, permutation))
 
     run = jax.jit(
         lambda source: (
@@ -311,11 +354,12 @@ def test_large_abelian_permute_uses_one_native_stride_call_without_indices():
     )
     lowered = run.lower(tensor.storage.data)
     stablehlo = str(lowered.compiler_ir(dialect="stablehlo"))
-    _reset_native_call_count_for_tests()
-    actual = run(tensor.storage.data)
+    compiled = lowered.compile()
+    actual = compiled(tensor.storage.data)
     actual.block_until_ready()
 
-    assert _native_call_count_for_tests() == 1
+    assert "tensor0_stride_accumulation_" in stablehlo
+    assert "@tensor0_stride1_" not in stablehlo
 
     _assert_dense_transpose(
         TensorMap(destination, actual),
@@ -327,7 +371,14 @@ def test_large_abelian_permute_uses_one_native_stride_call_without_indices():
     assert "signed_permutation" not in stablehlo
     assert "stablehlo.gather" not in stablehlo
     assert "stablehlo.scatter" not in stablehlo
+    assert "stablehlo.dot_general" not in stablehlo
+    assert "stablehlo.multiply" not in stablehlo
+    for multiplier in (1, 2):
+        assert_allclose(compiled(source * multiplier), oracle(source * multiplier))
+    assert_allclose(jax.jit(jax.vmap(run))(jnp.stack((source, source * 2))),
+                    jnp.stack((oracle(source), oracle(source * 2))))
 
+@pytest.mark.usefixtures("checked_abelian_tree_destinations")
 def test_large_abelian_permute_preserves_jvp_vjp_and_batching():
     tensor, permutation = _large_u1_permute_case()
     destination = tensor.space.permute(*permutation)
@@ -414,13 +465,14 @@ def test_large_su2_permute_uses_pack_matmul_unpack_without_indices():
     stablehlo = str(lowered.compiler_ir(dialect="stablehlo"))
     expected = baseline(tensor.storage.data)
     expected.block_until_ready()
-    _reset_native_call_count_for_tests()
     actual = run(tensor.storage.data)
     actual.block_until_ready()
 
     assert_allclose(actual, expected)
-    assert _native_call_count_for_tests() == 2
-    assert stablehlo.count("stablehlo.custom_call") == 2
+    assert stablehlo.count("stablehlo.custom_call") == 3
+    for target in ("copy", "accumulation", "update"):
+        assert f"tensor0_stride_{target}_" in stablehlo
+    assert "@tensor0_stride1_" not in stablehlo
     assert "signed_permutation" not in stablehlo
     expected_dots = sum(
         len(entry.src_indices) > 1 or len(entry.dst_indices) > 1
@@ -432,7 +484,7 @@ def test_large_su2_permute_uses_pack_matmul_unpack_without_indices():
 
 
 @pytest.mark.skipif(not native_available(), reason="native CPU stride is unavailable")
-def test_large_float16_su2_permute_is_real_mixed_contiguous_producer():
+def test_large_float16_su2_permute_matches_grouped_reference():
     tensor, permutation = _large_su2_permute_case()
     source = tensor.storage.data.astype(jnp.float16)
     lowered = jax.jit(
@@ -444,17 +496,25 @@ def test_large_float16_su2_permute_is_real_mixed_contiguous_producer():
     stablehlo = str(lowered.compiler_ir(dialect="stablehlo"))
     run = lowered.compile()
 
-    _set_native_disable_f16_f32_contiguous_simd_for_tests(True)
-    try:
-        expected = run(source)
-        expected.block_until_ready()
-    finally:
-        _set_native_disable_f16_f32_contiguous_simd_for_tests(False)
+    destination = tensor.space.permute(*permutation)
+    transformer = transforms._treepermuter(tensor.space, destination, *permutation)
+    destination_layout = get_degeneracystructure(destination)
+    expected = _apply_generic_reference(
+        jnp.zeros((destination_layout.total_dim,), dtype=jnp.float32),
+        source,
+        permutation[0] + permutation[1],
+        transformer.generic_data,
+        get_degeneracystructure(tensor.space).subblockstructure,
+        destination_layout.subblockstructure,
+    )
     actual = run(source)
     actual.block_until_ready()
 
     assert actual.dtype == jnp.float32
-    assert stablehlo.count("stablehlo.custom_call") == 2
+    assert stablehlo.count("stablehlo.custom_call") == 3
+    for target in ("copy", "accumulation", "update"):
+        assert f"tensor0_stride_{target}_" in stablehlo
+    assert "@tensor0_stride1_" not in stablehlo
     assert "stablehlo.gather" not in stablehlo
     assert "stablehlo.scatter" not in stablehlo
     assert_allclose(actual, expected)
@@ -629,6 +689,7 @@ def test_permute_matches_public_dense_transpose_for_space_cases(case):
     _assert_dense_transpose(result, tensor, case.expected_space, case.dense_axes)
 
 
+@pytest.mark.usefixtures("checked_abelian_tree_destinations")
 def test_repartition_matches_explicit_permute():
     v = space(U1Irrep, {0: 2})
     w = space(U1Irrep, {0: 3})
@@ -650,6 +711,7 @@ def test_repartition_rejects_nout_larger_than_tensor_rank():
         repartition(tensor, tensor.numind + 1)
 
 
+@pytest.mark.usefixtures("checked_abelian_tree_destinations")
 def test_u1_index_transform_resolves_strided_source_and_destination_subblocks():
     factor = space(U1Irrep, {0: 2, 1: 1})
     source = hom((factor, factor), (factor, factor))
@@ -704,6 +766,7 @@ def test_index_transform_preserves_existing_dtype_rules():
     assert permute(complex_tensor, permutation).storage.data.dtype == jnp.complex64
 
 
+@pytest.mark.usefixtures("checked_abelian_tree_destinations")
 def test_fermion_parity_odd_odd_permute_matches_public_dense_phase():
     tensor = _odd_odd_fermion_tensor()
 
@@ -712,6 +775,7 @@ def test_fermion_parity_odd_odd_permute_matches_public_dense_phase():
     assert_allclose(to_dense(result), -jnp.transpose(to_dense(tensor), (1, 0)))
 
 
+@pytest.mark.usefixtures("checked_abelian_tree_destinations")
 def test_braid_matches_default_permute_for_identity_levels():
     tensor = _odd_odd_fermion_tensor()
 
@@ -722,6 +786,7 @@ def test_braid_matches_default_permute_for_identity_levels():
     assert_allclose(result.storage.data, expected.storage.data)
 
 
+@pytest.mark.usefixtures("checked_abelian_tree_destinations")
 def test_transpose_default_matches_public_dense_transpose():
     v = space(U1Irrep, {0: 2})
     w = space(U1Irrep, {0: 3})
@@ -781,6 +846,7 @@ def test_twist_layout_cancellation_bypasses_degeneracy_lookup(monkeypatch):
     assert twist(tensor, (0, 1)) is tensor
 
 
+@pytest.mark.usefixtures("checked_affine_destinations")
 def test_twist_reweights_parity_endomorphism_without_changing_space_or_dtype():
     factor = space(FermionParity, {0: 1, 1: 1})
     target = hom((factor,), (factor,))
@@ -818,10 +884,13 @@ def test_nontrivial_twist_requires_jax_backed_storage():
     not native_available(),
     reason="native CPU stride is unavailable",
 )
-def test_twist_and_flip_each_lower_as_one_complete_native_map():
+@pytest.mark.parametrize("dtype", [jnp.float16, jnp.float32, jnp.complex64])
+def test_twist_and_flip_each_lower_as_one_complete_native_map(checked_affine_destinations, dtype):
     factor = space(FermionParity, {0: 2, 1: 1})
     target = hom((factor, factor), (factor, factor))
-    source = _data_for(target)
+    source = _data_for(target).astype(dtype)
+    if dtype == jnp.complex64:
+        source = source + 1j * (source + 1)
     operations = (
         jax.jit(
             lambda data: twist(TensorMap(target, data), 0).storage.data
@@ -832,15 +901,25 @@ def test_twist_and_flip_each_lower_as_one_complete_native_map():
     )
 
     for operation in operations:
-        stablehlo = str(operation.lower(source).compiler_ir("stablehlo"))
-        _reset_native_call_count_for_tests()
-        result = operation(source)
+        lowered = operation.lower(source)
+        stablehlo = str(lowered.compiler_ir("stablehlo"))
+        compiled = lowered.compile()
+        result = compiled(source)
         result.block_until_ready()
 
         assert stablehlo.count("stablehlo.custom_call") == 1
-        assert _native_call_count_for_tests() == 1
+        assert "tensor0_stride_accumulation_" in stablehlo
+        assert "@tensor0_stride1_" not in stablehlo
+        for name in ("stablehlo.gather", "stablehlo.scatter", "stablehlo.multiply", "stride_update_"):
+            assert name not in stablehlo
+        assert_allclose(compiled(source * 2), result * 2)
+        for count in (0, 2):
+            batch = jnp.broadcast_to(source, (count, *source.shape))
+            assert_allclose(jax.jit(jax.vmap(operation))(batch),
+                            jnp.broadcast_to(result, (count, *source.shape)))
 
 
+@pytest.mark.usefixtures("checked_affine_destinations")
 def test_twist_and_flip_complete_maps_support_jax_transformations():
     factor = space(FermionParity, {0: 2, 1: 1})
     target = hom((factor, factor), (factor, factor))
@@ -868,6 +947,7 @@ def test_twist_and_flip_complete_maps_support_jax_transformations():
         )
 
 
+@pytest.mark.usefixtures("checked_affine_destinations")
 def test_twist_reweights_multielement_strided_subblocks_and_is_involutive():
     factor = space(FermionParity, {0: 2, 1: 1})
     target = hom((factor, factor), (factor, factor))
@@ -888,6 +968,7 @@ def test_twist_reweights_multielement_strided_subblocks_and_is_involutive():
     assert bool(jnp.array_equal(restored.storage.data, tensor.storage.data))
 
 
+@pytest.mark.usefixtures("checked_affine_destinations")
 def test_twist_inverse_supports_product_sector_types():
     product = space(U1Irrep @ FermionParity, {(0, 0): 1, (0, 1): 1})
     target = hom((product,), (product,))
@@ -1019,6 +1100,7 @@ def test_hom_flip_updates_factors_and_roundtrips():
     assert flipped.flip((0, 1)) == target
 
 
+@pytest.mark.usefixtures("checked_affine_destinations")
 def test_flip_tensorkit_row_and_column_coefficients_for_fermion_parity():
     odd = space(FermionParity, {1: 1})
     target = hom((odd,), (odd,))
@@ -1035,6 +1117,7 @@ def test_flip_tensorkit_row_and_column_coefficients_for_fermion_parity():
     assert column.space == target.flip((1,))
 
 
+@pytest.mark.usefixtures("checked_affine_destinations")
 def test_flip_forward_inverse_roundtrips_and_forward_is_not_involutory():
     half = space(SU2Irrep, {1: 1})
     target = hom((half,), (half,))
@@ -1073,6 +1156,7 @@ def test_flip_matching_contracted_legs_preserves_contraction(sector_type):
     assert_allclose(result.storage.data, expected.storage.data)
 
 
+@pytest.mark.usefixtures("checked_affine_destinations")
 def test_u1_flip_applies_nonidentity_entry_mapping():
     factor = space(U1Irrep, {-1: 1, 1: 1})
     target = hom((factor, factor), ())
@@ -1083,6 +1167,7 @@ def test_u1_flip_applies_nonidentity_entry_mapping():
     assert_allclose(result.storage.data, jnp.array([20.0, 10.0], dtype=jnp.float32))
 
 
+@pytest.mark.usefixtures("checked_affine_destinations")
 def test_su2_multitree_scalar_flip_preserves_float16_and_roundtrips():
     half = space(SU2Irrep, {1: 1})
     target = hom((half, half, half, half), ())
@@ -1119,6 +1204,7 @@ def test_su2_multitree_scalar_flip_preserves_float16_and_roundtrips():
         "fermion-parity-u1-su2",
     ],
 )
+@pytest.mark.usefixtures("checked_affine_destinations")
 def test_flip_roundtrips_additional_exported_sector_families(sector_type, sector):
     factor = space(sector_type, {sector: 1})
     target = hom((factor,), (factor,))
@@ -1143,6 +1229,7 @@ def test_flip_handles_one_sided_spaces(partition):
     assert_allclose(restored.storage.data, tensor.storage.data)
 
 
+@pytest.mark.usefixtures("checked_affine_destinations")
 def test_flip_handles_complex_strided_degeneracy_subblocks():
     factor = space(FermionParity, {0: 2, 1: 1})
     target = hom((factor, factor), (factor, factor))
@@ -1641,3 +1728,143 @@ def test_apply_trivial_index_transform_jaxpr_is_transpose_and_reshape_only():
     }
 
     assert primitives == {"reshape", "transpose"}
+
+
+def _tree_parameters_for(target, permutation):
+    destination = target.permute(*permutation)
+    return dict(
+        source_layout=get_degeneracystructure(target),
+        destination_layout=get_degeneracystructure(destination),
+        transformer=transforms._treepermuter(target, destination, *permutation),
+        permutation=permutation[0] + permutation[1],
+    )
+
+
+
+def _tree_address_terms(parameters):
+    terms = []
+    for entry in parameters["transformer"].abelian_data:
+        source = parameters["source_layout"].subblockstructure[entry.src]
+        destination = parameters["destination_layout"].subblockstructure[entry.dst]
+        permutation = parameters["permutation"]
+        shape = tuple(source.sizes[axis] for axis in permutation)
+        strides = tuple(source.strides[axis] for axis in permutation)
+        assert shape == tuple(destination.sizes)
+        source_indices = [source.offset + sum(index * stride for index, stride in zip(coordinate, strides))
+                          for coordinate in np.ndindex(shape)]
+        destination_indices = [destination.offset + sum(index * stride for index, stride in zip(coordinate, destination.strides))
+                               for coordinate in np.ndindex(shape)]
+        terms.append((source_indices, destination_indices, entry.coeff))
+    destinations = [index for _, indices, _ in terms for index in indices]
+    assert sorted(destinations) == list(range(parameters["destination_layout"].total_dim))
+    return terms
+
+
+
+def _tree_functions(parameters):
+    terms = _tree_address_terms(parameters)
+    def execute(source):
+        return _transform._strided_tree_transform(source, result_dtype=source.dtype, **parameters)
+    def oracle(source):
+        result = jnp.zeros((*source.shape[:-1], parameters["destination_layout"].total_dim), dtype=source.dtype)
+        for source_indices, destination_indices, coefficient in terms:
+            values = source[..., jnp.asarray(source_indices, dtype=jnp.int32)]
+            result = result.at[..., jnp.asarray(destination_indices, dtype=jnp.int32)].set(
+                values * jnp.asarray(coefficient, dtype=source.dtype))
+        return result
+    return execute, oracle
+
+
+
+def test_abelian_handoff_reuses_affine_adapter(monkeypatch):
+    factor = jnp.float32(2)
+    source = jnp.ones(2)
+    source_layout = SimpleNamespace(subblockstructure=(object(),))
+    destination_layout = SimpleNamespace(subblockstructure=(object(),), total_dim=2)
+    transformer = SimpleNamespace(kind="abelian", abelian_data=(SimpleNamespace(src=0, dst=0, coeff=factor),))
+    calls = []
+    def capture(values, **arguments):
+        arguments["entries"] = tuple(arguments["entries"])
+        calls.append((values, arguments))
+        return values
+    monkeypatch.setattr(_transform, "_strided_affine_transform", capture)
+    actual = _transform._strided_tree_transform(
+        source, source_layout=source_layout, destination_layout=destination_layout,
+        transformer=transformer, result_dtype=source.dtype, permutation=(0,),
+    )
+    assert actual is source
+    assert len(calls) == 1
+    values, arguments = calls[0]
+    assert values is source
+    assert arguments["source_subblocks"] is source_layout.subblockstructure
+    assert arguments["destination_subblocks"] is destination_layout.subblockstructure
+    assert arguments["entries"][0][:2] == (0, 0)
+    assert arguments["entries"][0][2] is factor
+    assert arguments["permutation"] == (0,)
+    assert arguments["output_size"] == 2
+    assert arguments["result_dtype"] == source.dtype
+    assert arguments["shape_error"] == "Abelian tree transform subblock shapes are inconsistent"
+
+
+
+@pytest.mark.parametrize("sector", [U1Irrep, FermionParity])
+@pytest.mark.parametrize("dtype", ["float16", "bfloat16", "float32", "float64", "complex64", "complex128"])
+@pytest.mark.parametrize("batch_shape", [(), (2,), (2, 3), (0,), (2, 0)])
+def test_abelian_tree_metadata_numerics_and_source_ad(sector, dtype, batch_shape):
+    with jax.enable_x64():
+        factor = space(sector, {0: 2, 1: 1})
+        parameters = _tree_parameters_for(hom((factor, factor), (factor,)), ((1,), (0, 2)))
+        assert parameters["transformer"].kind == "abelian"
+        execute, oracle = _tree_functions(parameters)
+        source_size = parameters["source_layout"].total_dim
+        source = (jnp.arange(math.prod(batch_shape) * source_size) % 5).astype(dtype).reshape((*batch_shape, source_size))
+        if dtype.startswith("complex"):
+            source = source + 1j * (source - 2)
+        tangent = jnp.ones_like(source)
+        for actual, expected in zip(jax.jit(lambda values: jax.jvp(execute, (values,), (tangent,)))(source),
+                                    jax.jvp(oracle, (source,), (tangent,)), strict=True):
+            np.testing.assert_array_equal(actual, expected)
+        cotangent = jnp.ones((*batch_shape, parameters["destination_layout"].total_dim), dtype=source.dtype)
+        expected = jax.vjp(oracle, source)[1](cotangent)[0]
+        np.testing.assert_array_equal(jax.jit(jax.vjp(execute, source)[1])(cotangent)[0], expected)
+        np.testing.assert_array_equal(jax.linear_transpose(execute, source)(cotangent)[0], expected)
+
+
+
+def test_generic_tree_uses_grouped_adapter():
+    half = space(SU2Irrep, {1: 1})
+    target = hom((half, half, half, half), ())
+    permutation = ((1, 2, 3), (0,))
+    parameters = _tree_parameters_for(target, permutation)
+    assert parameters["transformer"].kind == "generic"
+    tensor = TensorMap(target, jnp.asarray([1, 2], dtype=jnp.float32))
+    result = permute(tensor, permutation)
+    expected = _apply_generic_reference(
+        jnp.zeros(parameters["destination_layout"].total_dim), tensor.storage.data,
+        parameters["permutation"], parameters["transformer"].generic_data,
+        parameters["source_layout"].subblockstructure, parameters["destination_layout"].subblockstructure,
+    )
+    np.testing.assert_allclose(result.storage.data, expected, rtol=1e-6, atol=1e-6)
+
+
+
+def test_unknown_kind_does_not_touch_layouts():
+    with pytest.raises(ValueError, match="unsupported tree transformer kind"):
+        _transform._strided_tree_transform(
+            None, source_layout=None, destination_layout=None, result_dtype=jnp.float32,
+            permutation=(), transformer=SimpleNamespace(kind="unknown"),
+        )
+
+
+
+def test_empty_abelian_transform():
+    layout = SimpleNamespace(subblockstructure=(), total_dim=0)
+    transformer = SimpleNamespace(kind="abelian", abelian_data=())
+    run = lambda source: _transform._strided_tree_transform(
+        source, source_layout=layout, destination_layout=layout, result_dtype=source.dtype,
+        permutation=(), transformer=transformer,
+    )
+    source = jnp.zeros((2, 0))
+    result = jax.jit(run)(source)
+    assert result.shape == (2, 0)
+    np.testing.assert_array_equal(jax.vjp(run, source)[1](result)[0], source)

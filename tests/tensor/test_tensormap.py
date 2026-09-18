@@ -35,6 +35,7 @@ from tensor0 import (
     space,
     to_dense,
 )
+from tensor0._stride import StridedView, add, materialize
 from tensor0.structure import (
     get_degeneracystructure,
     get_sectorstructure,
@@ -585,6 +586,7 @@ def test_tensormap_subblock_rejects_invalid_tree_inputs():
     assert_allclose(tensor[row_tree, col_tree], tensor.subblock(row_tree, col_tree))
 
 
+@pytest.mark.usefixtures("checked_dense_updates")
 def test_dense_roundtrip_for_scalar_and_one_sided_spaces():
     empty = _native.make_product_space(U1Irrep, ())
     scalar_h = hom(empty, empty)
@@ -611,18 +613,65 @@ def test_dense_roundtrip_for_scalar_and_one_sided_spaces():
     assert_allclose(rebuilt.storage.data, tensor.storage.data)
 
 
+@pytest.fixture
+def checked_dense_updates(monkeypatch):
+    calls = []
+    assert dense_module.add is add
+
+    def execute(left, right):
+        result = add(left, right)
+        lowered = jax.jit(add).lower(left, right)
+        text = lowered.as_text()
+        assert "tensor0_stride_update_" in text
+        assert text.count("stablehlo.custom_call") == 1
+        assert_allclose(lowered.compile()(left, right).data, result.data)
+        addresses = np.asarray([
+            left.offset + sum(index * stride for index, stride in zip(coordinates, left.strides, strict=True))
+            for coordinates in np.ndindex(left.sizes)
+        ], dtype=np.int32).reshape(left.sizes)
+        expected = np.array(left.data, copy=True)
+        expected[addresses] += np.asarray(right.data).reshape(right.sizes)
+        assert_allclose(result.data, expected)
+        calls.append(1)
+        return result
+
+    monkeypatch.setattr(dense_module, "add", execute)
+    return calls
+
+
 @pytest.mark.parametrize("case", dense_roundtrip_cases(), ids=lambda case: case.name)
-def test_dense_roundtrip_matches_tensor_storage_for_space_cases(case):
-    tensor = TensorMap(case.space, float_data_for(case.space))
+@pytest.mark.parametrize("dtype", [jnp.float32, jnp.complex64])
+def test_dense_roundtrip_matches_tensor_storage_for_space_cases(checked_dense_updates, case, dtype):
+    storage = float_data_for(case.space).astype(dtype)
+    if dtype == jnp.complex64:
+        storage = storage + 1j * (storage + 0.25)
+    tensor = TensorMap(case.space, storage)
 
     dense = to_dense(tensor)
     rebuilt = from_dense(case.space, dense)
 
     assert dense.shape == case.dense_shape
     assert rebuilt.space == tensor.space
+    assert rebuilt.storage.data.dtype == storage.dtype
     assert_allclose(rebuilt.storage.data, tensor.storage.data)
+    assert_allclose(to_dense(rebuilt), dense)
+    assert bool(checked_dense_updates) == (case.name != "trivial-multileg")
 
 
+def test_from_dense_empty_symmetry_storage(checked_dense_updates):
+    factor = space(SU2Irrep, {1: 1})
+    target = hom((factor,), ())
+    dense = jnp.zeros((2,), dtype=jnp.complex64)
+    rebuilt = from_dense(target, dense)
+    assert rebuilt.storage.data.shape == (0,)
+    assert rebuilt.storage.data.dtype == dense.dtype
+    np.testing.assert_array_equal(to_dense(rebuilt), dense)
+    assert not checked_dense_updates
+    with pytest.raises(ValueError, match="symmetry structure"):
+        from_dense(target, jnp.ones_like(dense))
+
+
+@pytest.mark.usefixtures("checked_dense_updates")
 def test_dense_conversion_matches_su2_half_operator_convention():
     half = space(SU2Irrep, {1: 1})
     h = hom((half,), (half,))
@@ -636,6 +685,78 @@ def test_dense_conversion_matches_su2_half_operator_convention():
     assert_allclose(rebuilt.storage.data, tensor.storage.data)
 
 
+def _gather_materialize(view):
+    addresses = np.asarray([
+        view.offset + sum(index * stride for index, stride in zip(coordinates, view.strides, strict=True))
+        for coordinates in np.ndindex(view.sizes)
+    ], dtype=np.int32).reshape(view.sizes)
+    return view.data[addresses]
+
+
+def _assert_reader_results_close(actual, expected):
+    assert jax.tree.structure(actual) == jax.tree.structure(expected)
+    for value, target in zip(jax.tree.leaves(actual), jax.tree.leaves(expected), strict=True):
+        assert value.shape == target.shape
+        assert value.dtype == target.dtype
+        np.testing.assert_allclose(value, target, rtol=2e-5, atol=2e-6)
+
+
+@pytest.mark.parametrize("case", dense_roundtrip_cases(), ids=lambda case: case.name)
+@pytest.mark.parametrize("dtype", [jnp.float32, jnp.complex64])
+def test_dense_and_subblock_readers_match_gather_with_ad_and_batch(monkeypatch, case, dtype):
+    source = float_data_for(case.space).astype(dtype)
+    if dtype == jnp.complex64:
+        source = source + 1j * (source + 0.25)
+
+    def read(data):
+        tensor = TensorMap(case.space, data)
+        blocks = tuple(block for _, block in tensor.subblocks())
+        indexed = tuple(tensor.subblock(pair) for pair, _ in tensor.subblocks())
+        return to_dense(tensor), blocks, indexed
+
+    with monkeypatch.context() as oracle_patch:
+        for module in (dense_module, tensor_map_module):
+            oracle_patch.setattr(module, "materialize", _gather_materialize)
+        expected = read(source)
+        expected_jvp = jax.jvp(read, (source,), (source * 0.3,))
+        cotangents = jax.tree.map(jnp.ones_like, expected)
+        expected_vjp = jax.vjp(read, source)[1](cotangents)
+
+    lowered = jax.jit(read).lower(source)
+    if case.name != "trivial-multileg":
+        assert "tensor0_stride_copy_" in lowered.as_text()
+    _assert_reader_results_close(lowered.compile()(source), expected)
+    _assert_reader_results_close(jax.jvp(read, (source,), (source * 0.3,)), expected_jvp)
+    _assert_reader_results_close(jax.vjp(read, source)[1](cotangents), expected_vjp)
+    for count in (0, 2):
+        batch = jnp.broadcast_to(source, (count, *source.shape))
+        actual = jax.jit(jax.vmap(read))(batch)
+        _assert_reader_results_close(actual, jax.tree.map(
+            lambda value: jnp.broadcast_to(value, (count, *value.shape)), expected,
+        ))
+
+
+@pytest.mark.parametrize("empty", [False, True])
+def test_scalar_and_empty_dense_readers_match_gather(monkeypatch, empty):
+    if empty:
+        factor = space(SU2Irrep, {1: 1})
+        target = hom((factor,), ())
+    else:
+        target = hom((), (), sector_type=U1Irrep)
+    source = float_data_for(target)
+    with monkeypatch.context() as oracle_patch:
+        oracle_patch.setattr(dense_module, "materialize", _gather_materialize)
+        expected = to_dense(TensorMap(target, source))
+    _assert_reader_results_close(jax.jit(lambda data: to_dense(TensorMap(target, data)))(source), expected)
+
+
+def test_production_readers_use_canonical_stride():
+    for module in (dense_module, tensor_map_module):
+        assert module.StridedView is StridedView
+        assert module.materialize is materialize
+
+
+@pytest.mark.usefixtures("checked_dense_updates")
 def test_dense_conversion_matches_su2_dual_leg_convention():
     half = space(SU2Irrep, {1: 1})
     h = hom((half.dual(), half), ())
@@ -649,6 +770,7 @@ def test_dense_conversion_matches_su2_dual_leg_convention():
     assert_allclose(rebuilt.storage.data, tensor.storage.data)
 
 
+@pytest.mark.usefixtures("checked_dense_updates")
 def test_from_dense_accepts_matrix_shape_with_row_major_reshape():
     a = space(U1Irrep, {0: 2})
     b = space(U1Irrep, {0: 3})
@@ -663,6 +785,7 @@ def test_from_dense_accepts_matrix_shape_with_row_major_reshape():
     assert_allclose(to_dense(rebuilt_from_matrix), dense)
 
 
+@pytest.mark.usefixtures("checked_dense_updates")
 def test_from_dense_rejects_incompatible_shape():
     v = space(U1Irrep, {0: 2})
     h = hom((v,), (v,))
@@ -671,6 +794,7 @@ def test_from_dense_rejects_incompatible_shape():
         from_dense(h, jnp.zeros((2, 3), dtype=jnp.float32))
 
 
+@pytest.mark.usefixtures("checked_dense_updates")
 def test_from_dense_rejects_components_outside_symmetry_structure():
     v = space(U1Irrep, {0: 2, 1: 1})
     h = hom((v,), (v,))
@@ -692,6 +816,7 @@ def test_public_dense_path_has_no_debug_element_cap():
     assert_allclose(rebuilt.storage.data, tensor.storage.data)
 
 
+@pytest.mark.usefixtures("checked_dense_updates")
 def test_trivial_zero_factor_has_empty_storage_and_preserves_dense_zero_axis():
     target = hom((ComplexSpace(2), ComplexSpace(0)), (ComplexSpace(3),))
     dense = jnp.zeros((2, 0, 3), dtype=jnp.float32)

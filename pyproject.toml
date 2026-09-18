@@ -40,13 +40,27 @@ manifest-path = "crates/tensor0-py/Cargo.toml"
 python-source = "src"
 features = ["pyo3/extension-module"]
 include = [
-    { path = "crates/tensor0-py/native/stride_affine.inc", format = "sdist" },
-    { path = "crates/tensor0-py/native/stride_scalar.inc", format = "sdist" },
-    { path = "crates/tensor0-py/native/stride_bindings.inc", format = "sdist" },
-    { path = "crates/tensor0-py/native/stride_common.inc", format = "sdist" },
-    { path = "crates/tensor0-py/native/stride_reduction.inc", format = "sdist" },
-    { path = "crates/tensor0-py/native/stride_reduction_plan.inc", format = "sdist" },
-    { path = "crates/tensor0-py/native/stride_runtime.inc", format = "sdist" },
+    { path = "crates/tensor0-py/native/stride_ffi.cc", format = "sdist" },
+    { path = "crates/tensor0-py/native/ffi/bindings.inc", format = "sdist" },
+    { path = "crates/tensor0-py/native/numeric/scalar.inc", format = "sdist" },
+    { path = "crates/tensor0-py/native/numeric/expression.inc", format = "sdist" },
+    { path = "crates/tensor0-py/native/ffi/descriptor.inc", format = "sdist" },
+    { path = "crates/tensor0-py/native/ffi/dtype.inc", format = "sdist" },
+    { path = "crates/tensor0-py/native/runtime/runtime.inc", format = "sdist" },
+    { path = "crates/tensor0-py/native/kernels/affine.inc", format = "sdist" },
+    { path = "crates/tensor0-py/native/kernels/avx2.inc", format = "sdist" },
+    { path = "crates/tensor0-py/native/kernels/reduction.inc", format = "sdist" },
+    { path = "crates/tensor0-py/native/execute/map.inc", format = "sdist" },
+    { path = "crates/tensor0-py/native/execute/update.inc", format = "sdist" },
+    { path = "crates/tensor0-py/native/execute/map_tasks.inc", format = "sdist" },
+    { path = "crates/tensor0-py/native/execute/reduction.inc", format = "sdist" },
+    { path = "crates/tensor0-py/native/execute/dot.inc", format = "sdist" },
+    { path = "crates/tensor0-py/native/execute/reduction_tasks.inc", format = "sdist" },
+    { path = "crates/tensor0-py/native/layout/types.inc", format = "sdist" },
+    { path = "crates/tensor0-py/native/layout/address.inc", format = "sdist" },
+    { path = "crates/tensor0-py/native/layout/construction.inc", format = "sdist" },
+    { path = "crates/tensor0-py/native/layout/planning.inc", format = "sdist" },
+    { path = "crates/tensor0-py/native/layout/blocking.inc", format = "sdist" },
 ]
 
 [tool.pytest.ini_options]

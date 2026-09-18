@@ -7,6 +7,7 @@ from typing import TypeAlias, cast
 import jax.numpy as jnp
 
 from ... import _native
+from ..._stride._ops._reduction import _strided_tensortrace
 from ...structure.layout import get_degeneracystructure, get_sectorstructure
 from ...structure.spaces import hom, sector_spec, storage_dim
 from ...tensor.dense import _trivial_dense_array
@@ -19,16 +20,13 @@ from ..transforms import (
     permute,
     twist,
 )
-from .._strided import (
-    _TraceCoefficient,
-    _TraceEntry,
-    _strided_tensortrace,
-)
 
 AxisRef: TypeAlias = tuple[int, int]
 OutputRefs: TypeAlias = tuple[tuple[AxisRef, ...], tuple[AxisRef, ...]]
 TraceAxes: TypeAlias = tuple[tuple[int, ...], tuple[int, ...]]
 TraceOutput: TypeAlias = tuple[tuple[int, ...], tuple[int, ...]]
+_TraceCoefficient: TypeAlias = int | float | complex
+_TraceEntry: TypeAlias = tuple[int, int, _TraceCoefficient]
 
 
 @dataclass(frozen=True)

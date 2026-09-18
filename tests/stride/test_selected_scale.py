@@ -1,627 +1,249 @@
 from __future__ import annotations
 
-import json
 import os
 from pathlib import Path
 import subprocess
 import sys
-import textwrap
 
 import jax
 import jax.numpy as jnp
-from jax.typing import DTypeLike
 import numpy as np
 import pytest
 
-from tensor0._stride._testing import (
-    _native_call_count_for_tests,
-    _reset_native_call_count_for_tests,
-    native_available,
-)
-from tensor0._stride._ops._selected_scale import build_selected_scale_plan
-from tests.stride._fixtures import execute_update_scale
-from tensor0._stride._plan import AffineRecord, CompleteMode, build_affine_plan
+from tensor0._stride import StridedView, scale
+from tensor0._stride._ffi._registration import operation_target
+from tensor0._stride._jax import update_p
+from tensor0._stride._layout import AffineRecord
 
-from ._fixtures import (
-    contiguous_dtype_plan,
-    noncompact_identity_plan,
-    partial_mixed_plan,
-    selected_scale_plan,
-)
-from ._oracle import assert_bitwise_equal, execute_selected_scale_reference
+from ._support import native_available
 
 
-_REPO_ROOT = Path(__file__).resolve().parents[2]
-_LARGE_ROUTE_SIZE = 1_100_000
+pytestmark = pytest.mark.skipif(not native_available(), reason="native CPU stride is unavailable")
 
 
-@pytest.mark.parametrize(
-    ("dtype", "factor"),
-    (
-        (jnp.float16, -1.25),
-        (jnp.bfloat16, -1.25),
-        (jnp.float32, -1.25),
-        (jnp.complex64, 1.25 - 0.75j),
-        (jnp.int32, -3),
-    ),
-)
-@pytest.mark.skipif(not native_available(), reason="native CPU stride unavailable")
-def test_native_selected_scale_covers_all_same_dtype_scalar_policies(
-    dtype: DTypeLike,
-    factor: float | complex,
-) -> None:
-    plan = build_selected_scale_plan(selected_scale_plan(dtype))
-    base = jnp.arange(50, dtype=dtype) - 7
-    factor_array = jnp.asarray(factor, dtype=dtype)
-    execute = lambda old, value: execute_update_scale(old, value, plan=plan)
-
-    _reset_native_call_count_for_tests()
-    actual = jax.jit(execute)(base, factor_array)
-    actual.block_until_ready()
-    assert _native_call_count_for_tests() == 1
-    np.testing.assert_array_equal(
-        np.asarray(actual),
-        np.asarray(execute_selected_scale_reference(base, factor_array, plan)),
-    )
-    hlo = str(
-        jax.jit(execute).lower(base, factor_array).compiler_ir("stablehlo")
-    ).lower()
-    assert f"tensor0_stride_update_{base.dtype.name}_cpu_v1" in hlo
+def reference_scale(base, factor):
+    return base.at[..., 2:50:3].set(base[..., 2:50:3] * factor[..., None])
 
 
-def test_selected_scale_preserves_unselected_base_and_validates_plan() -> None:
-    plan = build_selected_scale_plan(selected_scale_plan())
-    base = jnp.arange(50, dtype=jnp.float32) - 7
-
-    actual = execute_update_scale(base, -2, plan=plan)
-    expected = execute_selected_scale_reference(base, -2, plan)
-
-    np.testing.assert_array_equal(actual, expected)
-    unselected = np.ones(50, dtype=bool)
-    unselected[2:50:3] = False
-    np.testing.assert_array_equal(
-        np.asarray(actual)[unselected],
-        np.asarray(base)[unselected],
-    )
-    mismatched = partial_mixed_plan()
-    same_storage_size = build_affine_plan(
-        records=mismatched.records,
-        output_size=mismatched.output_size,
-        coverage=mismatched.coverage,
-        source_size=mismatched.output_size,
-        source_dtype=mismatched.source_dtype,
-        result_dtype=mismatched.result_dtype,
-    )
-    with pytest.raises(ValueError, match="addresses must be identical"):
-        build_selected_scale_plan(same_storage_size)
-    with pytest.raises(ValueError, match="identity mapping"):
-        build_selected_scale_plan(contiguous_dtype_plan(jnp.float32, 2, size=8))
-
-
-@pytest.mark.skipif(not native_available(), reason="native CPU stride unavailable")
-def test_native_selected_scale_complete_coverage_initializes_every_element() -> None:
-    plan = build_selected_scale_plan(
-        contiguous_dtype_plan(jnp.float32, None, size=32)
-    )
-    base = jnp.arange(64, dtype=jnp.float32).reshape(2, 32) - 13
-    factor = jnp.asarray([2.0, -0.5], dtype=jnp.float32)
-
-    _reset_native_call_count_for_tests()
-    actual = jax.jit(lambda old, value: execute_update_scale(old, value, plan=plan))(
-        base,
-        factor,
-    )
-    actual.block_until_ready()
-
-    assert _native_call_count_for_tests() == 1
-    np.testing.assert_array_equal(
-        np.asarray(actual),
-        np.asarray(execute_selected_scale_reference(base, factor, plan)),
-    )
-
-
-@pytest.mark.skipif(not native_available(), reason="native CPU stride unavailable")
-def test_selected_scale_factor_vjp_uses_one_multirecord_dot_call() -> None:
-    plan = build_selected_scale_plan(
-        build_affine_plan(
-            records=(
-                AffineRecord((3,), (2,), 0, (2,), 0),
-                AffineRecord((2,), (3,), 6, (3,), 6),
-            ),
-            output_size=12,
-            coverage=CompleteMode.PARTIAL_UNIQUE_ZERO_FILL,
-            source_size=12,
-            source_dtype=jnp.float32,
-            result_dtype=jnp.float32,
-        )
-    )
-    base = jnp.linspace(-2, 3, 12, dtype=jnp.float32)
-    factor = jnp.asarray(1.25, dtype=jnp.float32)
-    cotangent = jnp.linspace(4, -1, 12, dtype=jnp.float32)
-
-    primal, pullback = jax.vjp(
-        lambda value: execute_update_scale(base, value, plan=plan),
-        factor,
-    )
-    primal.block_until_ready()
-    _reset_native_call_count_for_tests()
-    (actual,) = pullback(cotangent)
-    actual.block_until_ready()
-
-    assert _native_call_count_for_tests() == 1
-    indices = jnp.asarray([0, 2, 4, 6, 9])
-    expected = jnp.sum(cotangent[indices] * base[indices])
-    np.testing.assert_allclose(actual, expected)
-
-
-@pytest.mark.parametrize(
-    ("dtype", "factor", "factor_tangent"),
-    (
-        (jnp.float16, -1.25, 0.75),
-        (jnp.bfloat16, -1.25, 0.75),
-        (jnp.float32, -1.25, 0.75),
-        (jnp.float64, -1.25, 0.75),
-        (jnp.complex64, 1.25 - 0.5j, 0.75 + 0.25j),
-        (jnp.complex128, 1.25 - 0.5j, 0.75 + 0.25j),
-    ),
-)
-@pytest.mark.skipif(not native_available(), reason="native CPU stride unavailable")
-def test_selected_scale_factor_jvp_uses_one_axpby_call(
-    dtype: DTypeLike,
-    factor: float | complex,
-    factor_tangent: float | complex,
-) -> None:
+@pytest.mark.parametrize("dtype,factor", [
+    (jnp.float16, -1.25), (jnp.bfloat16, -1.25), (jnp.float32, -1.25),
+    (jnp.float64, -1.25), (jnp.complex64, 1.25 - .75j),
+    (jnp.complex128, 1.25 - .75j), (jnp.int32, -3),
+])
+def test_selected_scale_scalar_policies_and_input_protection(dtype, factor):
     with jax.enable_x64():
-        plan = build_selected_scale_plan(selected_scale_plan(dtype))
         base = jnp.arange(50, dtype=jnp.float32).astype(dtype) - 7
-        factor_array = jnp.asarray(factor, dtype=dtype)
-        tangent_array = jnp.asarray(factor_tangent, dtype=dtype)
+        original = np.asarray(base).copy()
+        coefficient = jnp.asarray(factor, dtype=dtype)
+        operation = jax.jit(lambda old, value: scale(StridedView(old, (16,), (3,), 2), value))
+        actual = operation(base, coefficient)
+        np.testing.assert_array_equal(actual.data, reference_scale(base, coefficient))
+        np.testing.assert_array_equal(base, original)
+        assert (actual.sizes, actual.strides, actual.offset) == ((16,), (3,), 2)
+        selected = np.zeros(50, dtype=bool)
+        selected[2:50:3] = True
+        assert np.asarray(actual.data)[~selected].tobytes() == original[~selected].tobytes()
+        text = operation.lower(base, coefficient).as_text()
+        assert text.count("custom_call") == 1
+        assert operation_target("update", np.dtype(dtype)) in text
 
-        @jax.jit
-        def tangent(value: jax.Array, dvalue: jax.Array) -> jax.Array:
-            return jax.jvp(
-                lambda coefficient: execute_update_scale(
-                    base,
-                    coefficient,
-                    plan=plan,
-                ),
-                (value,),
-                (dvalue,),
-            )[1]
 
-        _reset_native_call_count_for_tests()
-        actual = tangent(factor_array, tangent_array)
-        actual.block_until_ready()
+def test_selected_scale_validates_public_inputs_and_injective_selection():
+    base = jnp.arange(50, dtype=jnp.float32)
+    with pytest.raises(TypeError, match="StridedView"):
+        scale(base, 2)
+    with pytest.raises(ValueError, match="scalar or match the batch shape"):
+        scale(StridedView(base, (16,), (3,), 2), jnp.ones(2))
+    overlapping = StridedView(base, (2, 2), (1, 1), 0)
+    original = np.asarray(base).copy()
+    with pytest.raises(Exception, match="injective|overlap"):
+        jax.jit(lambda view: scale(view, 2))(overlapping).data.block_until_ready()
+    np.testing.assert_array_equal(base, original)
 
-        assert _native_call_count_for_tests() == 1
-        expected = jax.jvp(
-            lambda coefficient: execute_selected_scale_reference(
-                base,
-                coefficient,
-                plan,
-            ),
-            (factor_array,),
-            (tangent_array,),
-        )[1]
-        np.testing.assert_allclose(actual, expected, rtol=5e-3, atol=5e-3)
+
+@pytest.mark.parametrize("batch_shape", [(2,), (2, 3), (0,)])
+@pytest.mark.parametrize("size", [0, 32])
+def test_selected_scale_complete_and_empty_batches(batch_shape, size):
+    base = jnp.arange(np.prod(batch_shape) * size, dtype=jnp.float32).reshape(*batch_shape, size)
+    factors = (jnp.arange(np.prod(batch_shape), dtype=jnp.float32) + 2).reshape(batch_shape)
+    actual = jax.jit(lambda old, value: scale(StridedView(old, (size,), (1,), 0), value).data)(base, factors)
+    np.testing.assert_array_equal(actual, base * factors[..., None])
+
+
+@pytest.mark.parametrize("mode", ["vjp", "linear_transpose"])
+def test_selected_scale_multirecord_factor_gradient_uses_native_dot(mode):
+    records = (AffineRecord((3,), (2,), 0, (2,), 0), AffineRecord((2,), (3,), 6, (3,), 6))
+    base = jnp.linspace(-2, 3, 12, dtype=jnp.float32)
+    factor = jnp.float32(1.25)
+    cotangent = jnp.linspace(4, -1, 12, dtype=jnp.float32)
+    operation = lambda value: update_p.bind(base, base, value, jnp.int32(0), records=records)
+    if mode == "vjp":
+        pullback = jax.jit(lambda cot: jax.vjp(operation, factor)[1](cot)[0])
+    else:
+        pullback = jax.jit(lambda cot: jax.linear_transpose(operation, factor)(cot)[0])
+    indices = jnp.asarray([0, 2, 4, 6, 9])
+    np.testing.assert_allclose(pullback(cotangent), jnp.sum(cotangent[indices] * base[indices]), rtol=2e-6)
+    text = pullback.lower(cotangent).as_text()
+    count = len(records) if mode == "vjp" else 1
+    assert text.count("custom_call") == count
+    assert text.count(operation_target("dot", np.dtype(jnp.float32))) == count
+    assert "gather" not in text and "scatter" not in text
+
+
+@pytest.mark.parametrize("dtype", [jnp.float16, jnp.bfloat16, jnp.float32,
+                                   jnp.float64, jnp.complex64, jnp.complex128])
+def test_selected_scale_factor_jvp_uses_one_accumulation(dtype):
+    with jax.enable_x64():
+        base = jnp.arange(50, dtype=jnp.float32).astype(dtype) - 7
+        complex_storage = jnp.issubdtype(dtype, jnp.complexfloating)
+        factor = jnp.asarray(1.25 - .5j if complex_storage else -1.25, dtype=dtype)
+        direction = jnp.asarray(.75 + .25j if complex_storage else .75, dtype=dtype)
+        operation = lambda value: scale(StridedView(base, (16,), (3,), 2), value).data
+        tangent = jax.jit(lambda value, dot: jax.jvp(operation, (value,), (dot,))[1])
+        expected = jax.jvp(lambda value: reference_scale(base, value), (factor,), (direction,))[1]
+        np.testing.assert_allclose(tangent(factor, direction), expected, rtol=5e-3, atol=5e-3)
+        text = tangent.lower(factor, direction).as_text()
+        assert text.count("custom_call") == 1
+        assert operation_target("accumulation", np.dtype(dtype)) in text
 
 
 @pytest.mark.parametrize("dtype", [jnp.float32, jnp.complex64])
-def test_selected_scale_finite_values_match_direct_oracle(
-    dtype: DTypeLike,
-) -> None:
-    plan = build_selected_scale_plan(selected_scale_plan(dtype))
-    if dtype == jnp.float32:
-        pattern = jnp.asarray(
-            [
-                0.0,
-                -0.0,
-                1.25,
-                -1.25,
-                .125,
-                jnp.float32(1e10),
-                -jnp.float32(1e10),
-                1.25,
-            ],
-            dtype=jnp.float32,
-        )
-        factors = (
-            0.0,
-            -0.0,
-            1.0,
-            -2.0,
-            1.25,
-            -1.25,
-            .125,
-            3.5,
-        )
-    else:
-        pattern = jnp.asarray(
-            [
-                0 + 0j,
-                complex(-0.0, 0.0),
-                complex(1.25, 2.0),
-                complex(-1.25, -3.0),
-                complex(.125, 1.0),
-                complex(jnp.float32(1e10), -jnp.float32(1e10)),
-                1.25 - 0.75j,
-                -2.5 + 4j,
-            ],
-            dtype=jnp.complex64,
-        )
-        factors = (
-            0 + 0j,
-            complex(-0.0, 0.0),
-            1 + 0j,
-            -2 + 3j,
-            complex(1.25, 1.0),
-            complex(.125, -2.0),
-            complex(3.5, 3.5),
-        )
-    base = jnp.resize(pattern, (50,))
-    migrated = jax.jit(lambda old, factor: execute_update_scale(old, factor, plan=plan))
-    oracle = jax.jit(
-        lambda old, factor: execute_selected_scale_reference(old, factor, plan)
-    )
-
+def test_selected_scale_finite_zero_one_and_general_factors(dtype):
+    pattern = [0., -0., 1.25, -1.25, .125, 1e10, -1e10, 1.25]
+    factors = [0., -0., 1., -2., 1.25, -1.25, .125, 3.5]
+    if dtype == jnp.complex64:
+        pattern = [0j, complex(-0., 0.), 1.25 + 2j, -1.25 - 3j, .125 + 1j,
+                   complex(1e10, -1e10), 1.25 - .75j, -2.5 + 4j]
+        factors = [0j, complex(-0., 0.), 1 + 0j, -2 + 3j, 1.25 + 1j, .125 - 2j, 3.5 + 3.5j]
+    base = jnp.resize(jnp.asarray(pattern, dtype=dtype), (50,))
+    operation = jax.jit(lambda old, value: scale(StridedView(old, (16,), (3,), 2), value).data)
     for factor in factors:
-        factor_array = jnp.asarray(factor, dtype=dtype)
-        np.testing.assert_allclose(
-            migrated(base, factor_array),
-            oracle(base, factor_array),
-        )
+        coefficient = jnp.asarray(factor, dtype=dtype)
+        np.testing.assert_allclose(operation(base, coefficient), reference_scale(base, coefficient), rtol=2e-6, atol=1e-6)
 
 
-def test_selected_scale_ad_and_higher_order_compositions_match_oracle() -> None:
-    plan = build_selected_scale_plan(selected_scale_plan())
+@pytest.mark.parametrize("dtype", [jnp.float32, jnp.complex64])
+def test_selected_scale_ad_transposes_and_higher_order_compositions(dtype):
+    base = jnp.linspace(-3, 4, 50, dtype=jnp.float32).astype(dtype)
+    cotangent = jnp.linspace(-4, 3, 50, dtype=jnp.float32).astype(dtype)
+    factor = jnp.asarray(-1.25 if dtype == jnp.float32 else 1.25 - .75j, dtype=dtype)
+    if dtype == jnp.complex64:
+        base = base * (1 + .5j)
+        cotangent = cotangent * (.75 - 1.25j)
+    directions = (jnp.full_like(base, .5), jnp.asarray(.75, dtype=dtype))
+    operation = lambda old, value: scale(StridedView(old, (16,), (3,), 2), value).data
+
+    def derivatives(function, old, value, cot):
+        primal, tangent = jax.jvp(function, (old, value), directions)
+        gradients = jax.vjp(function, old, value)[1](cot)
+        base_transpose = jax.linear_transpose(lambda data: function(data, value), old)(cot)[0]
+        factor_transpose = jax.linear_transpose(lambda coefficient: function(old, coefficient), value)(cot)[0]
+        pullback = lambda output_cot: jax.vjp(lambda data: function(data, value), old)[1](output_cot)[0]
+        nested = jax.jvp(pullback, (jnp.zeros_like(cot),), (jnp.ones_like(cot),))
+        factor_gradient = lambda data: jax.vjp(lambda coefficient: function(data, coefficient), value)[1](cot)[0]
+        mixed = jax.jvp(factor_gradient, (old,), (directions[0],))
+        return primal, tangent, gradients, base_transpose, factor_transpose, nested, mixed
+
+    actual = jax.jit(lambda old, value, cot: derivatives(operation, old, value, cot))(base, factor, cotangent)
+    expected = derivatives(reference_scale, base, factor, cotangent)
+    for result, wanted in zip(jax.tree.leaves(actual), jax.tree.leaves(expected), strict=True):
+        np.testing.assert_allclose(result, wanted, rtol=2e-6, atol=2e-6)
+
+
+def test_selected_scale_batched_factors_and_vmap_axes():
     base = jnp.linspace(-3, 4, 50, dtype=jnp.float32)
-    factor = jnp.asarray(-1.25, dtype=jnp.float32)
-    base_tangent = jnp.linspace(2, -1, 50, dtype=jnp.float32)
-    factor_tangent = jnp.asarray(0.75, dtype=jnp.float32)
-    cotangent = jnp.linspace(-4, 3, 50, dtype=jnp.float32)
-    migrated = lambda old, value: execute_update_scale(old, value, plan=plan)
-    oracle = lambda old, value: execute_selected_scale_reference(old, value, plan)
-
-    actual_primal, actual_tangent = jax.jvp(
-        migrated,
-        (base, factor),
-        (base_tangent, factor_tangent),
-    )
-    expected_primal, expected_tangent = jax.jvp(
-        oracle,
-        (base, factor),
-        (base_tangent, factor_tangent),
-    )
-    np.testing.assert_array_equal(actual_primal, expected_primal)
-    np.testing.assert_allclose(
-        actual_tangent,
-        expected_tangent,
-        rtol=1e-6,
-        atol=1e-6,
-    )
-    actual_base_vjp, actual_factor_vjp = jax.vjp(migrated, base, factor)[1](
-        cotangent
-    )
-    expected_base_vjp, expected_factor_vjp = jax.vjp(oracle, base, factor)[1](
-        cotangent
-    )
-    np.testing.assert_array_equal(actual_base_vjp, expected_base_vjp)
-    np.testing.assert_allclose(
-        actual_factor_vjp,
-        expected_factor_vjp,
-        rtol=1e-6,
-        atol=1e-6,
-    )
-
-    actual_base_transpose = jax.linear_transpose(
-        lambda old: migrated(old, factor),
-        jnp.zeros_like(base),
-    )(cotangent)
-    expected_base_transpose = jax.linear_transpose(
-        lambda old: oracle(old, factor),
-        jnp.zeros_like(base),
-    )(cotangent)
-    actual_factor_transpose = jax.linear_transpose(
-        lambda value: migrated(base, value),
-        jnp.zeros_like(factor),
-    )(cotangent)
-    expected_factor_transpose = jax.vjp(
-        lambda value: oracle(base, value),
-        jnp.zeros_like(factor),
-    )[1](cotangent)
-    np.testing.assert_array_equal(actual_base_transpose, expected_base_transpose)
-    np.testing.assert_allclose(
-        actual_factor_transpose,
-        expected_factor_transpose,
-        rtol=1e-6,
-        atol=1e-6,
-    )
-
-    migrated_pullback = lambda ct: jax.vjp(lambda old: migrated(old, factor), base)[1](
-        ct
-    )[0]
-    oracle_pullback = lambda ct: jax.vjp(lambda old: oracle(old, factor), base)[1](ct)[
-        0
-    ]
-    actual_nested = jax.jvp(
-        migrated_pullback,
-        (jnp.zeros_like(cotangent),),
-        (jnp.ones_like(cotangent),),
-    )
-    expected_nested = jax.jvp(
-        oracle_pullback,
-        (jnp.zeros_like(cotangent),),
-        (jnp.ones_like(cotangent),),
-    )
-    for actual, expected in zip(actual_nested, expected_nested, strict=True):
-        np.testing.assert_array_equal(actual, expected)
-
-    migrated_factor_gradient = lambda old: jax.grad(
-        lambda value: jnp.sum(migrated(old, value))
-    )(factor)
-    oracle_factor_gradient = lambda old: jax.grad(
-        lambda value: jnp.sum(oracle(old, value))
-    )(factor)
-    actual_second = jax.jvp(
-        migrated_factor_gradient,
-        (base,),
-        (base_tangent,),
-    )
-    expected_second = jax.jvp(
-        oracle_factor_gradient,
-        (base,),
-        (base_tangent,),
-    )
-    for actual, expected in zip(actual_second, expected_second, strict=True):
-        np.testing.assert_allclose(actual, expected, rtol=1e-6, atol=1e-6)
-
-
-def test_selected_scale_complex_jvp_vjp_and_transposes_match_oracle() -> None:
-    plan = build_selected_scale_plan(selected_scale_plan(jnp.complex64))
-    base = (
-        jnp.linspace(-2, 3, 50, dtype=jnp.float32)
-        + 1j * jnp.linspace(4, -1, 50, dtype=jnp.float32)
-    ).astype(jnp.complex64)
-    factor = jnp.asarray(1.25 - 0.75j, dtype=jnp.complex64)
-    base_tangent = jnp.full_like(base, -0.5 + 2j)
-    factor_tangent = jnp.asarray(-2 + 0.25j, dtype=jnp.complex64)
-    cotangent = (
-        jnp.linspace(3, -4, 50, dtype=jnp.float32)
-        + 1j * jnp.linspace(-1, 2, 50, dtype=jnp.float32)
-    ).astype(jnp.complex64)
-    migrated = lambda old, value: execute_update_scale(old, value, plan=plan)
-    oracle = lambda old, value: execute_selected_scale_reference(old, value, plan)
-
-    actual_jvp = jax.jvp(
-        migrated,
-        (base, factor),
-        (base_tangent, factor_tangent),
-    )
-    expected_jvp = jax.jvp(
-        oracle,
-        (base, factor),
-        (base_tangent, factor_tangent),
-    )
-    actual_vjp = jax.vjp(migrated, base, factor)[1](cotangent)
-    expected_vjp = jax.vjp(oracle, base, factor)[1](cotangent)
-    actual_base_transpose = jax.linear_transpose(
-        lambda old: migrated(old, factor),
-        jnp.zeros_like(base),
-    )(cotangent)
-    expected_base_transpose = jax.linear_transpose(
-        lambda old: oracle(old, factor),
-        jnp.zeros_like(base),
-    )(cotangent)
-    actual_factor_transpose = jax.linear_transpose(
-        lambda value: migrated(base, value),
-        jnp.zeros_like(factor),
-    )(cotangent)
-    expected_factor_transpose = jax.vjp(
-        lambda value: oracle(base, value),
-        jnp.zeros_like(factor),
-    )[1](cotangent)
-
-    for actual, expected in (
-        *zip(actual_jvp, expected_jvp, strict=True),
-        (actual_vjp[0], expected_vjp[0]),
-        (actual_base_transpose[0], expected_base_transpose[0]),
-    ):
-        assert_bitwise_equal(actual, expected)
-    np.testing.assert_allclose(actual_vjp[1], expected_vjp[1], rtol=1e-6, atol=1e-6)
-    np.testing.assert_allclose(
-        actual_factor_transpose[0],
-        expected_factor_transpose[0],
-        rtol=1e-6,
-        atol=1e-6,
-    )
-
-
-def test_selected_scale_supports_batched_factors_and_vmap_axes() -> None:
-    plan = build_selected_scale_plan(selected_scale_plan())
-    base = jnp.linspace(-3, 4, 50, dtype=jnp.float32)
-    factors = jnp.asarray([2.0, -0.5, 3.0], dtype=jnp.float32)
+    factors = jnp.asarray([2., -.5, 3.], dtype=jnp.float32)
     bases = jnp.stack((base, 2 * base, -base))
-    migrated = lambda old, value: execute_update_scale(old, value, plan=plan)
-    oracle = lambda old, value: execute_selected_scale_reference(old, value, plan)
-
-    np.testing.assert_array_equal(
-        jax.jit(migrated)(bases, factors),
-        jax.jit(oracle)(bases, factors),
-    )
-    for in_axes in ((0, 0), (0, None), (None, 0)):
-        actual = jax.jit(jax.vmap(migrated, in_axes=in_axes))(
-            bases if in_axes[0] == 0 else base,
-            factors if in_axes[1] == 0 else factors[0],
-        )
-        expected = jax.jit(jax.vmap(oracle, in_axes=in_axes))(
-            bases if in_axes[0] == 0 else base,
-            factors if in_axes[1] == 0 else factors[0],
-        )
-        np.testing.assert_array_equal(actual, expected)
+    operation = lambda old, value: scale(StridedView(old, (16,), (3,), 2), value).data
+    np.testing.assert_array_equal(jax.jit(operation)(bases, factors), reference_scale(bases, factors))
+    for axes in ((0, 0), (0, None), (None, 0)):
+        arguments = (bases if axes[0] == 0 else base, factors if axes[1] == 0 else factors[0])
+        np.testing.assert_array_equal(jax.jit(jax.vmap(operation, in_axes=axes))(*arguments),
+                                      jax.vmap(reference_scale, in_axes=axes)(*arguments))
 
 
-def test_selected_scale_dynamic_operand_hlo_and_allocation_contract() -> None:
-    plan = build_selected_scale_plan(selected_scale_plan())
-    base = jnp.arange(50, dtype=jnp.float32)
-    function = jax.jit(lambda old, factor: execute_update_scale(old, factor, plan=plan))
-    lowered = function.lower(base, jnp.asarray(2, dtype=jnp.float32))
-    hlo = str(lowered.compiler_ir("stablehlo")).lower()
+@pytest.mark.parametrize("donate", [False, True])
+def test_selected_scale_dynamic_operand_and_input_reuse(donate):
+    operation = jax.jit(lambda old, factor: scale(StridedView(old, (16,), (3,), 2), factor).data,
+                        donate_argnums=(0,) if donate else ())
+    template = jnp.arange(50, dtype=jnp.float32)
+    lowered = operation.lower(template, jnp.float32(2))
+    text = lowered.as_text()
+    assert text.count("custom_call") == 1 and "output_operand_aliases" in text
+    assert operation_target("update", np.dtype(jnp.float32)) in text
     executable = lowered.compile()
     memory = executable.memory_analysis()
-
-    first = executable(base, jnp.asarray(2, dtype=jnp.float32))
-    second = executable(base, jnp.asarray(-3, dtype=jnp.float32))
-    assert not np.array_equal(np.asarray(first), np.asarray(second))
-    assert "%arg1" in hlo
-    assert "tensor0_stride_update_float32_cpu_v1" in hlo
     assert memory is not None
-    assert memory.alias_size_in_bytes == 0
+    assert memory.alias_size_in_bytes == (template.nbytes if donate else 0)
+    for coefficient in (jnp.float32(2), jnp.float32(-3)):
+        base = jnp.array(template, copy=True)
+        expected = reference_scale(template, coefficient)
+        np.testing.assert_array_equal(executable(base, coefficient), expected)
+        if donate:
+            assert base.is_deleted()
+        else:
+            np.testing.assert_array_equal(base, template)
 
 
-def test_selected_scale_compact_route_uses_native_without_addresses() -> None:
-    bound = contiguous_dtype_plan(
-        jnp.float32,
-        None,
-        size=_LARGE_ROUTE_SIZE,
-    )
-    plan = build_selected_scale_plan(bound)
-    base = jax.ShapeDtypeStruct((bound.output_size,), jnp.float32)
-    factor = jax.ShapeDtypeStruct((), jnp.float32)
-    function = jax.jit(lambda old, value: execute_update_scale(old, value, plan=plan))
-    hlo = str(function.lower(base, factor).compiler_ir("stablehlo"))
-
-    assert "tensor0_stride_update_float32_cpu_v1" in hlo
-    assert "stablehlo.custom_call" in hlo
-    assert "stablehlo.gather" not in hlo
-    assert "stablehlo.scatter" not in hlo
+@pytest.mark.parametrize("stride", [1, 2])
+def test_selected_scale_large_layout_lowers_without_address_arrays(stride):
+    size = 1_100_000
+    base = jax.ShapeDtypeStruct((stride * (size - 1) + 1,), jnp.float32)
+    operation = jax.jit(lambda old, factor: scale(StridedView(old, (size,), (stride,), 0), factor).data)
+    text = operation.lower(base, jax.ShapeDtypeStruct((), jnp.float32)).as_text().lower()
+    assert text.count("custom_call") == 1
+    assert operation_target("update", np.dtype(jnp.float32)) in text
+    assert "gather" not in text and "scatter" not in text
 
 
-def test_selected_scale_large_noncompact_route_uses_native_without_addresses() -> None:
-    bound = noncompact_identity_plan(_LARGE_ROUTE_SIZE)
-    plan = build_selected_scale_plan(bound)
-    base = jax.ShapeDtypeStruct((bound.output_size,), jnp.float32)
-    factor = jax.ShapeDtypeStruct((), jnp.float32)
-    function = jax.jit(lambda old, value: execute_update_scale(old, value, plan=plan))
-
-    hlo = str(function.lower(base, factor).compiler_ir("stablehlo")).lower()
-    assert "tensor0_stride_update_float32_cpu_v1" in hlo
-    assert "gather" not in hlo
-    assert "scatter" not in hlo
-
-
-def test_selected_scale_non_cpu_lowering_fails_closed() -> None:
-    bound = selected_scale_plan()
-    plan = build_selected_scale_plan(bound)
-    base = jax.ShapeDtypeStruct((bound.output_size,), jnp.float32)
-    factor = jax.ShapeDtypeStruct((), jnp.float32)
-    traced = jax.jit(
-        lambda old, value: execute_update_scale(old, value, plan=plan)
-    ).trace(base, factor)
-
-    with pytest.raises(RuntimeError, match="native_update_executor_non_cpu"):
+def test_selected_scale_non_cpu_lowering_fails_closed():
+    operation = jax.jit(lambda old, factor: scale(StridedView(old, (16,), (3,), 2), factor).data)
+    traced = operation.trace(jax.ShapeDtypeStruct((50,), jnp.float32), jax.ShapeDtypeStruct((), jnp.float32))
+    with pytest.raises((RuntimeError, NotImplementedError, ValueError), match="tpu|TPU"):
         traced.lower(lowering_platforms=("tpu",))
 
 
-def test_selected_scale_multi_device_batch_sharding_and_storage_rejection() -> None:
-    script = textwrap.dedent(
-        """
-        import json
+def _check_sharding():
+    from jax.sharding import Mesh, NamedSharding, PartitionSpec
 
-        import jax
-        import jax.numpy as jnp
-        import numpy as np
-        from jax.sharding import Mesh, NamedSharding, PartitionSpec as P
+    assert len(jax.devices()) == 2
+    mesh = Mesh(np.asarray(jax.devices()), ("device",))
+    batches = NamedSharding(mesh, PartitionSpec("device", None))
+    partitioned = NamedSharding(mesh, PartitionSpec("device"))
+    replicated = NamedSharding(mesh, PartitionSpec())
+    base_host = np.arange(100, dtype=np.float32).reshape(2, 50)
+    base = jax.device_put(base_host, batches)
+    factors = jax.device_put(np.asarray([2., -3.], dtype=np.float32), partitioned)
+    operation = lambda old, factor: scale(StridedView(old, (16,), (3,), 2), factor).data
+    for coefficient in (factors, jax.device_put(np.float32(2), replicated)):
+        executable = jax.jit(operation, in_shardings=(batches, coefficient.sharding),
+                             out_shardings=batches).lower(base, coefficient).compile()
+        actual = executable(base, coefficient)
+        np.testing.assert_array_equal(actual, reference_scale(jnp.asarray(base_host), jnp.asarray(coefficient)))
+        assert actual.sharding.is_equivalent_to(batches, 2)
+        tangent = jax.jit(lambda old, value: jax.jvp(lambda data: operation(data, value),
+                           (old,), (jnp.ones_like(old),))[1],
+                          in_shardings=(batches, coefficient.sharding), out_shardings=batches)
+        derivative = tangent.lower(base, coefficient).compile()
+        np.testing.assert_array_equal(derivative(base, coefficient), reference_scale(jnp.ones_like(base_host), jnp.asarray(coefficient)))
+        for compiled in (executable, derivative):
+            text = compiled.as_text().lower()
+            assert operation_target("update", np.dtype(jnp.float32)) in text
+            assert "all-gather" not in text and "all-reduce" not in text
+    storage = jax.device_put(base_host[0], partitioned)
+    coefficient = jax.device_put(np.float32(2), replicated)
+    with pytest.raises(Exception, match="cannot shard the packed storage axis"):
+        jax.jit(operation, in_shardings=(partitioned, replicated), out_shardings=partitioned).lower(storage, coefficient).compile()
+    assert not any(name == "tensor0._stride1" or name.startswith("tensor0._stride1.") or
+                   name == "tensor0.operations._strided" for name in sys.modules)
 
-        from tensor0._stride._ops._selected_scale import build_selected_scale_plan
-        from tests.stride._fixtures import execute_update_scale
-        from tests.stride._fixtures import selected_scale_plan
-        from tests.stride._oracle import execute_selected_scale_reference
 
-        plan = build_selected_scale_plan(selected_scale_plan())
-        mesh = Mesh(np.asarray(jax.devices()), ("device",))
-        base_sharding = NamedSharding(mesh, P("device", None))
-        factor_sharding = NamedSharding(mesh, P("device"))
-        base_host = np.arange(100, dtype=np.float32).reshape(2, 50)
-        factor_host = np.asarray([2.0, -3.0], dtype=np.float32)
-        base = jax.device_put(base_host, base_sharding)
-        factor = jax.device_put(factor_host, factor_sharding)
-        executable = jax.jit(
-            lambda old, value: execute_update_scale(old, value, plan=plan),
-            in_shardings=(base_sharding, factor_sharding),
-            out_shardings=base_sharding,
-        ).lower(base, factor).compile()
-        hlo = executable.as_text().lower()
-        actual = executable(base, factor)
-        actual.block_until_ready()
-        expected = execute_selected_scale_reference(
-            jnp.asarray(base_host),
-            jnp.asarray(factor_host),
-            plan,
-        )
-        np.testing.assert_array_equal(np.asarray(actual), np.asarray(expected))
-
-        for coefficient in (factor, jax.device_put(
-            np.float32(2), NamedSharding(mesh, P()),
-        )):
-            derivative = jax.jit(
-                lambda old, value: jax.jvp(
-                    lambda data: execute_update_scale(data, value, plan=plan),
-                    (old,), (jnp.ones_like(old),),
-                )[1],
-                in_shardings=(base_sharding, coefficient.sharding),
-                out_shardings=base_sharding,
-            ).lower(base, coefficient).compile()
-            differential_hlo = derivative.as_text().lower()
-            assert "tensor0_stride_scale_tangent" in differential_hlo
-            assert "all-gather" not in differential_hlo
-            tangent = derivative(base, coefficient)
-            expected_tangent = execute_update_scale(
-                jnp.ones_like(base_host), jnp.asarray(coefficient), plan=plan,
-            )
-            np.testing.assert_array_equal(tangent, expected_tangent)
-
-        storage_sharding = NamedSharding(mesh, P("device"))
-        storage_base = jax.device_put(base_host[0], storage_sharding)
-        replicated_factor = jax.device_put(
-            factor_host[0],
-            NamedSharding(mesh, P()),
-        )
-        try:
-            jax.jit(
-                lambda old, value: execute_update_scale(old, value, plan=plan),
-                in_shardings=(storage_sharding, NamedSharding(mesh, P())),
-                out_shardings=storage_sharding,
-            ).lower(storage_base, replicated_factor).compile()
-        except Exception as error:
-            storage_error = "cannot shard the packed storage axis" in str(error)
-        else:
-            storage_error = False
-
-        print(json.dumps({
-            "devices": len(jax.devices()),
-            "shape": list(actual.shape),
-            "all_gather": hlo.count("all-gather"),
-            "all_reduce": hlo.count("all-reduce"),
-            "storage_error": storage_error,
-        }))
-        """
-    )
+def test_selected_scale_multi_device_batch_sharding_and_storage_rejection():
     environment = os.environ.copy()
     environment["JAX_PLATFORMS"] = "cpu"
     environment["XLA_FLAGS"] = "--xla_force_host_platform_device_count=2"
     completed = subprocess.run(
-        [sys.executable, "-c", script],
-        cwd=_REPO_ROOT,
-        env=environment,
-        check=False,
-        capture_output=True,
-        text=True,
+        [sys.executable, "-c", "from tests.stride.test_selected_scale import _check_sharding; _check_sharding()"],
+        cwd=Path(__file__).resolve().parents[2], env=environment, capture_output=True, text=True, timeout=180,
     )
-    assert completed.returncode == 0, completed.stderr
-    assert json.loads(completed.stdout) == {
-        "devices": 2,
-        "shape": [2, 50],
-        "all_gather": 0,
-        "all_reduce": 0,
-        "storage_error": True,
-    }
+    assert completed.returncode == 0, completed.stdout + completed.stderr

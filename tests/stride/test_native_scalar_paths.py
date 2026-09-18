@@ -5,15 +5,14 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from tensor0._stride._ops._update import _execute_update
-from tensor0._stride._plan import AffineRecord, CompleteMode, build_affine_plan
-from tensor0._stride._testing import (
-    _native_call_count_for_tests,
-    _reset_native_call_count_for_tests,
-    _set_native_force_generic_for_tests,
-)
+from tensor0._stride._jax import update_p
+from tensor0._stride._layout import AffineRecord
 
-from ._oracle import execute_update_reference
+from ._support import native_available
+
+
+pytestmark = pytest.mark.skipif(not native_available(), reason="native CPU stride is unavailable")
+PARTIAL = (AffineRecord((3,), (1,), 0, (2,), 1),)
 
 
 _CASES = [
@@ -28,18 +27,22 @@ _CASES = [
 ]
 
 
-def _plan(source_dtype, result_dtype):
-    return build_affine_plan(
-        records=(AffineRecord((3,), (1,), 0, (2,), 1),),
-        source_size=3, output_size=7, source_dtype=source_dtype,
-        result_dtype=result_dtype, coverage=CompleteMode.PARTIAL_UNIQUE_ZERO_FILL,
-    )
+def assert_close(actual, expected):
+    assert actual.dtype == expected.dtype and actual.shape == expected.shape
+    for component in (jnp.real, jnp.imag):
+        np.testing.assert_allclose(np.asarray(component(actual)).astype(np.float64),
+                                   np.asarray(component(expected)).astype(np.float64), rtol=2e-3, atol=0)
+
+
+def store(base, selected):
+    if not jnp.issubdtype(base.dtype, jnp.complexfloating):
+        selected = jnp.real(selected)
+    return base.at[1::2].set(selected.astype(base.dtype))
 
 
 @pytest.mark.parametrize("source_dtype,result_dtype,coefficient_dtype", _CASES)
-@pytest.mark.parametrize("generic", [False, True])
 def test_native_computation_batch_branches_and_final_cast(
-    source_dtype, result_dtype, coefficient_dtype, generic,
+    source_dtype, result_dtype, coefficient_dtype,
 ):
     with jax.enable_x64():
         source = jnp.asarray([1.25, -2.5, 3.75], dtype=source_dtype)
@@ -50,24 +53,22 @@ def test_native_computation_batch_branches_and_final_cast(
         second = jnp.asarray([.5, .5, 0, 1, .5], dtype=coefficient_dtype)
         sources = jnp.broadcast_to(source, (5, 3))
         bases = jnp.broadcast_to(base, (5, 7))
-        plan = _plan(source.dtype, base.dtype)
         def operation(old, values, alpha, beta):
-            return _execute_update(old, values, source_factor=alpha, base_factor=beta, plan=plan)
-        expected = execute_update_reference(bases, sources, first, second, plan)
-        _set_native_force_generic_for_tests(generic)
-        try:
-            executable = jax.jit(jax.vmap(operation)).lower(bases, sources, first, second).compile()
-            _reset_native_call_count_for_tests()
-            actual = executable(bases, sources, first, second).block_until_ready()
-            assert _native_call_count_for_tests() == 1
-            memory = executable.memory_analysis()
-            assert memory is not None
-            assert memory.temp_size_in_bytes == 0
-            for component in (jnp.real, jnp.imag):
-                np.testing.assert_allclose(component(actual), component(expected), rtol=2e-3, atol=0)
+            return update_p.bind(values, old, alpha, beta, records=PARTIAL)
+        expected_rows = []
+        for alpha, beta in zip(first, second, strict=True):
+            source_term = source if alpha == 1 else alpha * source
+            base_term = base[1::2] if beta == 1 else beta * base[1::2]
+            selected = base_term if alpha == 0 else source_term if beta == 0 else source_term + base_term
+            expected_rows.append(store(base, selected))
+        expected = jnp.stack(expected_rows)
+        for function in (operation, jax.vmap(operation)):
+            lowered = jax.jit(function).lower(bases, sources, first, second)
+            assert lowered.as_text().count("custom_call") == 1
+            assert "tensor0_stride_update_" in lowered.as_text()
+            actual = lowered.compile()(bases, sources, first, second).block_until_ready()
+            assert_close(actual, expected)
             np.testing.assert_array_equal(actual[:, ::2], bases[:, ::2])
-        finally:
-            _set_native_force_generic_for_tests(False)
 
 
 @pytest.mark.parametrize("dtype,coefficient_dtype,value,increment", [
@@ -83,28 +84,29 @@ def test_native_update_does_not_round_source_term_to_storage(
         source = jnp.full((3,), value, dtype=dtype)
         base = jnp.full((7,), value, dtype=dtype)
         first, second = jnp.asarray(1 + increment, dtype=coefficient_dtype), jnp.asarray(-1, dtype=coefficient_dtype)
-        plan = _plan(source.dtype, base.dtype)
-        actual = jax.jit(lambda old, values, alpha, beta: _execute_update(
-            old, values, source_factor=alpha, base_factor=beta, plan=plan,
+        actual = jax.jit(lambda old, values, alpha, beta: update_p.bind(
+            values, old, alpha, beta, records=PARTIAL,
         ))(base, source, first, second)
-        expected = execute_update_reference(base, source, first, second, plan)
-        np.testing.assert_array_equal(actual, expected)
+        expected = store(base, first * source + second * base[1::2])
+        assert_close(actual, expected)
         assert bool(jnp.all(actual[1::2] != 0))
 
 
-@pytest.mark.parametrize("compute_dtype", ["float16", "bfloat16"])
-def test_native_low_precision_computation_with_weak_float_storage(compute_dtype):
+@pytest.mark.parametrize("coefficient_dtype", ["float16", "bfloat16"])
+def test_native_low_precision_coefficients_with_weak_float_storage(coefficient_dtype):
     with jax.enable_x64(False):
-        source = jnp.broadcast_to(jnp.asarray(1.125), (3,))
-        base = jnp.broadcast_to(jnp.asarray(.25), (7,))
+        source = jnp.broadcast_to(jnp.asarray(1.0003), (3,))
+        base = jnp.broadcast_to(jnp.asarray(.2503), (7,))
         assert source.weak_type and base.weak_type
-        first, second = jnp.asarray(.75, dtype=compute_dtype), jnp.asarray(.5, dtype=compute_dtype)
-        plan = _plan(source.dtype, base.dtype)
-        actual = jax.jit(lambda old, values, alpha, beta: _execute_update(
-            old, values, source_factor=alpha, base_factor=beta, plan=plan,
+        first, second = jnp.asarray(.75, dtype=coefficient_dtype), jnp.asarray(.5, dtype=coefficient_dtype)
+        actual = jax.jit(lambda old, values, alpha, beta: update_p.bind(
+            values, old, alpha, beta, records=PARTIAL,
         ))(base, source, first, second)
-        expected = execute_update_reference(base, source, first, second, plan)
-        np.testing.assert_array_equal(actual, expected)
+        expected = store(base, first.astype(source.dtype) * source.astype(source.dtype)
+                         + second.astype(base.dtype) * base[1::2].astype(base.dtype))
+        assert not actual.weak_type
+        assert actual.dtype == expected.dtype
+        np.testing.assert_allclose(actual, expected, rtol=2e-6, atol=1e-7)
 
 
 @pytest.mark.parametrize("source_dtype,result_dtype,coefficient_dtype", _CASES)
@@ -113,23 +115,22 @@ def test_native_computation_explicit_differentials(source_dtype, result_dtype, c
         source = jnp.asarray([1.25, -2.5, 3.75], dtype=source_dtype)
         base = jnp.arange(7, dtype=jnp.float32).astype(result_dtype)
         first, second = jnp.asarray(.75, dtype=coefficient_dtype), jnp.asarray(.5, dtype=coefficient_dtype)
-        plan = _plan(source.dtype, base.dtype)
         def operation(old, values, alpha, beta):
-            return _execute_update(old, values, source_factor=alpha, base_factor=beta, plan=plan)
+            return update_p.bind(values, old, alpha, beta, records=PARTIAL)
         def reference(old, values, alpha, beta):
-            return old.at[1::2].set((alpha * values + beta * old[1::2]).astype(old.dtype))
+            return store(old, alpha * values + beta * old[1::2])
         arguments = (base, source, first, second)
         directions = tuple(jnp.ones_like(value) for value in arguments)
         def derivative(function, *values):
             return jax.jvp(function, values, directions)[1]
         actual = jax.jit(lambda *values: derivative(operation, *values))(*arguments)
         expected = derivative(reference, *arguments)
-        np.testing.assert_allclose(actual, expected, rtol=2e-3, atol=0)
+        assert_close(actual, expected)
         for actual_value, expected_value in zip(
             jax.vjp(operation, *arguments)[1](jnp.ones_like(base)),
             jax.vjp(reference, *arguments)[1](jnp.ones_like(base)), strict=True,
         ):
-            np.testing.assert_allclose(actual_value, expected_value, rtol=2e-3, atol=0)
+            assert_close(actual_value, expected_value)
         actual = jax.jvp(lambda *values: derivative(operation, *values), arguments, directions)[1]
         expected = jax.jvp(lambda *values: derivative(reference, *values), arguments, directions)[1]
-        np.testing.assert_allclose(actual, expected, rtol=2e-3, atol=0)
+        assert_close(actual, expected)

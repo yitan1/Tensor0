@@ -11,7 +11,7 @@ from jax import Array
 from jax.core import Tracer
 import jax.numpy as jnp
 
-from ._plan import INT64_MAX, INT64_MIN, UINT64_MAX, contiguous_strides
+from ._layout import INT64_MAX, INT64_MIN, UINT64_MAX, contiguous_strides
 
 
 StridedIndex: TypeAlias = int | slice
@@ -197,11 +197,17 @@ class StridedView:
     def tree_unflatten(
         cls,
         metadata: tuple[tuple[int, ...], tuple[int, ...], int],
-        children: tuple[Array],
+        children: tuple[object],
     ) -> StridedView:
+        """Restore PyTree fields without requiring concrete array leaves."""
         sizes, strides, offset = metadata
         (data,) = children
-        return cls(data, sizes, strides, offset)
+        view = object.__new__(cls)
+        object.__setattr__(view, "data", data)
+        object.__setattr__(view, "sizes", sizes)
+        object.__setattr__(view, "strides", strides)
+        object.__setattr__(view, "offset", offset)
+        return view
 
     def _with_data(self, data: Array) -> StridedView:
         """Bind the same affine view metadata to replacement storage."""

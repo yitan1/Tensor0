@@ -1,31 +1,11 @@
-"""Private, sector-independent functional view algebra.
+"""Independent stride migration; only reviewed functionality is exported."""
 
-Scale, addition, and internal assignment and accumulation share one functional
-update core with zero/one short-circuit semantics and explicit AD rules.
-Execution plans and multi-record execution remain private implementation
-details; they are not exported by this facade.
-"""
-
-from ._algebra import add, dotc, dotu, reduce_sum, scale
-from ._ops._materialize import materialize
 from ._view import StridedView
-from ._native import (
-    disable_threads,
-    enable_threads,
-    get_num_threads,
-    set_num_threads,
-)
+from ._ops._materialize import materialize
+from ._ops._reduction import reduce_sum
+from ._ops._dot import dotc, dotu
+from ._ops._algebra import add, scale
+from ._threads import disable_threads, enable_threads, get_num_threads, set_num_threads
 
-__all__ = [
-    "StridedView",
-    "add",
-    "disable_threads",
-    "dotc",
-    "dotu",
-    "enable_threads",
-    "get_num_threads",
-    "materialize",
-    "reduce_sum",
-    "scale",
-    "set_num_threads",
-]
+__all__ = ["StridedView", "materialize", "scale", "add", "reduce_sum", "dotc", "dotu",
+           "disable_threads", "enable_threads", "get_num_threads", "set_num_threads"]

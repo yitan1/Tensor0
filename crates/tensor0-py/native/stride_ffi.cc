@@ -1,44 +1,24 @@
-#include "stride_descriptor.h"
-
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <bit>
 #include <cmath>
+#include <complex>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <complex>
 #include <exception>
 #include <limits>
 #include <memory>
 #include <numeric>
 #include <stdexcept>
 #include <string>
-#include <tuple>
 #include <type_traits>
 #include <utility>
 #include <vector>
 
-#if defined(__SSE__)
-#include <xmmintrin.h>
-#endif
-#if (defined(__x86_64__) || defined(__i386__)) && \
-    (defined(__GNUC__) || defined(__clang__))
-#include <immintrin.h>
-#define TENSOR0_STRIDE_HAS_AVX2_TARGET 1
-#define TENSOR0_STRIDE_AVX2_TARGET __attribute__((target("avx2")))
-#define TENSOR0_STRIDE_AVX2_FMA_TARGET __attribute__((target("avx2,fma")))
-#define TENSOR0_STRIDE_AVX2_F16C_TARGET \
-  __attribute__((target("avx2,f16c")))
-#endif
+#include "kernels/avx2.inc"
 
-#if defined(__GNUC__) || defined(__clang__)
-#define TENSOR0_STRIDE_ALWAYS_INLINE inline __attribute__((always_inline))
-#else
-#define TENSOR0_STRIDE_ALWAYS_INLINE inline
-#endif
-
-#include "xla/ffi/api/c_api.h"
 #include "xla/ffi/api/ffi.h"
 
 #ifndef TENSOR0_STRIDE_JAX_VERSION
@@ -52,18 +32,26 @@
 namespace ffi = xla::ffi;
 
 namespace tensor0::stride {
-namespace {
 
-// Keep the implementation in one translation unit so its templates and
-// anonymous prepared-state types do not become a separate internal ABI.
-#include "stride_common.inc"
-#include "stride_scalar.inc"
-#include "stride_affine.inc"
-#include "stride_reduction_plan.inc"
-#include "stride_runtime.inc"
-#include "stride_reduction.inc"
+#include "numeric/scalar.inc"
+#include "numeric/expression.inc"
+#include "layout/types.inc"
+#include "layout/address.inc"
+#include "layout/construction.inc"
+#include "layout/planning.inc"
+#include "layout/blocking.inc"
+#include "ffi/dtype.inc"
+#include "ffi/descriptor.inc"
+#include "runtime/runtime.inc"
+#include "kernels/affine.inc"
+#include "kernels/reduction.inc"
+#include "execute/map.inc"
+#include "execute/update.inc"
+#include "execute/map_tasks.inc"
+#include "execute/reduction.inc"
+#include "execute/dot.inc"
+#include "execute/reduction_tasks.inc"
 
-}  // namespace
-}  // namespace tensor0::stride
+}
 
-#include "stride_bindings.inc"
+#include "ffi/bindings.inc"

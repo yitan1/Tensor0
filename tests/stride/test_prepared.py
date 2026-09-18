@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-import json
+import gc
+import importlib
 from pathlib import Path
 import subprocess
 import sys
-import textwrap
 
 import jax
 import jax.numpy as jnp
@@ -13,444 +13,173 @@ import numpy as np
 import pytest
 
 from tensor0 import _native
-from tensor0._stride._plan import CompleteMode, AffineRecord
-from tensor0._stride._map import _execute_map
-import tensor0._stride._native as native_module
-from tensor0._stride._testing import (
-    _native_worker_counts_for_tests,
-    _set_native_worker_limit_for_tests,
-    native_available,
-)
-from tensor0._stride._native_descriptor import lower_plan
-from tensor0._stride._plan import (
-    build_affine_plan,
-)
+from tensor0._stride import StridedView, dotu, enable_threads, get_num_threads, materialize, reduce_sum, scale, set_num_threads
+from tensor0._stride._ffi import _registration
+from tensor0._stride._ffi._descriptor import encode_layout
+from tensor0._stride._jax import accumulation_p, copy_p
+from tensor0._stride._layout import AffineRecord
 
-from ._fixtures import (
-    dtype_transpose_plan,
-    many_tiny_balanced_plan,
-    rank2_transpose_plan,
-    rank4_two_pair_plan,
-    selected_scale_plan,
-    two_record_noncompact_plan,
-)
-from ._oracle import execute_reference
+from ._support import native_available
 
 
-pytestmark = pytest.mark.skipif(
-    not native_available(),
-    reason="the Tensor0 extension was built without JAX FFI headers",
-)
-
-_REPO_ROOT = Path(__file__).resolve().parents[2]
+pytestmark = pytest.mark.skipif(not native_available(), reason="native CPU stride is unavailable")
 
 
-def _affine_target(dtype_name: str = "float32") -> str:
-    return native_module._ensure_affine_registered(dtype_name)
-
-
-def _raw_prepared_call(
-    source: jax.Array,
-    *,
-    descriptor: bytes,
-    output_shape: tuple[int, ...],
-    alias_source_result: bool = False,
-    dtype_name: str = "float32",
-) -> jax.Array:
-    call = jax.ffi.ffi_call(
-        _affine_target(dtype_name),
-        jax.ShapeDtypeStruct(output_shape, jnp.float32),
-        input_layouts=(tuple(reversed(range(source.ndim))),),
-        output_layouts=tuple(reversed(range(len(output_shape)))),
-        input_output_aliases={0: 0} if alias_source_result else None,
-        vmap_method="expand_dims",
-        custom_call_api_version=4,
-    )
-    attribute = np.frombuffer(descriptor, dtype=np.uint8).copy()
-    return call(source, descriptor=attribute)
-
-
-def test_prepared_operation_target_mismatch_is_rejected() -> None:
-    plan = selected_scale_plan()
-    source = jnp.arange(plan.source_size, dtype=jnp.float32)
-    native_module._ensure_affine_registered("float32")
-    registration = _native._stride_prepared_registration()
-    target = "tensor0_stride_test_prepared_operation_mismatch"
-    jax.ffi.register_ffi_target(
-        target,
-        {
-            "instantiate": registration["instantiate_selected_scale"],
-            "execute": registration["execute_f32"],
-        },
-        platform="cpu",
-        api_version=1,
-    )
-    call = jax.ffi.ffi_call(
-        target,
-        jax.ShapeDtypeStruct((plan.output_size,), jnp.float32),
-        input_layouts=((0,),),
-        output_layouts=(0,),
-        vmap_method="expand_dims",
-        custom_call_api_version=4,
-    )
-    descriptor = np.frombuffer(
-        lower_plan(plan).descriptor,
-        dtype=np.uint8,
-    ).copy()
-    with pytest.raises(Exception, match="prepared operation does not match"):
-        call(source, descriptor=descriptor).block_until_ready()
-
-
-@pytest.mark.parametrize("scale", [1.0, -0.75])
-def test_rank4_two_pair_prepared_batch_matches_reference(scale: float) -> None:
-    plan = rank4_two_pair_plan(scale=scale)
-    source = jnp.arange(3 * plan.source_size, dtype=jnp.float32).reshape(
-        3, plan.source_size
-    )
-
-    actual = jax.jit(
-        lambda value: _execute_map(value, plan=plan)
-    )(source)
-    expected = jax.vmap(lambda value: execute_reference(value, plan))(source)
-
-    np.testing.assert_array_equal(np.asarray(actual), np.asarray(expected))
-
-
-def test_rank4_two_pair_prepared_parallel_range_matches_reference() -> None:
-    plan = rank4_two_pair_plan((32, 16, 16, 16), scale=-0.75)
-    source = jnp.arange(plan.source_size, dtype=jnp.float32)
-    _set_native_worker_limit_for_tests(4)
+@pytest.mark.parametrize("factor", [1., -.75])
+@pytest.mark.parametrize("shape,batches,workers", [((8, 8, 8, 8), 3, 1), ((32, 16, 16, 16), 1, 4)])
+def test_rank4_prepared_layout_batches_and_worker_limits(factor, shape, batches, workers):
+    outer, rows, inner, columns = shape
+    size = int(np.prod(shape))
+    record = AffineRecord(shape, (inner * columns, outer * inner * columns, 1, inner), 0,
+                          (rows * inner * columns, inner * columns, columns, 1), 0)
+    source = jnp.arange(batches * size, dtype=jnp.float32).reshape(batches, size)
+    operation = jax.jit(lambda value, coefficient: accumulation_p.bind(
+        value, coefficient, records=(record,), coefficient_records=(0,), output_size=size, dtype=np.dtype(jnp.float32),
+    ))
+    previous = get_num_threads()
     try:
-        actual = jax.jit(
-            lambda value: _execute_map(value, plan=plan)
-        )(source)
-        workers, available = _native_worker_counts_for_tests()
+        set_num_threads(workers)
+        actual = operation(source, jnp.float32(factor))
+        actual.block_until_ready()
     finally:
-        _set_native_worker_limit_for_tests(None)
-
-    np.testing.assert_array_equal(
-        np.asarray(actual), np.asarray(execute_reference(source, plan))
-    )
-    if available >= 2:
-        assert workers >= 2
-
-
-@pytest.mark.parametrize(
-    ("field", "word_index"),
-    [
-        ("scalar_policy", 10),
-        ("shape", 19),
-        ("source_stride", 21),
-        ("destination_stride", 23),
-    ],
-)
-def test_affine_v7_instantiate_revalidates_semantic_descriptor(
-    field: str,
-    word_index: int,
-) -> None:
-    plan = rank2_transpose_plan()
-    lowered = lower_plan(plan)
-    words = list(lowered.words)
-    words[word_index] ^= 1
-    descriptor = b"".join(word.to_bytes(8, "little") for word in words)
-    source = jnp.arange(plan.source_size, dtype=jnp.float32)
-
-    with pytest.raises(Exception):
-        _raw_prepared_call(
-            source,
-            descriptor=descriptor,
-            output_shape=(plan.output_size,),
-        ).block_until_ready()
+        if previous is None:
+            enable_threads()
+        else:
+            set_num_threads(previous)
+    expected = np.asarray(source).reshape(batches, rows, outer, columns, inner).transpose(0, 2, 1, 4, 3)
+    np.testing.assert_array_equal(actual, expected.reshape(batches, size) * factor)
 
 
-@pytest.mark.parametrize(
-    "mutation", ["version", "execution_flags", "truncated", "extended"]
-)
-def test_affine_v8_instantiate_rejects_malformed_descriptor(mutation: str) -> None:
-    plan = two_record_noncompact_plan()
-    words = list(lower_plan(plan).words)
+@pytest.mark.parametrize("mutation,message", [
+    ("version", "unsupported native layout version"),
+    ("truncated", "layout rank exceeds descriptor length"),
+    ("extended", "layout descriptor has trailing words"),
+    ("negative_shape", "layout size or offset is negative"),
+    ("source_stride", "source"),
+    ("destination_stride", "injective|overlap"),
+    ("destination_offset", "destination"),
+])
+def test_prepared_compile_validates_address_descriptor_before_creating_state(mutation, message):
+    layout = encode_layout((AffineRecord((2, 3), (3, 1), 0, (3, 1), 0),), source_size=6, output_size=6)
     if mutation == "version":
-        words[1] += 1
-        descriptor = b"".join(word.to_bytes(8, "little") for word in words)
-    elif mutation == "execution_flags":
-        words[11] = 2
-        descriptor = b"".join(word.to_bytes(8, "little") for word in words)
+        layout[0] = 99
+    elif mutation == "truncated":
+        layout = layout[:-1]
+    elif mutation == "extended":
+        layout = np.append(layout, np.int64(0))
+    elif mutation == "negative_shape":
+        layout[7] = -1
+    elif mutation == "source_stride":
+        layout[9] = 100
+    elif mutation == "destination_stride":
+        layout[11] = 0
     else:
-        descriptor = b"".join(word.to_bytes(8, "little") for word in words)
-        descriptor = (
-            descriptor[:-1] if mutation == "truncated" else descriptor + bytes(8)
-        )
-    source = jnp.arange(plan.source_size, dtype=jnp.float32)
-
-    with pytest.raises(Exception):
-        _raw_prepared_call(
-            source,
-            descriptor=descriptor,
-            output_shape=(plan.output_size,),
-        ).block_until_ready()
+        layout[6] = 6
+    call = jax.ffi.ffi_call(_registration.operation_target("copy", np.dtype(jnp.float32)),
+                            jax.ShapeDtypeStruct((1, 6), jnp.float32))
+    source = jnp.arange(6, dtype=jnp.float32).reshape(1, 6)
+    created = _native._stride_native_prepared_stats()[0]
+    with pytest.raises(Exception, match=message):
+        jax.jit(lambda value: call(value, layout=layout)).lower(source).compile()
+    assert _native._stride_native_prepared_stats()[0] == created
 
 
-def test_affine_v8_handler_rejects_rank_two_physical_buffers() -> None:
-    plan = rank2_transpose_plan(rows=2, columns=3)
-    source = jnp.arange(2 * plan.source_size, dtype=jnp.float32).reshape(
-        2,
-        plan.source_size,
-    )
-
-    with pytest.raises(Exception, match="rank-one physical buffers"):
-        _raw_prepared_call(
-            source,
-            descriptor=lower_plan(plan).descriptor,
-            output_shape=(2, plan.output_size),
-        ).block_until_ready()
-
-
-def test_affine_v8_execute_rejects_descriptor_dtype_target_mismatch() -> None:
-    plan = dtype_transpose_plan(jnp.float16, 0.75)
-    source = jnp.arange(plan.source_size, dtype=jnp.float32)
-
-    with pytest.raises(
-        Exception,
-        match="descriptor dtype does not match prepared typed target",
-    ):
-        _raw_prepared_call(
-            source,
-            descriptor=lower_plan(plan).descriptor,
-            output_shape=(plan.output_size,),
-        ).block_until_ready()
+@pytest.mark.parametrize("invalid,message", [
+    ("rank", "copy storage must be rank-two"),
+    ("dtype", "dtype|element type"),
+    ("alias", "input and output buffers overlap"),
+])
+def test_prepared_copy_enforces_buffer_contract(invalid, message):
+    layout = encode_layout((AffineRecord((6,), (1,), 0, (1,), 0),), source_size=6, output_size=6)
+    source = jnp.arange(6, dtype=jnp.float32)
+    if invalid != "rank":
+        source = source.reshape(1, 6)
+    result_dtype = jnp.complex64 if invalid == "dtype" else jnp.float32
+    call = jax.ffi.ffi_call(_registration.operation_target("copy", np.dtype(jnp.float32)),
+                            jax.ShapeDtypeStruct((1, 6), result_dtype),
+                            input_output_aliases={0: 0} if invalid == "alias" else {})
+    with pytest.raises(Exception, match=message):
+        call(source, layout=layout).block_until_ready()
+    np.testing.assert_array_equal(source.ravel(), np.arange(6))
 
 
-def test_affine_v8_execute_rejects_explicit_alias() -> None:
-    plan = two_record_noncompact_plan()
-    source = jnp.arange(plan.source_size, dtype=jnp.float32)
-
-    with pytest.raises(Exception, match="source and result buffers overlap"):
-        _raw_prepared_call(
-            source,
-            descriptor=lower_plan(plan).descriptor,
-            output_shape=(plan.output_size,),
-            alias_source_result=True,
-        ).block_until_ready()
-
-
-def test_affine_v8_instantiate_enforces_absolute_state_limit() -> None:
-    record_count = 12_000
-    records = tuple(
-        AffineRecord((1,), (1,), index, (1,), index)
-        for index in range(record_count)
-    )
-    plan = build_affine_plan(
-        records=records,
-        output_size=record_count,
-        coverage=CompleteMode.COMPLETE_UNIQUE,
-        source_size=record_count,
-        source_dtype=jnp.float32,
-        result_dtype=jnp.float32,
-    )
-    source = jnp.arange(record_count, dtype=jnp.float32)
-
-    with pytest.raises(Exception, match="prepared state exceeds size limit"):
-        _raw_prepared_call(
-            source,
-            descriptor=lower_plan(plan).descriptor,
-            output_shape=(record_count,),
-        ).block_until_ready()
-
-
-def test_prepared_compiled_calls_are_concurrent_and_independent() -> None:
-    plan = many_tiny_balanced_plan()
-    compiled = jax.jit(
-        lambda value: _execute_map(
-            value,
-            plan=plan,
-        )
-    )
-    sources = [
-        jnp.arange(plan.source_size, dtype=jnp.float32) + offset for offset in range(4)
-    ]
-    compiled(sources[0]).block_until_ready()
-
+def test_many_record_prepared_executable_is_reused_concurrently():
+    records = tuple(AffineRecord((8,), (1,), index * 8, (1,), index * 8) for index in range(1024))
+    source = jnp.arange(8192, dtype=jnp.float32)
+    operation = jax.jit(lambda value: copy_p.bind(value, records=records, output_size=8192, dtype=np.dtype(jnp.float32)))
+    before = _native._stride_native_prepared_stats()[0]
+    compiled = operation.lower(source).compile()
+    np.testing.assert_array_equal(compiled(source), source)
+    created = _native._stride_native_prepared_stats()[0]
+    assert created == before + 1
+    inputs = [source + offset for offset in range(4)]
     with ThreadPoolExecutor(max_workers=4) as executor:
-        results = list(executor.map(compiled, sources))
+        results = list(executor.map(compiled, inputs))
+    for actual, expected in zip(results, inputs, strict=True):
+        np.testing.assert_array_equal(actual, expected)
+    assert _native._stride_native_prepared_stats()[0] == created
 
-    for source, result in zip(sources, results, strict=True):
-        np.testing.assert_array_equal(np.asarray(result), np.asarray(source))
 
+def _check_lifecycle(operation, destruction):
+    source = jnp.arange(12, dtype=jnp.float32)
+    if operation == "copy":
+        function = lambda value, factor: materialize(StridedView(value, (3, 4), (1, 3), 0))
+        expected = lambda value, factor: np.asarray(value).reshape(4, 3).T
+    elif operation == "update":
+        function = lambda value, factor: scale(StridedView(value, (6,), (2,), 0), factor).data
+        expected = lambda value, factor: np.where(np.arange(12) % 2 == 0, np.asarray(value) * factor, value)
+    elif operation == "reduction":
+        function = lambda value, factor: reduce_sum(StridedView(value, (3, 4), (4, 1), 0), (1,))
+        expected = lambda value, factor: np.asarray(value).reshape(3, 4).sum(axis=1)
+    elif operation == "dot":
+        function = lambda value, factor: dotu(StridedView(value, (12,), (1,), 0), StridedView(value, (12,), (1,), 0))
+        expected = lambda value, factor: np.sum(np.asarray(value) ** 2)
+    else:
+        mapping = lambda value: materialize(StridedView(value, (12,), (1,), 0), dtype=jnp.complex64)
+        cotangent = jnp.full((12,), 1 + 2j, dtype=jnp.complex64)
+        function = lambda value, factor: (mapping(value), jax.vjp(mapping, value)[1](cotangent)[0])
+        expected = lambda value, factor: (np.asarray(value).astype(np.complex64), np.ones(12, dtype=np.float32))
+    baseline = _native._stride_native_prepared_stats()
+    compiled = jax.jit(function)
 
-@pytest.mark.parametrize(
-    "destruction",
-    ["compiled.clear_cache()", "jax.clear_caches()"],
-)
-def test_prepared_lifecycle_and_reload_in_fresh_process(
-    destruction: str,
-) -> None:
-    script = textwrap.dedent(
-        """
-        import gc
-        import importlib
-        import json
+    def execute(offset, factor):
+        actual = compiled(source + offset, jnp.float32(factor))
+        jax.block_until_ready(actual)
+        for result, wanted in zip(jax.tree.leaves(actual), jax.tree.leaves(expected(source + offset, factor)), strict=True):
+            np.testing.assert_array_equal(result, wanted)
 
-        import jax
-        import jax.numpy as jnp
-
-        from tensor0 import _native
-        import tensor0._stride._map as stride_primitive
-        import tensor0._stride._native as stride_native
-        from tests.stride._fixtures import two_record_noncompact_plan
-
-        metric_names = (
-            "instantiate_count",
-            "execute_count",
-            "live_state_count",
-            "destroyed_state_count",
-            "live_bytes",
-            "last_state_bytes",
-            "last_descriptor_bytes",
-        )
-        metrics = lambda: dict(
-            zip(metric_names, _native._stride_prepared_metrics(), strict=True)
-        )
-        plan = two_record_noncompact_plan()
-        source = jnp.arange(plan.source_size, dtype=jnp.float32)
-        compiled = jax.jit(
-            lambda value: stride_primitive._execute_map(
-                value,
-                plan=plan,
-            )
-        )
-        compiled(source).block_until_ready()
-        compiled(source).block_until_ready()
-        before = metrics()
-
-        stride_native = importlib.reload(stride_native)
-        stride_native._ensure_affine_registered("float32")
-        after_reload = metrics()
-
-        DESTRUCTION
+    execute(0, 2)
+    states = 2 if operation == "mixed_ad" else 1
+    created, destroyed = _native._stride_native_prepared_stats()
+    assert created == baseline[0] + states
+    assert destroyed == baseline[1]
+    execute(3, -1)
+    assert _native._stride_native_prepared_stats() == (created, destroyed)
+    importlib.reload(_registration)
+    _registration.operation_target("copy" if operation == "mixed_ad" else operation, np.dtype(jnp.float32))
+    execute(5, .5)
+    assert _native._stride_native_prepared_stats() == (created, destroyed)
+    if destruction != "exit":
+        if destruction == "local":
+            compiled.clear_cache()
+        else:
+            jax.clear_caches()
         gc.collect()
-        after_clear = metrics()
-        if not _native._stride_prepared_reset_metrics():
-            raise RuntimeError("cannot reset prepared metrics with live states")
-        after_reset = metrics()
-        print(json.dumps({
-            "before": before,
-            "after_reload": after_reload,
-            "after_clear": after_clear,
-            "after_reset": after_reset,
-        }))
-        """
-    ).replace("DESTRUCTION", destruction)
-
-    completed = subprocess.run(
-        [sys.executable, "-c", script],
-        cwd=_REPO_ROOT,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    result = json.loads(completed.stdout)
-    assert result["before"]["instantiate_count"] == 1
-    assert result["before"]["execute_count"] == 2
-    assert result["before"]["live_state_count"] == 1
-    assert result["before"]["live_bytes"] > 0
-    assert result["after_reload"] == result["before"]
-    assert result["after_clear"]["live_state_count"] == 0
-    assert result["after_clear"]["destroyed_state_count"] == 1
-    assert result["after_clear"]["live_bytes"] == 0
-    assert not any(result["after_reset"].values())
-
-
-def test_prepared_process_exit_with_live_state_is_clean() -> None:
-    script = textwrap.dedent(
-        """
-        import jax
-        import jax.numpy as jnp
-
-        import tensor0._stride._map as stride_primitive
-        from tests.stride._fixtures import two_record_noncompact_plan
-
-        plan = two_record_noncompact_plan()
-        source = jnp.arange(plan.source_size, dtype=jnp.float32)
-        compiled = jax.jit(
-            lambda value: stride_primitive._execute_map(
-                value,
-                plan=plan,
-            )
-        )
-        compiled(source).block_until_ready()
-        print("prepared-state-live-at-normal-process-exit")
-        """
-    )
-
-    completed = subprocess.run(
-        [sys.executable, "-c", script],
-        cwd=_REPO_ROOT,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    assert completed.stdout.strip() == "prepared-state-live-at-normal-process-exit"
-
-
-def test_mixed_affine_prepared_states_reuse_and_destroy_in_fresh_process() -> None:
-    script = textwrap.dedent(
-        """
-        import gc
-        import json
-
-        import jax
-        import jax.numpy as jnp
-
-        from tensor0 import _native
-        from tensor0._stride._map import _execute_map
-        from tensor0._stride._plan import (
-            build_affine_plan,
-        )
-        from tests.stride._fixtures import two_record_noncompact_plan
-
-        template = two_record_noncompact_plan()
-        plan = build_affine_plan(
-            records=template.records,
-            output_size=template.output_size,
-            coverage=template.coverage,
-            source_size=template.source_size,
-            source_dtype=jnp.float32,
-            result_dtype=jnp.complex64,
-        )
-        source = jnp.arange(plan.source_size, dtype=jnp.float32)
-        cotangent = jnp.ones(plan.output_size, dtype=jnp.complex64) * (1 + 2j)
-        apply = lambda value: _execute_map(
-            value, plan=plan
-        )
-        compiled = jax.jit(
-            lambda value, cot: (
-                apply(value),
-                jax.vjp(apply, value)[1](cot)[0],
-            )
-        )
-        compiled(source, cotangent)[1].block_until_ready()
-        compiled(source, cotangent)[1].block_until_ready()
-        before = _native._stride_prepared_metrics()
+        assert _native._stride_native_prepared_stats() == (created, destroyed + states)
+        execute(7, 3)
+        assert _native._stride_native_prepared_stats() == (created + states, destroyed + states)
         compiled.clear_cache()
         gc.collect()
-        after = _native._stride_prepared_metrics()
-        print(json.dumps({"before": before, "after": after}))
-        """
-    )
-    completed = subprocess.run(
-        [sys.executable, "-c", script],
-        cwd=_REPO_ROOT,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    result = json.loads(completed.stdout)
-    before = result["before"]
-    after = result["after"]
-    assert before[0] == 2
-    assert before[1] == 4
-    assert before[2] == 2
-    assert before[4] > 0
-    assert after[2] == 0
-    assert after[3] == 2
-    assert after[4] == 0
+        assert _native._stride_native_prepared_stats() == (created + states, destroyed + 2 * states)
+    assert not any(name == "tensor0._stride1" or name.startswith("tensor0._stride1.") or
+                   name == "tensor0.operations._strided" for name in sys.modules)
+
+
+@pytest.mark.parametrize("operation", ["copy", "update", "reduction", "dot", "mixed_ad"])
+@pytest.mark.parametrize("destruction", ["local", "global", "exit"])
+def test_prepared_reuse_reload_destruction_and_process_exit(operation, destruction):
+    script = ("from tests.stride.test_prepared import _check_lifecycle; "
+              f"_check_lifecycle({operation!r}, {destruction!r})")
+    completed = subprocess.run([sys.executable, "-c", script], cwd=Path(__file__).resolve().parents[2],
+                               capture_output=True, text=True, timeout=180)
+    assert completed.returncode == 0, completed.stdout + completed.stderr

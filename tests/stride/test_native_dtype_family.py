@@ -1,335 +1,165 @@
 from __future__ import annotations
 
-from collections.abc import Callable
-
 import jax
 import jax.numpy as jnp
-from jax.typing import DTypeLike
 import numpy as np
 import pytest
 
-from tensor0._stride._plan import CompleteMode, AffineRecord
-from tensor0._stride._map import _execute_map
-from tensor0._stride._testing import (
-    _native_call_count_for_tests,
-    _reset_native_call_count_for_tests,
-    native_available,
-)
-from tensor0._stride._ops._selected_scale import build_selected_scale_plan
-from tests.stride._fixtures import execute_update_scale
-from tests.stride._fixtures import execute_update_accumulate, execute_update_assign
-from tensor0._stride._ops._update_support import build_base_accumulate_plan, build_base_assign_plan
-from tensor0._stride._plan import (
-    build_affine_plan,
-)
+from tensor0._stride import StridedView, scale
+from tensor0._stride._ffi._registration import operation_target
+from tensor0._stride._jax import accumulation_p, copy_p, update_p
+from tensor0._stride._layout import AffineRecord
 
-from ._fixtures import (
-    contiguous_dtype_plan,
-    dtype_transpose_plan,
-    selected_scale_plan,
-)
-from ._oracle import (
-    assert_bitwise_equal,
-    execute_base_accumulate_reference,
-    execute_base_assign_reference,
-    execute_reference,
-    execute_selected_scale_reference,
+from ._support import native_available
+
+
+pytestmark = pytest.mark.skipif(not native_available(), reason="native CPU stride is unavailable")
+
+DTYPE_CASES = (
+    (jnp.bool_, False), (jnp.int8, -3), (jnp.int16, -3), (jnp.int32, -3), (jnp.int64, -3),
+    (jnp.uint8, 3), (jnp.uint16, 3), (jnp.uint32, 3), (jnp.uint64, 3),
+    (jnp.float16, -1.25), (jnp.bfloat16, -1.25), (jnp.float32, -1.25), (jnp.float64, -1.25),
+    (jnp.complex64, 1.25 - .75j), (jnp.complex128, 1.25 - .75j),
 )
 
 
-_NEW_SAME_DTYPE_CASES = (
-    (jnp.bool_, False),
-    (jnp.int8, -3),
-    (jnp.int16, -3),
-    (jnp.int64, -3),
-    (jnp.uint8, 3),
-    (jnp.uint16, 3),
-    (jnp.uint32, 3),
-    (jnp.uint64, 3),
-    (jnp.float64, -1.25),
-    (jnp.complex128, 1.25 - 0.75j),
-)
-
-
-def _values(dtype: DTypeLike, size: int, *, shift: int = 0) -> jax.Array:
-    resolved = jnp.dtype(dtype)
+def values(dtype, size, shift=0):
     indices = np.arange(size, dtype=np.int64) + shift
-    if resolved == jnp.dtype(jnp.bool_):
+    if dtype == jnp.bool_:
         host = indices % 3 != 0
-    elif jnp.issubdtype(resolved, jnp.unsignedinteger):
-        host = (indices * 71 + 200).astype(np.dtype(resolved))
-    elif jnp.issubdtype(resolved, jnp.signedinteger):
-        host = (indices * 37 - 120).astype(np.dtype(resolved))
-    elif jnp.issubdtype(resolved, jnp.complexfloating):
-        real = indices.astype(np.float64) / 3 - 2
-        host = (real + 1j * real[::-1]).astype(np.dtype(resolved))
+    elif jnp.issubdtype(dtype, jnp.unsignedinteger):
+        host = indices * 71 + 200
+    elif jnp.issubdtype(dtype, jnp.signedinteger):
+        host = indices * 37 - 120
     else:
-        host = (indices.astype(np.float64) / 3 - 2).astype(np.dtype(resolved))
-    return jnp.asarray(host, dtype=resolved)
+        host = indices.astype(np.float64) / 3 - 2
+        if jnp.issubdtype(dtype, jnp.complexfloating):
+            host = host + 1j * host[::-1]
+    return jnp.asarray(np.asarray(host).astype(np.dtype(dtype)))
 
 
-@pytest.mark.parametrize(("dtype", "factor"), _NEW_SAME_DTYPE_CASES)
-@pytest.mark.skipif(not native_available(), reason="native CPU stride unavailable")
-def test_new_same_dtype_family_executes_map_update_and_selected_scale(
-    dtype: DTypeLike,
-    factor: bool | int | float | complex,
-) -> None:
+def assert_result(actual, expected):
+    assert actual.shape == expected.shape and actual.dtype == expected.dtype
+    if actual.dtype == jnp.bool_ or jnp.issubdtype(actual.dtype, jnp.integer):
+        np.testing.assert_array_equal(actual, expected)
+    else:
+        tolerance = (2e-14 if actual.dtype in (jnp.float64, jnp.complex128) else
+                     .008 if actual.dtype == jnp.bfloat16 else .002 if actual.dtype == jnp.float16 else 2e-6)
+        np.testing.assert_allclose(np.asarray(actual).astype(np.complex128), np.asarray(expected).astype(np.complex128),
+                                   rtol=tolerance, atol=tolerance)
+
+
+def assert_native(lowered, operation, dtype):
+    text = lowered.as_text().lower()
+    assert text.count("custom_call") == 1
+    assert operation_target(operation, np.dtype(dtype)) in text
+    assert "gather" not in text and "scatter" not in text
+
+
+@pytest.mark.parametrize("dtype,factor", DTYPE_CASES)
+def test_dtype_family_copy_map_update_and_selected_scale(dtype, factor):
     with jax.enable_x64():
-        resolved = jnp.dtype(dtype)
-        static_scale = True if resolved == jnp.dtype(jnp.bool_) else factor
-        source = _values(resolved, 35)
-
-        map_plan = dtype_transpose_plan(resolved, static_scale)
-        _reset_native_call_count_for_tests()
-        mapped = jax.jit(
-            lambda value: _execute_map(
-                value,
-                plan=map_plan,
-            )
-        )(source)
-        mapped.block_until_ready()
-        assert_bitwise_equal(mapped, execute_reference(source, map_plan))
-        assert _native_call_count_for_tests() == 1
-
-        update_bound = contiguous_dtype_plan(resolved, static_scale, size=35)
-        base = _values(resolved, 35, shift=11)
-        assign_plan = build_base_assign_plan(update_bound)
-        _reset_native_call_count_for_tests()
-        assigned = jax.jit(
-            lambda old, value: execute_update_assign(old, value, plan=assign_plan)
-        )(
-            base,
-            source,
-        )
-        assigned.block_until_ready()
-        assert_bitwise_equal(
-            assigned,
-            execute_base_assign_reference(base, source, assign_plan),
-        )
-        assert _native_call_count_for_tests() == 1
-
-        if resolved != jnp.dtype(jnp.bool_):
-            accumulate_plan = build_base_accumulate_plan(update_bound)
-            _reset_native_call_count_for_tests()
-            accumulated = jax.jit(
-                lambda old, value: execute_update_accumulate(
-                    old,
-                    value,
-                    plan=accumulate_plan,
-                )
-            )(
-                base,
-                source,
-            )
-            accumulated.block_until_ready()
-            assert_bitwise_equal(
-                accumulated,
-                execute_base_accumulate_reference(base, source, accumulate_plan),
-            )
-            assert _native_call_count_for_tests() == 1
-
-        scale_plan = build_selected_scale_plan(selected_scale_plan(resolved))
-        selected_base = _values(resolved, 50, shift=11)
-        factor_array = jnp.asarray(factor, dtype=resolved)
-        _reset_native_call_count_for_tests()
-        scaled = jax.jit(
-            lambda old, value: execute_update_scale(old, value, plan=scale_plan)
-        )(selected_base, factor_array)
-        scaled.block_until_ready()
-        assert_bitwise_equal(
-            scaled,
-            execute_selected_scale_reference(
-                selected_base,
-                factor_array,
-                scale_plan,
-            ),
-        )
-        assert _native_call_count_for_tests() == 1
+        source, base = values(dtype, 35), values(dtype, 35, shift=11)
+        coefficient = jnp.asarray(True if dtype == jnp.bool_ else factor, dtype=dtype)
+        transpose = AffineRecord((5, 7), (1, 5), 0, (7, 1), 0)
+        copy = jax.jit(lambda value: copy_p.bind(value, records=(transpose,), output_size=35, dtype=value.dtype))
+        assert_result(copy(source), source.reshape(7, 5).T.ravel())
+        assert_native(copy.lower(source), "copy", dtype)
+        mapped = jax.jit(lambda value, scalar: accumulation_p.bind(
+            value, scalar, records=(transpose,), coefficient_records=(0,), output_size=35, dtype=value.dtype,
+        ))
+        expected = (source * coefficient).astype(dtype)
+        assert_result(mapped(source, coefficient), expected.reshape(7, 5).T.ravel())
+        assert_native(mapped.lower(source, coefficient), "accumulation", dtype)
+        record = AffineRecord((35,), (1,), 0, (1,), 0)
+        update = jax.jit(lambda old, value, alpha, beta: update_p.bind(value, old, alpha, beta, records=(record,)))
+        for beta in (0, 1):
+            wanted = expected if beta == 0 else (expected + base).astype(dtype)
+            assert_result(update(base, source, coefficient, jnp.asarray(beta, dtype=dtype)), wanted)
+        assert_native(update.lower(base, source, coefficient, jnp.asarray(1, dtype=dtype)), "update", dtype)
+        selected_base = values(dtype, 50, shift=11)
+        factor_array = jnp.asarray(factor, dtype=dtype)
+        selected = jax.jit(lambda old, scalar: scale(StridedView(old, (16,), (3,), 2), scalar).data)
+        wanted = selected_base.at[2:50:3].set((selected_base[2:50:3] * factor_array).astype(dtype))
+        assert_result(selected(selected_base, factor_array), wanted)
+        assert_native(selected.lower(selected_base, factor_array), "update", dtype)
 
 
-@pytest.mark.parametrize(
-    ("source_dtype", "result_dtype"),
-    (
-        (jnp.int32, jnp.bool_),
-        (jnp.int32, jnp.int8),
-        (jnp.int32, jnp.int16),
-        (jnp.uint32, jnp.uint8),
-    ),
-)
-@pytest.mark.parametrize(
-    ("compile_update_plan", "operation", "oracle"),
-    (
-        (build_base_assign_plan, execute_update_assign, execute_base_assign_reference),
-        (
-            build_base_accumulate_plan,
-            execute_update_accumulate,
-            execute_base_accumulate_reference,
-        ),
-    ),
-)
-@pytest.mark.filterwarnings("ignore:scatter inputs have incompatible types")
-@pytest.mark.skipif(not native_available(), reason="native CPU stride unavailable")
-def test_integer_narrowing_base_updates_remain_native(
-    source_dtype: DTypeLike,
-    result_dtype: DTypeLike,
-    compile_update_plan: Callable,
-    operation: Callable,
-    oracle: Callable,
-) -> None:
-    record = AffineRecord((17,), (1,), 0, (1,), 0, 1)
-    bound = build_affine_plan(
-        records=(record,),
-        output_size=17,
-        coverage=CompleteMode.COMPLETE_UNIQUE,
-        source_size=17,
-        source_dtype=source_dtype,
-        result_dtype=result_dtype,
-    )
-    plan = compile_update_plan(bound)
-    source = _values(source_dtype, 17)
-    base = _values(result_dtype, 17, shift=7)
-
-    _reset_native_call_count_for_tests()
-    actual = jax.jit(lambda old, value: operation(old, value, plan=plan))(
-        base,
-        source,
-    )
-    actual.block_until_ready()
-
-    assert_bitwise_equal(actual, oracle(base, source, plan))
-    assert _native_call_count_for_tests() == 1
+@pytest.mark.parametrize("source_dtype,result_dtype", [(jnp.int32, jnp.bool_), (jnp.int32, jnp.int8),
+                                                       (jnp.int32, jnp.int16), (jnp.uint32, jnp.uint8)])
+@pytest.mark.parametrize("beta", [0, 1])
+def test_integer_narrowing_occurs_after_mixed_update(source_dtype, result_dtype, beta):
+    source = values(source_dtype, 17)
+    base = values(result_dtype, 17, shift=7)
+    if result_dtype == jnp.bool_:
+        source = source.at[:3].set(jnp.asarray([-1, 0, 1], dtype=source_dtype))
+        base = base.at[:3].set(True)
+    record = AffineRecord((17,), (1,), 0, (1,), 0)
+    operation = jax.jit(lambda old, value: update_p.bind(
+        value, old, jnp.asarray(1, dtype=source_dtype), jnp.asarray(beta, dtype=result_dtype), records=(record,),
+    ))
+    expected = (source + base.astype(source_dtype) if beta else source).astype(result_dtype)
+    np.testing.assert_array_equal(operation(base, source), expected)
+    assert_native(operation.lower(base, source), "update", result_dtype)
 
 
-@pytest.mark.parametrize(
-    ("source_dtype", "result_dtype", "scale"),
-    (
-        (jnp.float64, jnp.float64, -1.25),
-        (jnp.complex128, jnp.complex128, 1.25 - 0.75j),
-        (jnp.float64, jnp.complex128, 0.5 + 0.75j),
-        (jnp.complex128, jnp.float64, -0.75),
-    ),
-)
-@pytest.mark.filterwarnings("ignore:Casting complex values to real")
-@pytest.mark.skipif(not native_available(), reason="native CPU stride unavailable")
-def test_wide_inexact_broadcast_vjp_uses_native_structured_reduction(
-    source_dtype: DTypeLike,
-    result_dtype: DTypeLike,
-    scale: float | complex,
-) -> None:
+@pytest.mark.parametrize("dtype", [jnp.int8, jnp.int16, jnp.int32, jnp.int64,
+                                   jnp.uint8, jnp.uint16, jnp.uint32, jnp.uint64])
+def test_integer_same_dtype_multiply_and_add_wrap_at_storage_width(dtype):
     with jax.enable_x64():
-        record = AffineRecord(
-            (4, 3),
-            (0, 1),
-            0,
-            (3, 1),
-            0,
-            scale,
-            (0,),
-        )
-        plan = build_affine_plan(
-            records=(record,),
-            output_size=12,
-            coverage=CompleteMode.COMPLETE_UNIQUE,
-            source_size=3,
-            source_dtype=source_dtype,
-            result_dtype=result_dtype,
-        )
-        source = _values(source_dtype, 3)
-        cotangent = _values(result_dtype, 12, shift=5)
-        native_pullback = jax.vjp(
-            lambda value: _execute_map(value, plan=plan),
-            source,
-        )[1]
-        reference_pullback = jax.vjp(
-            lambda value: execute_reference(value, plan),
-            source,
-        )[1]
-
-        _reset_native_call_count_for_tests()
-        actual = jax.jit(native_pullback)(cotangent)[0]
-        actual.block_until_ready()
-        expected = reference_pullback(cotangent)[0]
-
-        assert_bitwise_equal(actual, expected)
-        assert _native_call_count_for_tests() == 1
-        hlo = str(jax.jit(native_pullback).lower(cotangent).compiler_ir()).lower()
-        assert "structured_reduction" in hlo
-        assert "gather" not in hlo
-        assert "scatter" not in hlo
+        info = np.iinfo(dtype)
+        source = jnp.asarray([info.min, info.max, 0, 1], dtype=dtype)
+        base = jnp.asarray([1, info.max, 1, info.max], dtype=dtype)
+        record = AffineRecord((4,), (1,), 0, (1,), 0)
+        actual = jax.jit(lambda value, old: update_p.bind(
+            value, old, jnp.asarray(3, dtype=dtype), jnp.asarray(1, dtype=dtype), records=(record,),
+        ))(source, base)
+        modulus = 1 << info.bits
+        expected = []
+        for value, old in zip(np.asarray(source), np.asarray(base), strict=True):
+            result = (int(value) * 3 + int(old)) % modulus
+            if info.min < 0 and result > info.max:
+                result -= modulus
+            expected.append(result)
+        np.testing.assert_array_equal(actual, np.asarray(expected, dtype=dtype))
 
 
-def _assert_wide_float_close(actual: object, expected: object) -> None:
-    actual_array = np.asarray(actual)
-    expected_array = np.asarray(expected)
-    assert actual_array.dtype == expected_array.dtype
-    np.testing.assert_allclose(actual_array, expected_array, rtol=2e-14, atol=1e-14)
-
-
-@pytest.mark.parametrize(
-    "scale",
-    (
-        complex(1.25, -0.75),
-        complex(.125, 1.0),
-        complex(2.5, -0.0),
-        complex(3., 3.),
-    ),
-)
-@pytest.mark.skipif(not native_available(), reason="native CPU stride unavailable")
-def test_complex128_finite_values_match_jax_scalar_oracle(scale: complex) -> None:
+@pytest.mark.parametrize("source_dtype,result_dtype,factor", [
+    (jnp.float64, jnp.float64, -1.25), (jnp.complex128, jnp.complex128, 1.25 - .75j),
+    (jnp.float64, jnp.complex128, .5 + .75j), (jnp.complex128, jnp.float64, -.75),
+])
+def test_wide_broadcast_vjp_accumulates_without_hidden_narrowing(source_dtype, result_dtype, factor):
     with jax.enable_x64():
-        values = jnp.asarray(
-            [0.0, -0.0, 1.25, -2.5, .125, 2.0, -2.0],
-            dtype=jnp.float64,
-        )
-        cotangent = jnp.asarray(
-            [
-                0.0 - 0.0j,
-                -0.0 + 0.0j,
-                1.25 + 0.0j,
-                0.0 + 2.5j,
-                .125 + 1.0j,
-                3.0 + 3.0j,
-                -3.0 - 3.0j,
-            ],
-            dtype=jnp.complex128,
-        )
-        template = contiguous_dtype_plan(jnp.complex128, scale, size=values.size)
-        mixed = build_affine_plan(
-            records=template.records,
-            output_size=template.output_size,
-            coverage=template.coverage,
-            source_size=template.source_size,
-            source_dtype=jnp.float64,
-            result_dtype=jnp.complex128,
-        )
-        native = lambda value: _execute_map(
-            value,
-            plan=mixed,
-        )
-        reference = lambda value: execute_reference(value, mixed)
+        source = values(source_dtype, 3) + jnp.asarray(2**-40, dtype=source_dtype)
+        cotangent = values(result_dtype, 12, shift=5) + jnp.asarray(2**-39, dtype=result_dtype)
+        coefficient = jnp.asarray(factor, dtype=result_dtype)
+        record = AffineRecord((4, 3), (0, 1), 0, (3, 1), 0)
+        native = lambda value: accumulation_p.bind(value, coefficient, records=(record,), coefficient_records=(0,),
+                                                   output_size=12, dtype=np.dtype(result_dtype))
 
-        actual_forward, actual_reverse = jax.jit(
-            lambda value, cot: (
-                native(value),
-                jax.vjp(native, value)[1](cot)[0],
-            )
-        )(values, cotangent)
-        expected_forward = reference(values)
-        expected_reverse = jax.vjp(reference, values)[1](cotangent)[0]
+        def reference(value):
+            result = jnp.broadcast_to(value, (4, 3)) * coefficient
+            if result_dtype == jnp.float64:
+                result = jnp.real(result)
+            return result.astype(result_dtype).ravel()
 
-        _assert_wide_float_close(actual_forward, expected_forward)
-        _assert_wide_float_close(actual_reverse, expected_reverse)
+        assert_result(jax.jit(native)(source), reference(source))
+        pullback = jax.jit(lambda cot: jax.vjp(native, source)[1](cot)[0])
+        assert_result(pullback(cotangent), jax.vjp(reference, source)[1](cotangent)[0])
+        assert_native(pullback.lower(cotangent), "accumulation", source_dtype)
 
-        same_dtype = contiguous_dtype_plan(
-            jnp.complex128,
-            scale,
-            size=cotangent.size,
-        )
-        actual_same = jax.jit(
-            lambda value: _execute_map(
-                value,
-                plan=same_dtype,
-            )
-        )(cotangent)
-        expected_same = execute_reference(cotangent, same_dtype)
-        _assert_wide_float_close(actual_same, expected_same)
+
+@pytest.mark.parametrize("factor", [1.25 - .75j, .125 + 1j, complex(2.5, -0.), 3 + 3j])
+def test_complex128_finite_values_and_bilinear_transpose(factor):
+    with jax.enable_x64():
+        source = jnp.asarray([0., -0., 1.25, -2.5, .125, 2., -2.], dtype=jnp.float64)
+        cotangent = jnp.asarray([complex(-0., -0.), 0j, 1.25, 2.5j, .125 + 1j, 3 + 3j, -3 - 3j], dtype=jnp.complex128)
+        coefficient = jnp.asarray(factor, dtype=jnp.complex128)
+        record = AffineRecord((7,), (1,), 0, (1,), 0)
+        native = lambda value: accumulation_p.bind(value, coefficient, records=(record,), coefficient_records=(0,),
+                                                   output_size=7, dtype=np.dtype(jnp.complex128))
+        reference = lambda value: value * coefficient
+        actual, gradient = jax.jit(lambda value, cot: (native(value), jax.vjp(native, value)[1](cot)[0]))(source, cotangent)
+        assert_result(actual, reference(source))
+        assert_result(gradient, jax.vjp(reference, source)[1](cotangent)[0])
+        assert_result(jax.jit(native)(cotangent), reference(cotangent))

@@ -3,2027 +3,933 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from itertools import permutations, product
 from math import prod
-import warnings
+from types import SimpleNamespace
 
 import jax
 import jax.numpy as jnp
-from jax.typing import DTypeLike
 import numpy as np
 import pytest
 
-from tensor0._stride._plan import (
-    CompleteMode,
-    AffinePlan,
-    AffineRecord,
-    StridedReductionKind,
-    StridedWriteKind,
-)
-from tensor0._stride._map import _execute_map
-from tensor0._stride._native import _structured_reduction_ffi_call
-from tensor0._stride._testing import (
-    _native_call_count_for_tests,
-    _native_grouped_output_owner_for_tests,
-    _native_reduction_fiber_chunks_for_tests,
-    _native_worker_counts_for_tests,
-    _reset_native_call_count_for_tests,
-    _set_native_reduction_fiber_parallel_mode_for_tests,
-    _set_native_worker_limit_for_tests,
-    native_available,
-)
-from tensor0._stride._ops._reduction import (
-    _bind_grouped_native_structured_reduction,
-    _bind_sequential_native_structured_reduction,
-    bind_native_structured_reduction,
-    lower_broadcast_transpose,
-    lower_structured_reduction,
-)
-from tensor0._stride._plan import (
-    PlanValidationError,
-    build_affine_plan,
-)
+from tensor0._stride import StridedView, enable_threads, get_num_threads, reduce_sum, set_num_threads
+from tensor0._stride import _jax
+from tensor0._stride._ffi._calls import execute_reduction
+from tensor0._stride._ffi._descriptor import encode_reduction_layout, merge_reduction_layouts
+from tensor0._stride._ffi._registration import operation_target
+from tensor0._stride._jax import copy_p, reduction_p
+from tensor0._stride._layout import AffineRecord, contiguous_strides
+from tensor0._stride._ops._reduction import _strided_tensortrace
 
-from ._oracle import assert_bitwise_equal, execute_reference
+from ._support import native_available
+from .test_reduction_ad import scalar_trace
 
 
-@pytest.mark.parametrize("mode", ["ordered", "grouped", "fiber"])
-@pytest.mark.parametrize("source_dtype", [jnp.float16, jnp.float32])
-def test_record_mapping_binding_is_shared_across_reduction_schedules(mode, source_dtype):
-    with jax.enable_x64():
-        output_count, reduction_count = (1, 65_536) if mode == "fiber" else (9, 17)
-        record_size = output_count * reduction_count
-        plan = build_affine_plan(
-            records=tuple(AffineRecord(
-                logical_shape=(output_count, reduction_count),
-                source_strides=(reduction_count, 1), source_offset=index * record_size,
-                destination_strides=(1, 0), destination_offset=0,
-                scale=factor, reduction_axes=(1,),
-            ) for index, factor in enumerate((None, np.float32(.75), np.float64(-.25)))),
-            source_size=3 * record_size, output_size=output_count,
-            source_dtype=source_dtype, result_dtype=jnp.float32,
-            coverage=CompleteMode.PARTIAL_UNIQUE_ZERO_FILL,
-            write_kind=StridedWriteKind.ACCUMULATE,
-            reduction_kind=StridedReductionKind.SUM,
-        )
-        source = jnp.stack((jnp.ones(plan.source_size, dtype=source_dtype),
-                            jnp.full(plan.source_size, 2, dtype=source_dtype)))
-        binding = (_bind_grouped_native_structured_reduction if mode == "grouped" else
-                   _bind_sequential_native_structured_reduction if mode == "ordered" else
-                   bind_native_structured_reduction)
-        execute = jax.jit(lambda values: binding(values, plan))
-        _set_native_worker_limit_for_tests(4)
-        _set_native_reduction_fiber_parallel_mode_for_tests(1 if mode == "fiber" else 0)
-        try:
-            _reset_native_call_count_for_tests()
-            actual = execute(source)
-            actual.block_until_ready()
-            assert _native_call_count_for_tests() == 1
-            chunks = _native_reduction_fiber_chunks_for_tests()
-            workers, available = _native_worker_counts_for_tests()
-        finally:
-            _set_native_reduction_fiber_parallel_mode_for_tests(None)
-            _set_native_worker_limit_for_tests(None)
-        expected = np.broadcast_to(
-            np.asarray([[1.5], [3.]], dtype=np.float32) * reduction_count,
-            (2, output_count),
-        )
-        assert_bitwise_equal(actual, expected)
-        if mode == "fiber" and source_dtype == jnp.float32 and available >= 2:
-            assert chunks >= 2
-            assert workers >= 2
+pytestmark = pytest.mark.skipif(not native_available(), reason="native CPU stride is unavailable")
 
 
-def _row_major_strides(shape: tuple[int, ...]) -> tuple[int, ...]:
-    strides = [0] * len(shape)
-    expected = 1
-    for axis in reversed(range(len(shape))):
-        strides[axis] = expected
-        expected *= shape[axis]
-    return tuple(strides)
+def addresses(shape, strides, offset):
+    indices = np.full(shape, offset, dtype=np.int64)
+    for axis, (size, stride) in enumerate(zip(shape, strides, strict=True)):
+        broadcast_shape = (1,) * axis + (size,) + (1,) * (len(shape) - axis - 1)
+        indices += np.arange(size).reshape(broadcast_shape) * stride
+    return indices
 
 
-def _broadcast_plan(
-    *,
-    logical_shape: tuple[int, ...] = (2, 3),
-    broadcast_axes: tuple[int, ...] = (0,),
-    source_signs: tuple[int, ...] | None = None,
-    destination_fastest: tuple[int, ...] = (1, 0),
-    destination_signs: tuple[int, ...] = (1, 1),
-    source_dtype: DTypeLike = jnp.float32,
-    result_dtype: DTypeLike = jnp.float32,
-    scale: int | float | complex = -0.75,
-) -> AffinePlan:
-    map_axes = tuple(
-        axis
-        for axis, extent in enumerate(logical_shape)
-        if extent > 1 and axis not in broadcast_axes
-    )
-    if source_signs is None:
-        source_signs = (1,) * len(map_axes)
-    source_shape = tuple(logical_shape[axis] for axis in map_axes) or (1,)
-    source_physical_strides = _row_major_strides(source_shape)
-    source_strides = [0] * len(logical_shape)
-    source_offset = 0
-    for position, (axis, sign) in enumerate(
-        zip(map_axes, source_signs, strict=True)
-    ):
-        stride = source_physical_strides[position]
-        source_strides[axis] = sign * stride
-        if sign < 0:
-            source_offset += (logical_shape[axis] - 1) * stride
-
-    destination_absolute = [0] * len(logical_shape)
-    expected = 1
-    for axis in destination_fastest:
-        destination_absolute[axis] = expected
-        expected *= logical_shape[axis]
-    destination_strides = tuple(
-        sign * stride
-        for sign, stride in zip(
-            destination_signs,
-            destination_absolute,
-            strict=True,
-        )
-    )
-    destination_offset = sum(
-        (extent - 1) * absolute
-        for extent, absolute, stride in zip(
-            logical_shape,
-            destination_absolute,
-            destination_strides,
-            strict=True,
-        )
-        if stride < 0
-    )
-    record = AffineRecord(
-        logical_shape=logical_shape,
-        source_strides=tuple(source_strides),
-        source_offset=source_offset,
-        destination_strides=destination_strides,
-        destination_offset=destination_offset,
-        scale=scale,
-        source_broadcast_axes=broadcast_axes,
-    )
-    return build_affine_plan(
-        records=(record,),
-        output_size=prod(logical_shape),
-        coverage=CompleteMode.COMPLETE_UNIQUE,
-        source_size=prod(source_shape),
-        source_dtype=source_dtype,
-        result_dtype=result_dtype,
-    )
+def reference_sum(source, factors, *, records, output_shapes, reduction_axes, output_size, dtype):
+    result = jnp.zeros((*source.shape[:-1], output_size), dtype=dtype)
+    for record, shape, axes, factor in zip(records, output_shapes, reduction_axes, factors, strict=True):
+        values = source[..., addresses(record.logical_shape, record.source_strides, record.source_offset)]
+        if factor is not None:
+            values = values * factor
+        summed = jnp.sum(values, axis=tuple(source.ndim - 1 + axis for axis, reduced in enumerate(axes) if reduced), keepdims=True)
+        if not jnp.issubdtype(dtype, jnp.complexfloating):
+            summed = jnp.real(summed)
+        destinations = addresses(shape, record.destination_strides, record.destination_offset).ravel()
+        result = result.at[..., destinations].add(summed.astype(dtype).reshape(*source.shape[:-1], destinations.size))
+    return result
 
 
-def _values(dtype: DTypeLike, size: int) -> jax.Array:
-    resolved = jnp.dtype(dtype)
-    values = jnp.linspace(-2, 3, size, dtype=jnp.float32)
-    if jnp.issubdtype(resolved, jnp.complexfloating):
-        return jnp.asarray(values + 1j * values[::-1], dtype=resolved)
-    return jnp.asarray(values, dtype=resolved)
-
-
-def _native_forward(source: jax.Array, plan: AffinePlan) -> jax.Array:
-    return _execute_map(source, plan=plan)
-
-
-def _forward_sum_plan(
-    source_dtype: DTypeLike = jnp.float32,
-    result_dtype: DTypeLike = jnp.float32,
-    scale: int | float | complex = -0.75,
-) -> AffinePlan:
-    return build_affine_plan(
-        records=(
-            AffineRecord(
-                logical_shape=(4, 3),
-                source_strides=(3, 1),
-                source_offset=0,
-                destination_strides=(0, 1),
-                destination_offset=0,
-                scale=scale,
-                reduction_axes=(0,),
-            ),
-        ),
-        output_size=3,
-        coverage=CompleteMode.COMPLETE_UNIQUE,
-        source_size=12,
-        source_dtype=source_dtype,
-        result_dtype=result_dtype,
-        reduction_kind=StridedReductionKind.SUM,
-    )
-
-
-@pytest.mark.parametrize(
-    ("source_strides", "source_size", "broadcast_axes"),
-    (
-        ((1, 1), 5, ()),
-        ((1, 0), 3, (1,)),
-    ),
-)
-@pytest.mark.skipif(not native_available(), reason="native CPU stride unavailable")
-def test_structured_reduction_allows_repeated_source_reads(
-    source_strides: tuple[int, int],
-    source_size: int,
-    broadcast_axes: tuple[int, ...],
-) -> None:
-    plan = build_affine_plan(
-        records=(
-            AffineRecord(
-                logical_shape=(3, 3),
-                source_strides=source_strides,
-                source_offset=0,
-                destination_strides=(1, 0),
-                destination_offset=0,
-                source_broadcast_axes=broadcast_axes,
-                reduction_axes=(1,),
-            ),
-        ),
-        output_size=3,
-        coverage=CompleteMode.COMPLETE_UNIQUE,
-        source_size=source_size,
-        source_dtype=jnp.float32,
-        result_dtype=jnp.float32,
-        reduction_kind=StridedReductionKind.SUM,
-    )
-    source = jnp.arange(source_size, dtype=jnp.float32)
-
-    def expected_for(values: jax.Array) -> np.ndarray:
-        source_values = np.asarray(values)
-        return np.asarray(
-            [
-                sum(
-                    source_values[
-                        output * source_strides[0]
-                        + reduction * source_strides[1]
-                    ]
-                    for reduction in range(3)
-                )
-                for output in range(3)
-            ],
-            dtype=np.float32,
-        )
-
-    execute = lambda value: bind_native_structured_reduction(value, plan)
-    tangent = source * 0.25 + 0.5
-    actual, actual_tangent = jax.jvp(execute, (source,), (tangent,))
-
-    np.testing.assert_array_equal(actual, expected_for(source))
-    np.testing.assert_array_equal(actual_tangent, expected_for(tangent))
-    pullback = jax.vjp(execute, source)[1]
-    cotangent = jnp.ones((3,), dtype=jnp.float32)
-    if broadcast_axes:
-        np.testing.assert_array_equal(
-            pullback(cotangent)[0],
-            jnp.full((source_size,), 3, dtype=jnp.float32),
-        )
+def assert_close(actual, expected):
+    assert actual.shape == expected.shape and actual.dtype == expected.dtype
+    if jnp.issubdtype(actual.dtype, jnp.integer) or actual.dtype == jnp.bool_:
+        np.testing.assert_array_equal(actual, expected)
     else:
-        with pytest.raises(PlanValidationError, match="noninjective_view"):
-            pullback(cotangent)
+        tolerance = .008 if actual.dtype == jnp.bfloat16 else .002 if actual.dtype == jnp.float16 else 2e-5
+        np.testing.assert_allclose(np.asarray(actual).astype(np.complex128), np.asarray(expected).astype(np.complex128),
+                                   rtol=tolerance, atol=tolerance)
 
 
-def _grouped_sum_plan() -> AffinePlan:
-    return build_affine_plan(
-        records=(
-            AffineRecord((1,), (1,), 0, (1,), 0, 2),
-            AffineRecord((1,), (1,), 1, (1,), 0, -3),
-        ),
-        output_size=1,
-        coverage=CompleteMode.PARTIAL_UNIQUE_ZERO_FILL,
-        source_size=2,
-        source_dtype=jnp.float32,
-        result_dtype=jnp.float32,
-        write_kind=StridedWriteKind.ACCUMULATE,
-        reduction_kind=StridedReductionKind.SUM,
-    )
-
-
-def _exact_output_group_plan(
-    *,
-    output_count: int = 5,
-    reduction_count: int = 3,
-    dtype: DTypeLike = jnp.float32,
-    result_dtype: DTypeLike | None = None,
-) -> AffinePlan:
-    if result_dtype is None:
-        result_dtype = dtype
-    records = []
-    source_offset = 0
-    for output_group in range(2):
-        for scale in (1.25, -0.5):
-            records.append(
-                AffineRecord(
-                    logical_shape=(output_count, reduction_count),
-                    source_strides=(reduction_count, 1),
-                    source_offset=source_offset,
-                    destination_strides=(1, 0),
-                    destination_offset=output_group * output_count,
-                    scale=scale,
-                    reduction_axes=(1,),
-                )
-            )
-            source_offset += output_count * reduction_count
-    return build_affine_plan(
-        records=tuple(records),
-        output_size=2 * output_count,
-        coverage=CompleteMode.PARTIAL_UNIQUE_ZERO_FILL,
-        source_size=source_offset,
-        source_dtype=dtype,
-        result_dtype=result_dtype,
-        write_kind=StridedWriteKind.ACCUMULATE,
-        reduction_kind=StridedReductionKind.SUM,
-    )
-
-
-def _many_small_exact_output_groups_plan(
-    group_count: int,
-    reduction_count: int,
-) -> AffinePlan:
-    records = []
-    source_offset = 0
-    for group in range(group_count):
-        for scale in (1.0, -0.5):
-            records.append(
-                AffineRecord(
-                    logical_shape=(1, reduction_count),
-                    source_strides=(reduction_count, 1),
-                    source_offset=source_offset,
-                    destination_strides=(1, 0),
-                    destination_offset=group,
-                    scale=scale,
-                    reduction_axes=(1,),
-                )
-            )
-            source_offset += reduction_count
-    return build_affine_plan(
-        records=tuple(records),
-        output_size=group_count,
-        coverage=CompleteMode.PARTIAL_UNIQUE_ZERO_FILL,
-        source_size=source_offset,
-        source_dtype=jnp.float32,
-        result_dtype=jnp.float32,
-        write_kind=StridedWriteKind.ACCUMULATE,
-        reduction_kind=StridedReductionKind.SUM,
-    )
-
-
-def _long_fiber_plan(
-    *,
-    output_count: int = 1,
-    reduction_count: int = 1 << 18,
-    dtype: DTypeLike = jnp.float32,
-    scale: int | float | complex = 1,
-) -> AffinePlan:
-    return build_affine_plan(
-        records=(
-            AffineRecord(
-                logical_shape=(output_count, reduction_count),
-                source_strides=(reduction_count, 1),
-                source_offset=0,
-                destination_strides=(1, 0),
-                destination_offset=0,
-                scale=scale,
-                reduction_axes=(1,),
-            ),
-        ),
-        output_size=output_count,
-        coverage=CompleteMode.COMPLETE_UNIQUE,
-        source_size=output_count * reduction_count,
-        source_dtype=dtype,
-        result_dtype=dtype,
-        reduction_kind=StridedReductionKind.SUM,
-    )
-
-
-def _multidimensional_long_fiber_plan(
-    *,
-    reduction_shape: tuple[int, ...] = (257, 263),
-    dtype: DTypeLike = jnp.float32,
-    scale: int | float | complex = 1,
-) -> AffinePlan:
-    source_strides: list[int] = []
-    stride = 2
-    for extent in reversed(reduction_shape):
-        source_strides.append(stride)
-        stride = stride * extent + 1
-    source_strides.reverse()
-    source_size = 1 + sum(
-        (extent - 1) * axis_stride
-        for extent, axis_stride in zip(
-            reduction_shape, source_strides, strict=True
-        )
-    )
-    return build_affine_plan(
-        records=(
-            AffineRecord(
-                logical_shape=reduction_shape,
-                source_strides=tuple(source_strides),
-                source_offset=0,
-                destination_strides=(0,) * len(reduction_shape),
-                destination_offset=0,
-                scale=scale,
-                reduction_axes=tuple(range(len(reduction_shape))),
-            ),
-        ),
-        output_size=1,
-        coverage=CompleteMode.COMPLETE_UNIQUE,
-        source_size=source_size,
-        source_dtype=dtype,
-        result_dtype=dtype,
-        reduction_kind=StridedReductionKind.SUM,
-    )
-
-
-def _execute_serial_native_reduction(
-    source: jax.Array,
-    plan: AffinePlan,
-) -> jax.Array:
-    _set_native_reduction_fiber_parallel_mode_for_tests(0)
-    try:
-        result = _bind_sequential_native_structured_reduction(source, plan)
-        result.block_until_ready()
-        return result
-    finally:
-        _set_native_reduction_fiber_parallel_mode_for_tests(None)
-
-
-def _signed_variable_fiber_group_plan() -> AffinePlan:
-    return build_affine_plan(
-        records=(
-            AffineRecord(
-                logical_shape=(4, 2),
-                source_strides=(2, 1),
-                source_offset=0,
-                destination_strides=(-1, 0),
-                destination_offset=3,
-                scale=1.25,
-                reduction_axes=(1,),
-            ),
-            AffineRecord(
-                logical_shape=(4, 3),
-                source_strides=(3, 1),
-                source_offset=8,
-                destination_strides=(-1, 0),
-                destination_offset=3,
-                scale=-0.5,
-                reduction_axes=(1,),
-            ),
-        ),
-        output_size=4,
-        coverage=CompleteMode.PARTIAL_UNIQUE_ZERO_FILL,
-        source_size=20,
-        source_dtype=jnp.float32,
-        result_dtype=jnp.float32,
-        write_kind=StridedWriteKind.ACCUMULATE,
-        reduction_kind=StridedReductionKind.SUM,
-    )
-
-
-def _disjoint_output_record_plan() -> AffinePlan:
-    return build_affine_plan(
-        records=(
-            AffineRecord((1,), (1,), 0, (1,), 0),
-            AffineRecord((1,), (1,), 1, (1,), 1),
-        ),
-        output_size=2,
-        coverage=CompleteMode.PARTIAL_UNIQUE_ZERO_FILL,
-        source_size=2,
-        source_dtype=jnp.float32,
-        result_dtype=jnp.float32,
-        write_kind=StridedWriteKind.ACCUMULATE,
-        reduction_kind=StridedReductionKind.SUM,
-    )
-
-
-def _forward_sum_reference(source: jax.Array, plan: AffinePlan) -> jax.Array:
-    factor = plan.records[0].scale
-    mapped = source if factor is None else jnp.multiply(factor, source)
-    return jnp.sum(mapped.reshape(4, 3), axis=0, dtype=jnp.dtype(plan.result_dtype))
-
-
-def _reference_forward(source: jax.Array, plan: AffinePlan) -> jax.Array:
-    return execute_reference(source, plan)
-
-
-@pytest.mark.skipif(not native_available(), reason="native CPU stride unavailable")
-def test_single_record_empty_fibers_write_reduction_identity() -> None:
-    plan = build_affine_plan(
-        records=(
-            AffineRecord(
-                logical_shape=(3, 0),
-                source_strides=(0, 1),
-                source_offset=0,
-                destination_strides=(1, 0),
-                destination_offset=0,
-                source_broadcast_axes=(0,),
-                reduction_axes=(1,),
-            ),
-        ),
-        output_size=3,
-        coverage=CompleteMode.COMPLETE_UNIQUE,
-        source_size=0,
-        source_dtype=jnp.float32,
-        result_dtype=jnp.float32,
-        reduction_kind=StridedReductionKind.SUM,
-    )
-
-    actual = bind_native_structured_reduction(
-        jnp.asarray([], dtype=jnp.float32),
-        plan,
-    )
-
-    assert_bitwise_equal(actual, jnp.zeros((3,), dtype=jnp.float32))
-
-
-@pytest.mark.skipif(not native_available(), reason="native CPU stride unavailable")
-def test_single_record_partial_reduction_zero_fills_only_uncovered_outputs() -> None:
-    plan = build_affine_plan(
-        records=(
-            AffineRecord(
-                logical_shape=(3, 2),
-                source_strides=(2, 1),
-                source_offset=0,
-                destination_strides=(1, 0),
-                destination_offset=1,
-                scale=-0.75,
-                reduction_axes=(1,),
-            ),
-        ),
-        output_size=5,
-        coverage=CompleteMode.PARTIAL_UNIQUE_ZERO_FILL,
-        source_size=6,
-        source_dtype=jnp.float32,
-        result_dtype=jnp.float32,
-        reduction_kind=StridedReductionKind.SUM,
-    )
-    source = jnp.asarray([1.0, 2.0, -3.0, 4.0, 5.0, -6.0], dtype=jnp.float32)
-
-    actual = bind_native_structured_reduction(source, plan)
-    expected = jnp.asarray(
-        [0.0, -2.25, -0.75, 0.75, 0.0],
-        dtype=jnp.float32,
-    )
-
-    assert_bitwise_equal(actual, expected)
-
-
-@pytest.mark.skipif(not native_available(), reason="native CPU stride unavailable")
-@pytest.mark.parametrize(
-    ("source_dtype", "result_dtype", "scale"),
-    [
-        (jnp.float16, jnp.float32, 1.25),
-        (jnp.float32, jnp.complex64, 1.25 - 0.5j),
-        (jnp.complex64, jnp.float32, -0.75),
-        (jnp.float32, jnp.float32, -0.75),
-        (jnp.complex64, jnp.complex64, 0.5 + 0.25j),
-    ],
-)
-def test_forward_structured_sum_uses_the_same_plan_for_primal_jvp_and_vjp(
-    source_dtype: DTypeLike,
-    result_dtype: DTypeLike,
-    scale: int | float | complex,
-) -> None:
-    plan = _forward_sum_plan(source_dtype, result_dtype, scale)
-    source = _values(source_dtype, plan.source_size)
-    tangent = _values(source_dtype, plan.source_size) * 0.25
-    cotangent = _values(result_dtype, plan.output_size)
-    native = lambda value: bind_native_structured_reduction(value, plan)
-    reference = lambda value: _forward_sum_reference(value, plan)
-
+@pytest.mark.parametrize("strides,offset,source_size", [((3, 1), 0, 9), ((1, 1), 0, 5),
+                                                       ((1, 0), 0, 3), ((-1, 0), 2, 3)])
+@pytest.mark.parametrize("axes", [(0,), (1,), (0, 1)])
+def test_public_reduction_repeated_reads_forward_jvp_vjp(strides, offset, source_size, axes):
+    source = jnp.arange(source_size, dtype=jnp.float32) / 4
+    indices = addresses((3, 3), strides, offset)
+    native = lambda value: reduce_sum(StridedView(value, (3, 3), strides, offset), axes)
+    reference = lambda value: jnp.sum(value[indices], axis=axes)
     actual = jax.jit(native)(source)
-    expected = reference(source)
-    actual_primal, actual_tangent = jax.jvp(native, (source,), (tangent,))
-    expected_primal, expected_tangent = jax.jvp(
-        reference,
-        (source,),
-        (tangent,),
-    )
-    actual_vjp = jax.vjp(native, source)[1](cotangent)[0]
-    expected_vjp = jax.vjp(reference, source)[1](cotangent)[0]
-
-    np.testing.assert_allclose(np.asarray(actual), np.asarray(expected), rtol=1e-3)
-    np.testing.assert_allclose(
-        np.asarray(actual_primal),
-        np.asarray(expected_primal),
-        rtol=1e-3,
-    )
-    np.testing.assert_allclose(
-        np.asarray(actual_tangent),
-        np.asarray(expected_tangent),
-        rtol=1e-3,
-    )
-    np.testing.assert_allclose(
-        np.asarray(actual_vjp),
-        np.asarray(expected_vjp),
-        rtol=1e-3,
-    )
-
-
-@pytest.mark.skipif(not native_available(), reason="native CPU stride unavailable")
-def test_grouped_sum_without_record_local_axes_is_closed_under_autodiff() -> None:
-    plan = _grouped_sum_plan()
-    source = jnp.asarray([1.25, -0.5], dtype=jnp.float32)
-    tangent = jnp.asarray([-2.0, 4.0], dtype=jnp.float32)
-    cotangent = jnp.asarray([3.0], dtype=jnp.float32)
-    run = lambda value: bind_native_structured_reduction(value, plan)
-    reference = lambda value: jnp.asarray(
-        [2 * value[0] - 3 * value[1]],
-        dtype=jnp.float32,
-    )
-
-    actual_primal, actual_tangent = jax.jvp(run, (source,), (tangent,))
-    expected_primal, expected_tangent = jax.jvp(
-        reference,
-        (source,),
-        (tangent,),
-    )
-    actual_pullback = jax.vjp(run, source)[1]
-    expected_pullback = jax.vjp(reference, source)[1]
-    actual_nested = jax.linear_transpose(
-        actual_pullback,
-        jnp.zeros_like(cotangent),
-    )((source,))[0]
-    expected_nested = jax.linear_transpose(
-        expected_pullback,
-        jnp.zeros_like(cotangent),
-    )((source,))[0]
-
-    np.testing.assert_array_equal(actual_primal, expected_primal)
-    np.testing.assert_array_equal(actual_tangent, expected_tangent)
-    np.testing.assert_array_equal(
-        actual_pullback(cotangent)[0],
-        expected_pullback(cotangent)[0],
-    )
-    np.testing.assert_array_equal(actual_nested, expected_nested)
-
-
-@pytest.mark.parametrize(
-    ("dtype", "scale"),
-    [
-        (jnp.bool_, True),
-        (jnp.int8, -3),
-        (jnp.int16, -3),
-        (jnp.int32, -3),
-        (jnp.uint8, 3),
-        (jnp.uint16, 3),
-        (jnp.uint32, 3),
-    ],
-)
-@pytest.mark.skipif(not native_available(), reason="native CPU stride unavailable")
-def test_forward_integer_structured_sum_matches_casted_jax_sum(
-    dtype: DTypeLike,
-    scale: int | bool,
-) -> None:
-    plan = _forward_sum_plan(dtype, dtype, scale)
-    source = (
-        jnp.arange(plan.source_size, dtype=jnp.int32) % 2 == 0
-        if dtype == jnp.bool_
-        else jnp.arange(plan.source_size, dtype=dtype)
-    )
-    expected = jnp.asarray(
-        jnp.sum(
-            jnp.asarray(scale, dtype=dtype) * source.reshape(4, 3),
-            axis=0,
-        ),
-        dtype=dtype,
-    )
-
-    actual = jax.jit(
-        lambda value: bind_native_structured_reduction(value, plan)
-    )(source)
-
-    np.testing.assert_array_equal(actual, expected)
-
-
-@pytest.mark.skipif(not native_available(), reason="native CPU stride unavailable")
-def test_grouped_sum_supports_concurrent_executable_calls() -> None:
-    plan = _grouped_sum_plan()
-    executable = jax.jit(
-        lambda value: bind_native_structured_reduction(value, plan)
-    ).lower(jax.ShapeDtypeStruct((2,), jnp.float32)).compile()
-    sources = tuple(
-        jnp.asarray([shift + 0.25, 2 * shift - 0.5], dtype=jnp.float32)
-        for shift in range(16)
-    )
-
-    with ThreadPoolExecutor(max_workers=4) as pool:
-        results = tuple(pool.map(executable, sources))
-    for source, result in zip(sources, results, strict=True):
-        result.block_until_ready()
-        np.testing.assert_array_equal(
-            result,
-            jnp.asarray([2 * source[0] - 3 * source[1]], dtype=jnp.float32),
-        )
-
-
-@pytest.mark.skipif(not native_available(), reason="native CPU stride unavailable")
-@pytest.mark.parametrize(
-    ("source_dtype", "result_dtype"),
-    (
-        (jnp.float32, jnp.float32),
-        (jnp.complex64, jnp.complex64),
-        (jnp.float16, jnp.float32),
-        (jnp.float32, jnp.complex64),
-        (jnp.complex64, jnp.float32),
-    ),
-)
-def test_exact_output_group_candidate_matches_sequential_and_transforms(
-    source_dtype: DTypeLike,
-    result_dtype: DTypeLike,
-) -> None:
-    plan = _exact_output_group_plan(
-        dtype=source_dtype,
-        result_dtype=result_dtype,
-    )
-    source = _values(source_dtype, plan.source_size)
-    tangent = _values(source_dtype, plan.source_size) * 0.25
-    grouped = lambda value: _bind_grouped_native_structured_reduction(
-        value,
-        plan,
-    )
-    sequential = lambda value: bind_native_structured_reduction(value, plan)
-
-    actual = jax.jit(grouped)(source)
-    expected = jax.jit(sequential)(source)
-    actual_primal, actual_tangent = jax.jvp(grouped, (source,), (tangent,))
-    expected_primal, expected_tangent = jax.jvp(
-        sequential,
-        (source,),
-        (tangent,),
-    )
-    cotangent = _values(result_dtype, plan.output_size)
-    actual_vjp = jax.vjp(grouped, source)[1](cotangent)[0]
-    expected_vjp = jax.vjp(sequential, source)[1](cotangent)[0]
-    actual_nested = jax.linear_transpose(
-        jax.vjp(grouped, source)[1],
-        jnp.zeros_like(cotangent),
-    )((source,))[0]
-    expected_nested = jax.linear_transpose(
-        jax.vjp(sequential, source)[1],
-        jnp.zeros_like(cotangent),
-    )((source,))[0]
-
-    assert_bitwise_equal(actual, expected)
-    assert_bitwise_equal(actual_primal, expected_primal)
-    assert_bitwise_equal(actual_tangent, expected_tangent)
-    assert_bitwise_equal(actual_vjp, expected_vjp)
-    assert_bitwise_equal(actual_nested, expected_nested)
-
-
-@pytest.mark.skipif(not native_available(), reason="native CPU stride unavailable")
-def test_exact_output_group_candidate_batches_and_runs_concurrently() -> None:
-    plan = _exact_output_group_plan()
-    sources = jnp.stack(
-        tuple(
-            _values(jnp.float32, plan.source_size) + shift
-            for shift in range(4)
-        )
-    )
-    run = jax.jit(
-        jax.vmap(
-            lambda value: _bind_grouped_native_structured_reduction(
-                value,
-                plan,
-            )
-        )
-    )
-    expected = jax.vmap(
-        lambda value: bind_native_structured_reduction(value, plan)
-    )(sources)
-
-    executable = run.lower(sources).compile()
-    with ThreadPoolExecutor(max_workers=4) as pool:
-        results = tuple(pool.map(executable, (sources,) * 8))
-    for result in results:
-        assert_bitwise_equal(result, expected)
-
-
-@pytest.mark.skipif(not native_available(), reason="native CPU stride unavailable")
-def test_exact_output_group_candidate_supports_signed_maps_and_varied_fibers() -> None:
-    plan = _signed_variable_fiber_group_plan()
-    source = _values(jnp.float32, plan.source_size)
-    actual = _bind_grouped_native_structured_reduction(source, plan)
-    expected = _execute_serial_native_reduction(source, plan)
-
-    assert_bitwise_equal(actual, expected)
-
-
-@pytest.mark.skipif(not native_available(), reason="native CPU stride unavailable")
-@pytest.mark.parametrize("dtype", (jnp.float32, jnp.complex64))
-def test_exact_output_group_candidate_preserves_finite_value_accuracy(
-    dtype: DTypeLike,
-) -> None:
-    plan = _exact_output_group_plan(dtype=dtype)
-    if dtype == jnp.float32:
-        pattern = jnp.asarray(
-            [0.0, -0.0, 1.25, -1.25, .125, 1.0],
-            dtype=dtype,
-        )
-    else:
-        pattern = jnp.asarray(
-            [
-                0 + 0j,
-                complex(-0.0, 0.0),
-                complex(1.25, 1.0),
-                complex(-1.25, -2.0),
-                complex(.125, 3.0),
-                1.25 - 0.75j,
-            ],
-            dtype=dtype,
-        )
-    source = jnp.resize(pattern, (plan.source_size,))
-
-    actual = _bind_grouped_native_structured_reduction(source, plan)
-    expected = _execute_serial_native_reduction(source, plan)
-
-    np.testing.assert_allclose(actual, expected, rtol=2e-6, atol=1e-6)
-
-
-@pytest.mark.skipif(not native_available(), reason="native CPU stride unavailable")
-def test_exact_output_group_candidate_uses_multiple_output_owner_workers() -> None:
-    plan = _exact_output_group_plan(output_count=4096, reduction_count=64)
-    source = jnp.ones(plan.source_size, dtype=jnp.float32)
-
-    _set_native_worker_limit_for_tests(4)
-    try:
-        executable = jax.jit(
-            lambda value: _bind_grouped_native_structured_reduction(
-                value,
-                plan,
-            )
-        ).lower(source).compile()
-        memory = executable.memory_analysis()
-        actual = executable(source)
-        actual.block_until_ready()
-        workers, available = _native_worker_counts_for_tests()
-    finally:
-        _set_native_worker_limit_for_tests(None)
-
-    assert memory is not None
-    assert memory.temp_size_in_bytes == 0
-    np.testing.assert_array_equal(
-        actual,
-        jnp.full(plan.output_size, 48, dtype=jnp.float32),
-    )
-    if available >= 2:
-        assert workers >= 2
-
-
-@pytest.mark.skipif(not native_available(), reason="native CPU stride unavailable")
-def test_grouped_target_rejects_a_descriptor_without_overlap_proof() -> None:
-    plan = _disjoint_output_record_plan()
-    compiled = lower_structured_reduction(plan)
-    source = jnp.ones(plan.source_size, dtype=jnp.float32)
-    execute = jax.jit(
-        lambda value: _structured_reduction_ffi_call(
-            value,
-            descriptor=compiled.descriptor,
-            output_size=plan.output_size,
-            output_dtype=jnp.dtype(plan.result_dtype),
-            scalar_kind=plan.scalar_kind,
-            grouped_output_owner=True,
-        )
-    )
-
-    with pytest.raises(
-        Exception,
-        match="requires an exact overlapping output-map group",
-    ):
-        execute(source).block_until_ready()
-
-
-@pytest.mark.skipif(not native_available(), reason="native CPU stride unavailable")
-def test_grouped_target_rejects_noninterval_output_maps() -> None:
-    plan = build_affine_plan(
-        records=(
-            AffineRecord(
-                logical_shape=(2,),
-                source_strides=(1,),
-                source_offset=0,
-                destination_strides=(2,),
-                destination_offset=0,
-            ),
-            AffineRecord(
-                logical_shape=(2,),
-                source_strides=(1,),
-                source_offset=2,
-                destination_strides=(2,),
-                destination_offset=0,
-            ),
-        ),
-        output_size=3,
-        coverage=CompleteMode.PARTIAL_UNIQUE_ZERO_FILL,
-        source_size=4,
-        source_dtype=jnp.float32,
-        result_dtype=jnp.float32,
-        write_kind=StridedWriteKind.ACCUMULATE,
-        reduction_kind=StridedReductionKind.SUM,
-    )
-    compiled = lower_structured_reduction(plan)
-    source = jnp.ones(plan.source_size, dtype=jnp.float32)
-    execute = jax.jit(
-        lambda value: _structured_reduction_ffi_call(
-            value,
-            descriptor=compiled.descriptor,
-            output_size=plan.output_size,
-            output_dtype=jnp.dtype(plan.result_dtype),
-            scalar_kind=plan.scalar_kind,
-            grouped_output_owner=True,
-        )
-    )
-
-    with pytest.raises(Exception, match="not one physical interval"):
-        execute(source).block_until_ready()
-
-
-@pytest.mark.skipif(not native_available(), reason="native CPU stride unavailable")
-def test_production_grouped_route_uses_only_static_work_features() -> None:
-    small_plan = _exact_output_group_plan()
-    large_plan = _exact_output_group_plan(
-        output_count=4096,
-        reduction_count=64,
-    )
-    small_source = jnp.ones(small_plan.source_size, dtype=jnp.float32)
-    large_source = jnp.ones(large_plan.source_size, dtype=jnp.float32)
-
-    bind_native_structured_reduction(small_source, small_plan).block_until_ready()
-    assert not _native_grouped_output_owner_for_tests()
-    bind_native_structured_reduction(large_source, large_plan).block_until_ready()
-    assert _native_grouped_output_owner_for_tests()
-
-
-@pytest.mark.parametrize(
-    ("group_count", "reduction_count"),
-    ((100, 512), (1_000, 64)),
-)
-def test_many_small_groups_do_not_enter_the_parallel_route(
-    group_count: int,
-    reduction_count: int,
-) -> None:
-    plan = _many_small_exact_output_groups_plan(
-        group_count,
-        reduction_count,
-    )
-    source = jnp.ones(plan.source_size, dtype=jnp.float32)
-    bind_native_structured_reduction(source, plan).block_until_ready()
-    assert not _native_grouped_output_owner_for_tests()
-
-
-@pytest.mark.skipif(not native_available(), reason="native CPU stride unavailable")
-def test_grouped_target_handles_one_thousand_small_groups() -> None:
-    group_count = 1_000
-    reduction_count = 2
-    plan = _many_small_exact_output_groups_plan(
-        group_count,
-        reduction_count,
-    )
-    source = jnp.linspace(
-        -1,
-        1,
-        plan.source_size,
-        dtype=jnp.float32,
-    )
-    grouped = jax.jit(
-        lambda value: _bind_grouped_native_structured_reduction(value, plan)
-    )
-    sequential = jax.jit(
-        lambda value: _bind_sequential_native_structured_reduction(value, plan)
-    )
-
-    actual = grouped(source)
-    expected = sequential(source)
-
-    np.testing.assert_array_equal(np.asarray(actual), np.asarray(expected))
-    bind_native_structured_reduction(source, plan).block_until_ready()
-    assert not _native_grouped_output_owner_for_tests()
-
-
-@pytest.mark.skipif(not native_available(), reason="native CPU stride unavailable")
-def test_vmap_rechecks_grouped_work_after_adding_the_batch_axis() -> None:
-    plan = _exact_output_group_plan(
-        output_count=2048,
-        reduction_count=4,
-    )
-    source = jax.ShapeDtypeStruct((4, plan.source_size), jnp.float32)
-    executable = jax.jit(
-        jax.vmap(lambda value: bind_native_structured_reduction(value, plan))
-    ).lower(source).compile()
-    executable(jnp.ones(source.shape, dtype=source.dtype)).block_until_ready()
-    assert _native_grouped_output_owner_for_tests()
-
-
-def test_forward_reduction_descriptor_carries_explicit_scalar_policy() -> None:
-    compiled = lower_structured_reduction(_forward_sum_plan())
-    words = np.frombuffer(compiled.descriptor, dtype="<u8")
-
-    assert words[1] == 4
-    assert words[8] == 1
-
-
-@pytest.mark.skipif(not native_available(), reason="native CPU stride unavailable")
-def test_native_reduction_rank_limit_applies_after_normalization() -> None:
-    logical_shape = (1,) * 8 + (2,)
-    plan = build_affine_plan(
-        records=(
-            AffineRecord(
-                logical_shape=logical_shape,
-                source_strides=(2,) * 8 + (1,),
-                source_offset=0,
-                destination_strides=(0,) * len(logical_shape),
-                destination_offset=0,
-                reduction_axes=tuple(range(len(logical_shape))),
-            ),
-        ),
-        output_size=1,
-        coverage=CompleteMode.PARTIAL_UNIQUE_ZERO_FILL,
-        source_size=2,
-        source_dtype=jnp.float32,
-        result_dtype=jnp.float32,
-        reduction_kind=StridedReductionKind.SUM,
-    )
-
-    execution = lower_structured_reduction(plan)
-    actual = bind_native_structured_reduction(
-        jnp.asarray([1.25, -0.5], dtype=jnp.float32),
-        plan,
-    )
-
-    assert execution.semantic is plan
-    assert np.frombuffer(execution.descriptor, dtype="<u8")[9] == 9
-    np.testing.assert_array_equal(actual, jnp.asarray([0.75], dtype=jnp.float32))
-
-
-def test_native_reduction_rejects_rank_above_limit_after_normalization() -> None:
-    logical_shape = (2,) * 9
-    source_strides = tuple(3**axis for axis in range(len(logical_shape)))
-    plan = build_affine_plan(
-        records=(
-            AffineRecord(
-                logical_shape=logical_shape,
-                source_strides=source_strides,
-                source_offset=0,
-                destination_strides=(0,) * len(logical_shape),
-                destination_offset=0,
-                reduction_axes=tuple(range(len(logical_shape))),
-            ),
-        ),
-        output_size=1,
-        coverage=CompleteMode.PARTIAL_UNIQUE_ZERO_FILL,
-        source_size=sum(source_strides) + 1,
-        source_dtype=jnp.float32,
-        result_dtype=jnp.float32,
-        reduction_kind=StridedReductionKind.SUM,
-    )
-
-    source = jnp.zeros(plan.source_size, dtype=jnp.float32)
-    with pytest.raises(Exception, match="effective reduction rank exceeds native limit 8"):
-        jax.jit(lambda value: bind_native_structured_reduction(value, plan))(
-            source
-        ).block_until_ready()
-
-
-@pytest.mark.parametrize(
-    ("broadcast_axes", "source_signs", "destination_fastest", "destination_signs"),
-    (
-        ((0,), (1,), (1, 0), (1, 1)),
-        ((0,), (-1,), (0, 1), (-1, 1)),
-        ((1,), (-1,), (1, 0), (1, -1)),
-        ((0, 1), (), (0, 1), (-1, -1)),
-    ),
-)
-@pytest.mark.skipif(not native_available(), reason="native CPU stride unavailable")
-def test_native_structured_reduction_covers_signed_permuted_fibers(
-    broadcast_axes: tuple[int, ...],
-    source_signs: tuple[int, ...],
-    destination_fastest: tuple[int, ...],
-    destination_signs: tuple[int, ...],
-) -> None:
-    plan = _broadcast_plan(
-        broadcast_axes=broadcast_axes,
-        source_signs=source_signs,
-        destination_fastest=destination_fastest,
-        destination_signs=destination_signs,
-    )
-    source = _values(plan.source_dtype, plan.source_size)
-    cotangent = _values(plan.result_dtype, plan.output_size)
-    native_pullback = jax.vjp(lambda value: _native_forward(value, plan), source)[1]
-    reference_pullback = jax.vjp(
-        lambda value: _reference_forward(value, plan), source
-    )[1]
-
-    _reset_native_call_count_for_tests()
-    actual = jax.jit(native_pullback)(cotangent)[0]
-    actual.block_until_ready()
-    expected = reference_pullback(cotangent)[0]
-
-    assert _native_call_count_for_tests() == 1
-    np.testing.assert_array_equal(np.asarray(actual), np.asarray(expected))
-    hlo = str(
-        jax.jit(native_pullback).lower(cotangent).compiler_ir("stablehlo")
-    ).lower()
-    assert "structured_reduction" in hlo
-    assert "gather" not in hlo
-    assert "scatter" not in hlo
-
-
-@pytest.mark.parametrize(
-    ("source_dtype", "result_dtype", "scale"),
-    (
-        (jnp.float16, jnp.float16, -1.25),
-        (jnp.bfloat16, jnp.bfloat16, -1.25),
-        (jnp.float32, jnp.float32, -1.25),
-        (jnp.complex64, jnp.complex64, 1.25 - 0.75j),
-        (jnp.float16, jnp.float32, -1.25),
-        (jnp.float32, jnp.complex64, 0.5 + 0.75j),
-        (jnp.complex64, jnp.float32, -0.75),
-    ),
-)
-@pytest.mark.skipif(not native_available(), reason="native CPU stride unavailable")
-def test_native_structured_reduction_covers_transpose_scalar_policies(
-    source_dtype: DTypeLike,
-    result_dtype: DTypeLike,
-    scale: float | complex,
-) -> None:
-    plan = _broadcast_plan(
-        source_signs=(-1,),
-        destination_signs=(-1, 1),
-        source_dtype=source_dtype,
-        result_dtype=result_dtype,
-        scale=scale,
-    )
-    source = _values(source_dtype, plan.source_size)
-    cotangent = _values(result_dtype, plan.output_size)
-    native_pullback = jax.vjp(lambda value: _native_forward(value, plan), source)[1]
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", np.exceptions.ComplexWarning)
-        reference_pullback = jax.vjp(
-            lambda value: _reference_forward(value, plan), source
-        )[1]
-
-    actual = jax.jit(native_pullback)(cotangent)[0]
-    expected = reference_pullback(cotangent)[0]
-
-    np.testing.assert_array_equal(np.asarray(actual), np.asarray(expected))
-
-    tangent = _values(result_dtype, plan.output_size) + jnp.asarray(
-        0.25,
-        dtype=result_dtype,
-    )
-    actual_jvp = jax.jvp(native_pullback, (cotangent,), (tangent,))
-    expected_jvp = jax.jvp(reference_pullback, (cotangent,), (tangent,))
-    for actual_part, expected_part in zip(
-        actual_jvp,
-        expected_jvp,
-        strict=True,
-    ):
-        np.testing.assert_array_equal(actual_part, expected_part)
-
-    source_cotangent = _values(source_dtype, plan.source_size)
-    actual_nested = jax.linear_transpose(
-        native_pullback,
-        jnp.zeros(plan.output_size, dtype=result_dtype),
-    )((source_cotangent,))[0]
-    expected_nested = jax.linear_transpose(
-        reference_pullback,
-        jnp.zeros(plan.output_size, dtype=result_dtype),
-    )((source_cotangent,))[0]
-    np.testing.assert_array_equal(actual_nested, expected_nested)
-
-
-@pytest.mark.skipif(not native_available(), reason="native CPU stride unavailable")
-def test_native_structured_reduction_batch_vmap_jvp_and_nested_transpose() -> None:
-    plan = _broadcast_plan(
-        logical_shape=(3, 4),
-        broadcast_axes=(0,),
-        source_signs=(-1,),
-        destination_fastest=(0, 1),
-        destination_signs=(-1, 1),
-        scale=-0.75,
-    )
-    source = _values(plan.source_dtype, plan.source_size)
-    native_pullback = lambda cotangent: jax.vjp(
-        lambda value: _native_forward(value, plan), source
-    )[1](cotangent)[0]
-    reference_pullback = lambda cotangent: jax.vjp(
-        lambda value: _reference_forward(value, plan), source
-    )[1](cotangent)[0]
-    cotangents = jnp.stack(
-        tuple(
-            _values(plan.result_dtype, plan.output_size) + shift
-            for shift in (-2, 0, 3)
-        )
-    )
-    tangents = 0.25 * cotangents + 1
-
-    actual_batch = jax.jit(jax.vmap(native_pullback))(cotangents)
-    expected_batch = jax.jit(jax.vmap(reference_pullback))(cotangents)
-    np.testing.assert_array_equal(actual_batch, expected_batch)
-
-    actual_jvp = jax.jvp(native_pullback, (cotangents[0],), (tangents[0],))
-    expected_jvp = jax.jvp(reference_pullback, (cotangents[0],), (tangents[0],))
-    for actual, expected in zip(actual_jvp, expected_jvp, strict=True):
+    assert_close(actual, reference(source))
+    cotangent = jnp.ones_like(actual) * .5
+    direction = jnp.ones_like(source) * .25
+    for result, wanted in zip(jax.jvp(native, (source,), (direction,)), jax.jvp(reference, (source,), (direction,)), strict=True):
+        assert_close(result, wanted)
+    assert_close(jax.jit(lambda cot: jax.vjp(native, source)[1](cot)[0])(cotangent),
+                 jax.vjp(reference, source)[1](cotangent)[0])
+
+
+SIGNED_CASES = [(order, signs, reduced) for order in permutations(range(2))
+                for signs in product((-1, 1), repeat=2) for reduced in ((True, False), (False, True), (True, True))]
+
+
+@pytest.mark.parametrize("order,signs,axes", SIGNED_CASES)
+def test_signed_permuted_reduction_layouts(order, signs, axes):
+    shape = (2, 3)
+    absolute = [0, 0]
+    stride = 1
+    for axis in order:
+        absolute[axis] = stride
+        stride *= shape[axis]
+    strides = tuple(sign * value for sign, value in zip(signs, absolute, strict=True))
+    offset = sum((size - 1) * step for size, step in zip(shape, strides, strict=True) if step < 0) * -1
+    output_shape = tuple(1 if reduced else size for reduced, size in zip(axes, shape, strict=True))
+    output_strides = (-output_shape[1], -1)
+    output_offset = int(np.prod(output_shape))
+    record = AffineRecord(shape, strides, offset, output_strides, output_offset)
+    parameters = dict(records=(record,), output_shapes=(output_shape,), reduction_axes=(axes,),
+                      output_size=output_offset + 2, dtype=np.dtype(jnp.float32))
+    source = jnp.arange(6, dtype=jnp.float32)
+    actual = jax.jit(lambda value: reduction_p.bind(value, **parameters))(source)
+    assert_close(actual, reference_sum(source, (None,), **parameters))
+
+
+@pytest.mark.parametrize("source_dtype,result_dtype", [(jnp.float16, jnp.float32), (jnp.bfloat16, jnp.float32),
+    (jnp.float16, jnp.float16), (jnp.bfloat16, jnp.bfloat16),
+    (jnp.float32, jnp.float32), (jnp.float64, jnp.float64), (jnp.complex64, jnp.complex64),
+    (jnp.complex128, jnp.complex128), (jnp.float32, jnp.complex64), (jnp.complex64, jnp.float32)])
+def test_mixed_reduction_forward_coefficient_ad_batch_and_nested_transpose(source_dtype, result_dtype):
+    with jax.enable_x64():
+        parameters = dict(records=(AffineRecord((4, 3), (3, 1), 0, (3, 1), 0),),
+                          output_shapes=((1, 3),), reduction_axes=((True, False),), output_size=3, dtype=np.dtype(result_dtype))
+        source = (jnp.arange(12, dtype=jnp.float32) / 8 - .5).astype(source_dtype)
+        if jnp.issubdtype(source_dtype, jnp.complexfloating):
+            source = source * (1 + .5j)
+        factor = jnp.asarray(.75 - .5j if jnp.issubdtype(result_dtype, jnp.complexfloating) else -.75,
+                             dtype=result_dtype)
+        native = lambda value, coefficient: reduction_p.bind(value, coefficient, coefficient_records=(0,), **parameters)
+        reference = lambda value, coefficient: reference_sum(value, (coefficient,), **parameters)
+        cotangent = jnp.ones(3, dtype=result_dtype) * .5
+        directions = (jnp.ones_like(source) * .25, jnp.ones_like(factor) * .5)
+        for function in (lambda operation: jax.jvp(operation, (source, factor), directions),
+                         lambda operation: jax.vjp(operation, source, factor)[1](cotangent)):
+            actual, expected = function(native), function(reference)
+            for result, wanted in zip(jax.tree.leaves(actual), jax.tree.leaves(expected), strict=True):
+                assert_close(result, wanted)
+        sources = jnp.stack((source, source * 2))
+        assert_close(jax.jit(jax.vmap(native, in_axes=(0, None)))(sources, factor),
+                     jax.vmap(reference, in_axes=(0, None))(sources, factor))
+        pullback = lambda cot: jax.vjp(lambda value: native(value, factor), source)[1](cot)[0]
+        expected_pullback = lambda cot: jax.vjp(lambda value: reference(value, factor), source)[1](cot)[0]
+        assert_close(jax.jit(lambda cot: jax.linear_transpose(pullback, cotangent)(cot)[0])(jnp.ones_like(source)),
+                     jax.linear_transpose(expected_pullback, cotangent)(jnp.ones_like(source))[0])
+
+
+@pytest.mark.parametrize("dtype", [jnp.bool_, jnp.int8, jnp.int16, jnp.int32, jnp.int64,
+                                   jnp.uint8, jnp.uint16, jnp.uint32, jnp.uint64])
+def test_integer_reduction_promotion_and_storage_conversion(dtype):
+    with jax.enable_x64():
+        source = jnp.arange(12, dtype=jnp.int32).astype(dtype)
+        if dtype == jnp.bool_:
+            source = jnp.arange(12) % 2 == 0
+        factor = jnp.asarray(True if dtype == jnp.bool_ else 3 if jnp.issubdtype(dtype, jnp.unsignedinteger) else -3, dtype=dtype)
+        parameters = dict(records=(AffineRecord((4, 3), (3, 1), 0, (3, 1), 0),),
+                          output_shapes=((1, 3),), reduction_axes=((True, False),), output_size=3, dtype=np.dtype(dtype))
+        actual = jax.jit(lambda value: reduction_p.bind(value, factor, coefficient_records=(0,), **parameters))(source)
+        expected = (source.reshape(4, 3) * factor).sum(axis=0, dtype=dtype)
         np.testing.assert_array_equal(actual, expected)
 
-    source_cotangent = jnp.linspace(
-        -1,
-        2,
-        plan.source_size,
-        dtype=jnp.float32,
-    )
-    actual_nested = jax.linear_transpose(
-        native_pullback,
-        jnp.zeros(plan.output_size, dtype=jnp.float32),
-    )(source_cotangent)[0]
-    expected_nested = jax.linear_transpose(
-        reference_pullback,
-        jnp.zeros(plan.output_size, dtype=jnp.float32),
-    )(source_cotangent)[0]
-    np.testing.assert_array_equal(actual_nested, expected_nested)
+
+@pytest.mark.parametrize("shape,output_shape,axes,source_size", [
+    ((2, 0), (2, 1), (False, True), 0), ((0, 3), (0, 1), (False, True), 0),
+    ((2, 3), (2, 1), (False, True), 6),
+])
+@pytest.mark.parametrize("batch_count", [0, 2])
+def test_empty_reduction_and_partial_output_initialize_once(shape, output_shape, axes, source_size, batch_count):
+    parameters = dict(records=(AffineRecord(shape, (3, 1), 0, (2, 1), 1),),
+                      output_shapes=(output_shape,), reduction_axes=(axes,), output_size=6, dtype=np.dtype(jnp.float32))
+    source = jnp.ones((batch_count, source_size), dtype=jnp.float32)
+    actual = jax.jit(lambda value: reduction_p.bind(value, **parameters))(source)
+    assert_close(actual, reference_sum(source, (None,), **parameters))
 
 
-@pytest.mark.skipif(not native_available(), reason="native CPU stride unavailable")
-def test_multi_record_reduction_accumulates_overlaps_in_record_order() -> None:
-    records = (
-        AffineRecord((2,), (0,), 0, (1,), 0, 1, (0,)),
-        AffineRecord((2,), (0,), 0, (1,), 2, -0.5, (0,)),
-        AffineRecord((1,), (1,), 1, (1,), 4, 2),
-    )
-    plan = build_affine_plan(
-        records=records,
-        output_size=5,
-        coverage=CompleteMode.COMPLETE_UNIQUE,
-        source_size=2,
-        source_dtype=jnp.float32,
-        result_dtype=jnp.float32,
-    )
-    source = jnp.asarray([2.0, -3.0], dtype=jnp.float32)
-    cotangent = jnp.asarray([1.0, -2.0, 3.0, 4.0, -5.0], dtype=jnp.float32)
-
-    actual = jax.vjp(lambda value: _native_forward(value, plan), source)[1](
-        cotangent
-    )[0]
-    expected = jax.vjp(lambda value: _reference_forward(value, plan), source)[1](
-        cotangent
-    )[0]
-
-    np.testing.assert_array_equal(actual, expected)
-    np.testing.assert_array_equal(actual, jnp.asarray([-4.5, -10.0]))
+@pytest.mark.parametrize("axes", [(False, False), (False, True)])
+def test_overlapping_records_different_fibers_and_output_selections(axes):
+    reduced = axes[1]
+    records = (AffineRecord((4, 2 if reduced else 1), (2, 1), 0, (-2, 1), 7),
+               AffineRecord((4, 3 if reduced else 1), (3, 1), 8, (-2, 1), 7),
+               AffineRecord((2, 1), (1, 1), 20, (2, 1), 2))
+    parameters = dict(records=records, output_shapes=((4, 1), (4, 1), (2, 1)),
+                      reduction_axes=(axes, axes, axes), output_size=10, dtype=np.dtype(jnp.float32))
+    factors = (jnp.float32(1.25), jnp.float32(-.5), jnp.float32(2))
+    native = lambda value: reduction_p.bind(value, *factors, coefficient_records=(0, 1, 2), **parameters)
+    reference = lambda value: reference_sum(value, factors, **parameters)
+    source = jnp.arange(22, dtype=jnp.float32) / 4
+    compiled = jax.jit(native).lower(source).compile()
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        outputs = list(pool.map(lambda shift: compiled(source + shift), range(4)))
+    for shift, actual in enumerate(outputs):
+        assert_close(actual, reference(source + shift))
+    cotangent = jnp.linspace(-1, 1, 10)
+    assert_close(jax.jit(lambda cot: jax.vjp(native, source)[1](cot)[0])(cotangent),
+                 jax.vjp(reference, source)[1](cotangent)[0])
+    assert_close(jax.jit(jax.vmap(native))(jnp.stack((source, source * 2))),
+                 jax.vmap(reference)(jnp.stack((source, source * 2))))
 
 
-@pytest.mark.parametrize("dtype", [jnp.float32, jnp.complex64])
-@pytest.mark.skipif(not native_available(), reason="native CPU stride unavailable")
-def test_native_structured_reduction_finite_values_match_reference(
-    dtype: DTypeLike,
-) -> None:
-    scale = 3.5 if dtype == jnp.float32 else complex(3.5, 3.5)
-    plan = _broadcast_plan(
-        logical_shape=(4, 3),
-        broadcast_axes=(0,),
-        destination_fastest=(1, 0),
-        destination_signs=(-1, 1),
-        source_dtype=dtype,
-        result_dtype=dtype,
-        scale=scale,
-    )
-    source = _values(dtype, plan.source_size)
-    if dtype == jnp.float32:
-        pattern = jnp.asarray(
-            [0.0, -0.0, 1.25, -1.25, .125, 1.0],
-            dtype=dtype,
-        )
+def test_many_small_output_groups_share_one_native_call():
+    records = tuple(AffineRecord((1, 4), (4, 1), (2 * group + term) * 4, (1, 1), group)
+                    for group in range(1024) for term in range(2))
+    source = jnp.ones(8192, dtype=jnp.float32)
+    parameters = dict(records=records, output_shapes=((1, 1),) * len(records),
+                      reduction_axes=((False, True),) * len(records), output_size=1024, dtype=np.dtype(jnp.float32))
+    compiled = jax.jit(lambda value: reduction_p.bind(value, **parameters))
+    np.testing.assert_array_equal(compiled(source), np.full(1024, 8, dtype=np.float32))
+    assert compiled.lower(source).as_text().count("custom_call") == 1
+
+
+@pytest.mark.parametrize("dtype", [jnp.float16, jnp.float32])
+def test_record_coefficients_keep_types_and_bind_independently(dtype):
+    with jax.enable_x64():
+        records = tuple(AffineRecord((3, 128), (128, 1), index * 384, (1, 1), 0) for index in range(3))
+        parameters = dict(records=records, output_shapes=((3, 1),) * 3, reduction_axes=((False, True),) * 3,
+                          output_size=3, dtype=np.dtype(jnp.float32))
+        source = jnp.stack((jnp.ones(1152, dtype=dtype), jnp.full(1152, 2, dtype=dtype)))
+        compiled = jax.jit(lambda values, first, second: reduction_p.bind(
+            values, first, second, coefficient_records=(1, 2), **parameters))
+        for first, second in ((.75, -.25), (2., -.5)):
+            actual = compiled(source, jnp.float32(first), jnp.float64(second))
+            expected = np.broadcast_to(np.asarray([[1.], [2.]], dtype=np.float32) * 128 * (1 + first + second), (2, 3))
+            np.testing.assert_array_equal(actual, expected)
+
+
+def test_each_record_uses_its_own_batch_coefficients():
+    records = (AffineRecord((2, 3), (3, 1), 0, (1, 1), 0), AffineRecord((2, 3), (3, 1), 6, (1, 1), 0))
+    parameters = dict(records=records, output_shapes=((2, 1),) * 2, reduction_axes=((False, True),) * 2,
+                      output_size=2, dtype=np.dtype(jnp.float32))
+    source = jnp.arange(36, dtype=jnp.float32).reshape(3, 12)
+    first, second = jnp.asarray([0., 1., .5]), jnp.asarray([1., 0., -2.])
+    actual = jax.jit(lambda values, alpha, beta: reduction_p.bind(
+        values, alpha, beta, coefficient_records=(0, 1), **parameters))(source, first, second)
+    expected = source[:, :6].reshape(3, 2, 3).sum(axis=-1) * first[:, None]
+    expected += source[:, 6:].reshape(3, 2, 3).sum(axis=-1) * second[:, None]
+    assert_close(actual, expected)
+
+
+@pytest.mark.parametrize("order,expected", [((0, 1, 2, 3), 3.), ((0, 2, 1, 3), 4.)])
+def test_record_order_sets_cross_record_rounding_boundary(order, expected):
+    records = tuple(AffineRecord((1,), (1,), index, (1,), 0) for index in order)
+    source = jnp.asarray([2**24, 1, -(2**24), 3], dtype=jnp.float32)
+    actual = jax.jit(lambda value: reduction_p.bind(
+        value, records=records, output_shapes=((1,),) * 4, reduction_axes=((True,),) * 4,
+        output_size=1, dtype=value.dtype))(source)
+    np.testing.assert_array_equal(actual, [expected])
+
+
+@pytest.mark.parametrize("factor", [0., 1., -.75])
+def test_nonfinite_coefficient_branch_does_not_clear_other_records(factor):
+    records = (AffineRecord((2,), (1,), 0, (1,), 1), AffineRecord((2,), (1,), 2, (1,), 1))
+    parameters = dict(records=records, output_shapes=((1,),) * 2, reduction_axes=((True,),) * 2,
+                      output_size=3, dtype=np.dtype(jnp.float32))
+    source = jnp.asarray([2., 3., np.inf, np.nan])
+    actual = jax.jit(lambda value, coefficient: reduction_p.bind(value, coefficient, coefficient_records=(1,), **parameters))(
+        source, jnp.float32(factor))
+    np.testing.assert_array_equal(actual[jnp.asarray([0, 2])], 0)
+    if factor == 0:
+        assert actual[1] == 5
     else:
-        pattern = jnp.asarray(
-            [
-                0 + 0j,
-                complex(-0.0, 0.0),
-                complex(1.25, 1.0),
-                complex(-1.25, -2.0),
-                complex(.125, 3.0),
-                1.25 - 0.75j,
-            ],
-            dtype=dtype,
-        )
-    cotangent = jnp.resize(pattern, (plan.output_size,))
-
-    actual = jax.vjp(lambda value: _native_forward(value, plan), source)[1](
-        cotangent
-    )[0]
-    expected = jax.vjp(lambda value: _reference_forward(value, plan), source)[1](
-        cotangent
-    )[0]
-
-    np.testing.assert_allclose(actual, expected, rtol=2e-6, atol=1e-6)
+        assert np.isnan(actual[1])
 
 
-@pytest.mark.parametrize("dtype", [jnp.float32, jnp.complex64])
-@pytest.mark.skipif(not native_available(), reason="native CPU stride unavailable")
-def test_rank_one_output_block_preserves_order_and_handles_tail(
-    dtype: DTypeLike,
-) -> None:
-    output_count = 11
-    reduction_count = 3
-    scale = -0.75 if dtype == jnp.float32 else 1.25 - 0.5j
-    plan = build_affine_plan(
-        records=(
-            AffineRecord(
-                logical_shape=(output_count, reduction_count),
-                source_strides=(-reduction_count, 1),
-                source_offset=(output_count - 1) * reduction_count,
-                destination_strides=(-1, 0),
-                destination_offset=output_count - 1,
-                scale=scale,
-                reduction_axes=(1,),
-            ),
-        ),
-        output_size=output_count,
-        coverage=CompleteMode.COMPLETE_UNIQUE,
-        source_size=output_count * reduction_count,
-        source_dtype=dtype,
-        result_dtype=dtype,
-        reduction_kind=StridedReductionKind.SUM,
-    )
-    if dtype == jnp.float32:
-        pattern = jnp.asarray(
-            [0.0, -0.0, jnp.inf, -jnp.inf, jnp.nan, 1.0],
-            dtype=dtype,
-        )
+@pytest.mark.parametrize("kind", ["row", "gapped", "outputs", "batch", "integer"])
+def test_long_reduction_worker_limits_concurrency_and_ad(kind):
+    if kind == "gapped":
+        shape, strides, source_size, axes = (257, 263), (527, 2), 1 + 256 * 527 + 262 * 2, (0, 1)
+    elif kind in ("outputs", "batch"):
+        shape, strides, source_size, axes = (8, 8192), (8192, 1), 65536, (1,)
     else:
-        pattern = jnp.asarray(
-            [
-                0 + 0j,
-                complex(-0.0, 0.0),
-                complex(jnp.inf, 1.0),
-                complex(-jnp.inf, -2.0),
-                complex(jnp.nan, 3.0),
-                1.25 - 0.75j,
-            ],
-            dtype=dtype,
-        )
-    source = jnp.resize(pattern, (plan.source_size,))
-    scalar_plan = build_affine_plan(
-        records=tuple(
-            AffineRecord(
-                logical_shape=(1, reduction_count),
-                source_strides=(0, 1),
-                source_offset=(output_count - 1 - output) * reduction_count,
-                destination_strides=(0, 0),
-                destination_offset=output_count - 1 - output,
-                scale=scale,
-                reduction_axes=(1,),
-            )
-            for output in range(output_count)
-        ),
-        output_size=output_count,
-        coverage=CompleteMode.COMPLETE_UNIQUE,
-        source_size=output_count * reduction_count,
-        source_dtype=dtype,
-        result_dtype=dtype,
-        write_kind=StridedWriteKind.ACCUMULATE,
-        reduction_kind=StridedReductionKind.SUM,
-    )
-
-    actual = bind_native_structured_reduction(source, plan)
-    expected = bind_native_structured_reduction(source, scalar_plan)
-
-    assert_bitwise_equal(actual, expected)
-
-
-@pytest.mark.skipif(not native_available(), reason="native CPU stride unavailable")
-def test_large_native_structured_reduction_uses_output_owner_workers() -> None:
-    plan = _broadcast_plan(
-        logical_shape=(4096, 512),
-        broadcast_axes=(1,),
-        source_signs=(1,),
-        destination_fastest=(1, 0),
-        scale=1,
-    )
-    source = jnp.zeros(plan.source_size, dtype=jnp.float32)
-    cotangent = jnp.ones(plan.output_size, dtype=jnp.float32)
-    pullback = jax.vjp(lambda value: _native_forward(value, plan), source)[1]
-
-    _set_native_worker_limit_for_tests(4)
+        shape, strides, source_size, axes = (65536,), (1,), 65536, (0,)
+    dtype = jnp.int32 if kind == "integer" else jnp.float32
+    source = (jnp.arange(source_size, dtype=jnp.int32) % 16).astype(dtype)
+    if kind == "batch":
+        source = jnp.stack((source, source + 1))
+    native = lambda value: reduce_sum(StridedView(value, shape, strides, 0), axes, dtype=dtype)
+    indices = addresses(shape, strides, 0)
+    reference = lambda value: jnp.sum(value[..., indices], axis=tuple(value.ndim - 1 + axis for axis in axes), dtype=dtype)
+    compiled = jax.jit(native).lower(source).compile()
+    previous = get_num_threads()
     try:
-        executable = jax.jit(pullback).lower(cotangent).compile()
-        memory = executable.memory_analysis()
-        actual = executable(cotangent)[0]
-        actual.block_until_ready()
-        workers, available = _native_worker_counts_for_tests()
-    finally:
-        _set_native_worker_limit_for_tests(None)
-
-    assert memory is not None
-    assert memory.argument_size_in_bytes == cotangent.nbytes
-    assert memory.output_size_in_bytes == source.nbytes
-    assert memory.temp_size_in_bytes == 0
-    np.testing.assert_array_equal(
-        np.asarray(actual),
-        np.full(plan.source_size, 512, dtype=np.float32),
-    )
-    if available >= 2:
-        assert workers >= 2
-
-
-@pytest.mark.parametrize(
-    ("dtype", "scale"),
-    ((jnp.float32, -0.75), (jnp.complex64, 1.25 - 0.5j)),
-)
-@pytest.mark.skipif(not native_available(), reason="native CPU stride unavailable")
-def test_forced_long_fiber_reduction_uses_deterministic_chunk_partials(
-    dtype: DTypeLike,
-    scale: float | complex,
-) -> None:
-    plan = _long_fiber_plan(dtype=dtype, scale=scale)
-    source = _values(dtype, plan.source_size)
-    execute = jax.jit(
-        lambda value: bind_native_structured_reduction(value, plan)
-    )
-
-    _set_native_worker_limit_for_tests(4)
-    _set_native_reduction_fiber_parallel_mode_for_tests(1)
-    try:
-        results = tuple(execute(source) for _ in range(3))
-        jax.block_until_ready(results)
-        workers, available = _native_worker_counts_for_tests()
-        chunks = _native_reduction_fiber_chunks_for_tests()
-    finally:
-        _set_native_reduction_fiber_parallel_mode_for_tests(None)
-        _set_native_worker_limit_for_tests(None)
-
-    expected = _execute_serial_native_reduction(source, plan)
-    for result in results[1:]:
-        assert_bitwise_equal(result, results[0])
-    np.testing.assert_allclose(
-        np.asarray(results[0]),
-        np.asarray(expected),
-        rtol=2e-5,
-        atol=2e-5,
-        equal_nan=True,
-    )
-    if available >= 2:
-        assert workers >= 2
-        assert chunks >= 2
-
-
-@pytest.mark.parametrize(
-    ("dtype", "scale"),
-    ((jnp.float32, -0.75), (jnp.complex64, 1.25 - 0.5j)),
-)
-@pytest.mark.skipif(not native_available(), reason="native CPU stride unavailable")
-def test_forced_multidimensional_fiber_uses_shared_range_walker(
-    dtype: DTypeLike,
-    scale: float | complex,
-) -> None:
-    plan = _multidimensional_long_fiber_plan(dtype=dtype, scale=scale)
-    source = _values(dtype, plan.source_size)
-    execute = jax.jit(
-        lambda value: bind_native_structured_reduction(value, plan)
-    )
-
-    _set_native_worker_limit_for_tests(4)
-    _set_native_reduction_fiber_parallel_mode_for_tests(1)
-    try:
-        results = tuple(execute(source) for _ in range(3))
-        jax.block_until_ready(results)
-        _, available = _native_worker_counts_for_tests()
-        chunks = _native_reduction_fiber_chunks_for_tests()
-    finally:
-        _set_native_reduction_fiber_parallel_mode_for_tests(None)
-        _set_native_worker_limit_for_tests(None)
-
-    expected = _execute_serial_native_reduction(source, plan)
-    for result in results[1:]:
-        assert_bitwise_equal(result, results[0])
-    np.testing.assert_allclose(
-        np.asarray(results[0]),
-        np.asarray(expected),
-        rtol=2e-5,
-        atol=2e-5,
-        equal_nan=True,
-    )
-    if available >= 2:
-        assert chunks >= 2
-
-
-@pytest.mark.skipif(not native_available(), reason="native CPU stride unavailable")
-def test_forced_multidimensional_fiber_preserves_jvp_and_vjp_semantics() -> None:
-    plan = _multidimensional_long_fiber_plan(scale=-0.75)
-    source = _values(jnp.float32, plan.source_size)
-    tangent = source * 0.25 - 1
-    cotangent = jnp.asarray([1.25], dtype=jnp.float32)
-    execute = lambda value: bind_native_structured_reduction(value, plan)
-
-    _set_native_worker_limit_for_tests(4)
-    _set_native_reduction_fiber_parallel_mode_for_tests(1)
-    try:
-        primal, actual_tangent = jax.jit(
-            lambda value, direction: jax.jvp(
-                execute, (value,), (direction,)
-            )
-        )(source, tangent)
-        actual_vjp = jax.jit(
-            lambda value, ct: jax.vjp(execute, value)[1](ct)[0]
-        )(source, cotangent)
-        jax.block_until_ready((primal, actual_tangent, actual_vjp))
-        chunks = _native_reduction_fiber_chunks_for_tests()
-        _set_native_worker_limit_for_tests(1)
-        _set_native_reduction_fiber_parallel_mode_for_tests(0)
-        reference = lambda value: _bind_sequential_native_structured_reduction(
-            value, plan
-        )
-        expected_primal, expected_tangent = jax.jvp(
-            reference, (source,), (tangent,)
-        )
-        expected_vjp = jax.vjp(reference, source)[1](cotangent)[0]
-        jax.block_until_ready(
-            (expected_primal, expected_tangent, expected_vjp)
-        )
-    finally:
-        _set_native_reduction_fiber_parallel_mode_for_tests(None)
-        _set_native_worker_limit_for_tests(None)
-
-    assert chunks >= 2
-    np.testing.assert_allclose(primal, expected_primal, rtol=2e-5, atol=2e-5)
-    np.testing.assert_allclose(
-        actual_tangent, expected_tangent, rtol=2e-5, atol=2e-5
-    )
-    assert_bitwise_equal(actual_vjp, expected_vjp)
-
-
-@pytest.mark.skipif(not native_available(), reason="native CPU stride unavailable")
-def test_production_multidimensional_fiber_uses_recursive_partials() -> None:
-    plan = _multidimensional_long_fiber_plan(reduction_shape=(512, 512))
-    source = _values(jnp.float32, plan.source_size)
-
-    _set_native_worker_limit_for_tests(4)
-    _set_native_reduction_fiber_parallel_mode_for_tests(None)
-    try:
-        actual = jax.jit(
-            lambda value: bind_native_structured_reduction(value, plan)
-        )(source)
-        actual.block_until_ready()
-        chunks = _native_reduction_fiber_chunks_for_tests()
-    finally:
-        _set_native_reduction_fiber_parallel_mode_for_tests(None)
-        _set_native_worker_limit_for_tests(None)
-
-    expected = _execute_serial_native_reduction(source, plan)
-    assert chunks >= 2
-    np.testing.assert_allclose(actual, expected, rtol=2e-5, atol=2e-5)
-
-
-@pytest.mark.skipif(not native_available(), reason="native CPU stride unavailable")
-def test_production_multirecord_scalar_reduction_preserves_record_order() -> None:
-    reduction_count = 65_536
-    plan = build_affine_plan(
-        records=(
-            AffineRecord(
-                logical_shape=(reduction_count,),
-                source_strides=(1,),
-                source_offset=0,
-                destination_strides=(0,),
-                destination_offset=0,
-                scale=0.75,
-                reduction_axes=(0,),
-            ),
-            AffineRecord(
-                logical_shape=(reduction_count,),
-                source_strides=(-1,),
-                source_offset=2 * reduction_count - 1,
-                destination_strides=(0,),
-                destination_offset=0,
-                scale=-0.25,
-                reduction_axes=(0,),
-            ),
-        ),
-        output_size=1,
-        coverage=CompleteMode.PARTIAL_UNIQUE_ZERO_FILL,
-        source_size=2 * reduction_count,
-        source_dtype=jnp.float32,
-        result_dtype=jnp.float32,
-        write_kind=StridedWriteKind.ACCUMULATE,
-        reduction_kind=StridedReductionKind.SUM,
-    )
-    source = _values(jnp.float32, plan.source_size)
-
-    _set_native_worker_limit_for_tests(4)
-    _set_native_reduction_fiber_parallel_mode_for_tests(None)
-    try:
-        actual = jax.jit(
-            lambda value: bind_native_structured_reduction(value, plan)
-        )(source)
-        actual.block_until_ready()
-        chunks = _native_reduction_fiber_chunks_for_tests()
-    finally:
-        _set_native_reduction_fiber_parallel_mode_for_tests(None)
-        _set_native_worker_limit_for_tests(None)
-
-    expected = _execute_serial_native_reduction(source, plan)
-    assert chunks >= 2
-    np.testing.assert_allclose(actual, expected, rtol=2e-5, atol=2e-5)
-
-
-@pytest.mark.skipif(not native_available(), reason="native CPU stride unavailable")
-def test_long_fiber_reduction_keeps_serial_behavior_with_one_worker() -> None:
-    plan = _long_fiber_plan(reduction_count=65_536)
-    source = _values(jnp.float32, plan.source_size)
-
-    _set_native_worker_limit_for_tests(1)
-    _set_native_reduction_fiber_parallel_mode_for_tests(1)
-    try:
-        actual = bind_native_structured_reduction(source, plan)
-        actual.block_until_ready()
-        chunks = _native_reduction_fiber_chunks_for_tests()
-        _set_native_reduction_fiber_parallel_mode_for_tests(0)
-        expected = _bind_sequential_native_structured_reduction(source, plan)
-        expected.block_until_ready()
-    finally:
-        _set_native_reduction_fiber_parallel_mode_for_tests(None)
-        _set_native_worker_limit_for_tests(None)
-
-    assert chunks == 0
-    assert_bitwise_equal(actual, expected)
-
-
-@pytest.mark.skipif(not native_available(), reason="native CPU stride unavailable")
-def test_batched_outputs_keep_output_owner_parallelism() -> None:
-    plan = _long_fiber_plan(reduction_count=65_536)
-    source = jnp.stack(
-        tuple(
-            _values(jnp.float32, plan.source_size) + batch
-            for batch in range(4)
-        )
-    )
-    execute = jax.jit(
-        jax.vmap(lambda value: bind_native_structured_reduction(value, plan))
-    )
-
-    _set_native_worker_limit_for_tests(4)
-    _set_native_reduction_fiber_parallel_mode_for_tests(1)
-    try:
-        actual = execute(source)
-        actual.block_until_ready()
-        workers, available = _native_worker_counts_for_tests()
-        chunks = _native_reduction_fiber_chunks_for_tests()
-    finally:
-        _set_native_reduction_fiber_parallel_mode_for_tests(None)
-        _set_native_worker_limit_for_tests(None)
-
-    _set_native_reduction_fiber_parallel_mode_for_tests(0)
-    try:
-        expected = jax.vmap(
-            lambda value: _bind_sequential_native_structured_reduction(
-                value, plan
-            )
-        )(source)
-        expected.block_until_ready()
-    finally:
-        _set_native_reduction_fiber_parallel_mode_for_tests(None)
-    assert chunks == 0
-    np.testing.assert_allclose(actual, expected, rtol=2e-5, atol=2e-5)
-    if available >= 2:
-        assert workers >= 2
-
-
-@pytest.mark.skipif(not native_available(), reason="native CPU stride unavailable")
-def test_forced_long_fiber_reduction_preserves_jvp_and_vjp_semantics() -> None:
-    plan = _long_fiber_plan(reduction_count=65_536, scale=-0.75)
-    source = _values(jnp.float32, plan.source_size)
-    tangent = source * 0.25 - 1
-    cotangent = jnp.asarray([1.25], dtype=jnp.float32)
-    execute = lambda value: bind_native_structured_reduction(value, plan)
-
-    _set_native_worker_limit_for_tests(4)
-    _set_native_reduction_fiber_parallel_mode_for_tests(1)
-    try:
-        primal, actual_tangent = jax.jit(
-            lambda value, direction: jax.jvp(
-                execute, (value,), (direction,)
-            )
-        )(source, tangent)
-        actual_vjp = jax.jit(
-            lambda value, ct: jax.vjp(execute, value)[1](ct)[0]
-        )(source, cotangent)
-        jax.block_until_ready((primal, actual_tangent, actual_vjp))
-        _set_native_worker_limit_for_tests(1)
-        _set_native_reduction_fiber_parallel_mode_for_tests(0)
-        reference = lambda value: _bind_sequential_native_structured_reduction(
-            value, plan
-        )
-        expected_primal, expected_tangent = jax.jvp(
-            reference, (source,), (tangent,)
-        )
-        expected_vjp = jax.vjp(reference, source)[1](cotangent)[0]
-        jax.block_until_ready(
-            (expected_primal, expected_tangent, expected_vjp)
-        )
-    finally:
-        _set_native_reduction_fiber_parallel_mode_for_tests(None)
-        _set_native_worker_limit_for_tests(None)
-
-    np.testing.assert_allclose(primal, expected_primal, rtol=2e-5, atol=2e-5)
-    np.testing.assert_allclose(
-        actual_tangent, expected_tangent, rtol=2e-5, atol=2e-5
-    )
-    assert_bitwise_equal(actual_vjp, expected_vjp)
-
-
-@pytest.mark.skipif(not native_available(), reason="native CPU stride unavailable")
-def test_production_long_fiber_threshold_selects_only_underused_workers() -> None:
-    long_plan = _long_fiber_plan(reduction_count=65_536)
-    small_plan = _long_fiber_plan(reduction_count=4_096)
-    two_outputs_plan = _long_fiber_plan(
-        output_count=2,
-        reduction_count=65_536,
-    )
-    three_outputs_plan = _long_fiber_plan(
-        output_count=3,
-        reduction_count=65_536,
-    )
-    enough_outputs_plan = _long_fiber_plan(
-        output_count=4,
-        reduction_count=65_536,
-    )
-    long_source = _values(jnp.float32, long_plan.source_size)
-    small_source = _values(jnp.float32, small_plan.source_size)
-    two_outputs_source = _values(
-        jnp.float32, two_outputs_plan.source_size
-    )
-    three_outputs_source = _values(
-        jnp.float32, three_outputs_plan.source_size
-    )
-    enough_outputs_source = _values(
-        jnp.float32, enough_outputs_plan.source_size
-    )
-
-    _set_native_worker_limit_for_tests(4)
-    _set_native_reduction_fiber_parallel_mode_for_tests(None)
-    try:
-        long_result = jax.jit(
-            lambda value: bind_native_structured_reduction(value, long_plan)
-        )(long_source)
-        long_result.block_until_ready()
-        long_chunks = _native_reduction_fiber_chunks_for_tests()
-        small_result = jax.jit(
-            lambda value: bind_native_structured_reduction(value, small_plan)
-        )(small_source)
-        small_result.block_until_ready()
-        small_chunks = _native_reduction_fiber_chunks_for_tests()
-        two_outputs_result = jax.jit(
-            lambda value: bind_native_structured_reduction(
-                value, two_outputs_plan
-            )
-        )(two_outputs_source)
-        two_outputs_result.block_until_ready()
-        two_outputs_chunks = _native_reduction_fiber_chunks_for_tests()
-        three_outputs_result = jax.jit(
-            lambda value: bind_native_structured_reduction(
-                value, three_outputs_plan
-            )
-        )(three_outputs_source)
-        three_outputs_result.block_until_ready()
-        three_outputs_chunks = _native_reduction_fiber_chunks_for_tests()
-        enough_outputs_result = jax.jit(
-            lambda value: bind_native_structured_reduction(
-                value, enough_outputs_plan
-            )
-        )(enough_outputs_source)
-        enough_outputs_result.block_until_ready()
-        enough_outputs_chunks = _native_reduction_fiber_chunks_for_tests()
-    finally:
-        _set_native_reduction_fiber_parallel_mode_for_tests(None)
-        _set_native_worker_limit_for_tests(None)
-
-    assert long_chunks >= 2
-    assert small_chunks == 0
-    assert two_outputs_chunks == 0
-    assert three_outputs_chunks == 0
-    assert enough_outputs_chunks == 0
-    np.testing.assert_allclose(
-        long_result,
-        _execute_serial_native_reduction(long_source, long_plan),
-        rtol=2e-5,
-        atol=2e-5,
-    )
-    assert_bitwise_equal(
-        small_result,
-        _execute_serial_native_reduction(small_source, small_plan),
-    )
-    np.testing.assert_allclose(
-        two_outputs_result,
-        _execute_serial_native_reduction(
-            two_outputs_source, two_outputs_plan
-        ),
-        rtol=2e-5,
-        atol=2e-5,
-    )
-    np.testing.assert_allclose(
-        three_outputs_result,
-        _execute_serial_native_reduction(
-            three_outputs_source, three_outputs_plan
-        ),
-        rtol=2e-5,
-        atol=2e-5,
-    )
-
-
-@pytest.mark.skipif(not native_available(), reason="native CPU stride unavailable")
-def test_integer_long_fiber_reduction_retains_exact_serial_order() -> None:
-    plan = _long_fiber_plan(reduction_count=65_536, dtype=jnp.int32)
-    source = jnp.arange(plan.source_size, dtype=jnp.int32) % 13
-
-    _set_native_worker_limit_for_tests(4)
-    _set_native_reduction_fiber_parallel_mode_for_tests(None)
-    try:
-        actual = jax.jit(
-            lambda value: bind_native_structured_reduction(value, plan)
-        )(source)
-        actual.block_until_ready()
-        chunks = _native_reduction_fiber_chunks_for_tests()
-    finally:
-        _set_native_reduction_fiber_parallel_mode_for_tests(None)
-        _set_native_worker_limit_for_tests(None)
-
-    expected = _execute_serial_native_reduction(source, plan)
-    assert chunks == 0
-    assert_bitwise_equal(actual, expected)
-
-
-@pytest.mark.skipif(not native_available(), reason="native CPU stride unavailable")
-def test_forced_long_fiber_reduction_zero_fills_uncovered_output() -> None:
-    reduction_count = 65_536
-    plan = build_affine_plan(
-        records=(
-            AffineRecord(
-                logical_shape=(1, reduction_count),
-                source_strides=(reduction_count, 1),
-                source_offset=0,
-                destination_strides=(1, 0),
-                destination_offset=1,
-                reduction_axes=(1,),
-            ),
-        ),
-        output_size=2,
-        coverage=CompleteMode.PARTIAL_UNIQUE_ZERO_FILL,
-        source_size=reduction_count,
-        source_dtype=jnp.float32,
-        result_dtype=jnp.float32,
-        reduction_kind=StridedReductionKind.SUM,
-    )
-    source = jnp.ones(plan.source_size, dtype=jnp.float32)
-
-    _set_native_worker_limit_for_tests(4)
-    _set_native_reduction_fiber_parallel_mode_for_tests(1)
-    try:
-        actual = bind_native_structured_reduction(source, plan)
-        actual.block_until_ready()
-    finally:
-        _set_native_reduction_fiber_parallel_mode_for_tests(None)
-        _set_native_worker_limit_for_tests(None)
-
-    np.testing.assert_array_equal(
-        np.asarray(actual),
-        np.asarray([0, reduction_count], dtype=np.float32),
-    )
-
-
-@pytest.mark.skipif(not native_available(), reason="native CPU stride unavailable")
-def test_forced_long_fiber_reduction_propagates_nonfinite_values() -> None:
-    plan = _long_fiber_plan(reduction_count=65_536)
-    finite = jnp.ones(plan.source_size, dtype=jnp.float32)
-    with_nan = finite.at[17].set(jnp.nan)
-    with_inf = finite.at[31].set(jnp.inf)
-
-    _set_native_worker_limit_for_tests(4)
-    _set_native_reduction_fiber_parallel_mode_for_tests(1)
-    try:
-        nan_result = bind_native_structured_reduction(with_nan, plan)
-        inf_result = bind_native_structured_reduction(with_inf, plan)
-        jax.block_until_ready((nan_result, inf_result))
-    finally:
-        _set_native_reduction_fiber_parallel_mode_for_tests(None)
-        _set_native_worker_limit_for_tests(None)
-
-    assert bool(jnp.isnan(nan_result[0]))
-    assert bool(jnp.isposinf(inf_result[0]))
-
-
-@pytest.mark.skipif(not native_available(), reason="native CPU stride unavailable")
-def test_forced_long_fiber_nested_transpose_is_numerically_correct() -> None:
-    plan = _long_fiber_plan(reduction_count=65_536, scale=-0.75)
-    source = _values(jnp.float32, plan.source_size)
-    cotangent = jnp.zeros((1,), dtype=jnp.float32)
-    tangent = jnp.ones_like(source)
-    execute = lambda value: bind_native_structured_reduction(value, plan)
-    pullback = lambda ct: jax.vjp(execute, source)[1](ct)[0]
-
-    _set_native_worker_limit_for_tests(4)
-    _set_native_reduction_fiber_parallel_mode_for_tests(1)
-    try:
-        actual = jax.jit(
-            lambda ct, direction: jax.linear_transpose(
-                pullback, ct
-            )(direction)[0]
-        )(cotangent, tangent)
-        actual.block_until_ready()
-    finally:
-        _set_native_reduction_fiber_parallel_mode_for_tests(None)
-        _set_native_worker_limit_for_tests(None)
-
-    expected = _execute_serial_native_reduction(tangent, plan)
-    np.testing.assert_allclose(actual, expected, rtol=2e-5, atol=2e-5)
-
-
-@pytest.mark.skipif(not native_available(), reason="native CPU stride unavailable")
-def test_forced_long_fiber_reduction_uses_per_call_scratch() -> None:
-    plan = _long_fiber_plan(reduction_count=65_536)
-    source = _values(jnp.float32, plan.source_size)
-    execute = jax.jit(
-        lambda value: bind_native_structured_reduction(value, plan)
-    )
-
-    _set_native_worker_limit_for_tests(4)
-    _set_native_reduction_fiber_parallel_mode_for_tests(1)
-    try:
+        for workers in (1, 4):
+            set_num_threads(workers)
+            assert_close(compiled(source), reference(source))
         with ThreadPoolExecutor(max_workers=4) as pool:
-            results = tuple(
-                pool.map(
-                    lambda shift: execute(source + shift),
-                    range(8),
-                )
-            )
-        jax.block_until_ready(results)
+            results = list(pool.map(lambda shift: compiled(source + shift), range(4)))
+        for shift, actual in enumerate(results):
+            assert_close(actual, reference(source + shift))
+        if kind in ("row", "gapped"):
+            cotangent = jnp.zeros_like(compiled(source))
+            pullback = lambda cot: jax.vjp(native, source)[1](cot)[0]
+            actual = jax.jit(lambda cot: jax.linear_transpose(pullback, cotangent)(cot)[0])(jnp.ones_like(source))
+            assert_close(actual, reference(jnp.ones_like(source)))
     finally:
-        _set_native_reduction_fiber_parallel_mode_for_tests(None)
-        _set_native_worker_limit_for_tests(None)
-
-    for shift, result in enumerate(results):
-        expected = _execute_serial_native_reduction(
-            source + shift, plan
-        )
-        np.testing.assert_allclose(result, expected, rtol=2e-5, atol=2e-5)
+        if previous is None:
+            enable_threads()
+        else:
+            set_num_threads(previous)
 
 
-def test_structured_reduction_non_cpu_lowering_fails_closed() -> None:
-    plan = _broadcast_plan()
-    source = jax.ShapeDtypeStruct((plan.source_size,), jnp.float32)
-    cotangent = jax.ShapeDtypeStruct((plan.output_size,), jnp.float32)
-    run = jax.jit(
-        lambda value, ct: jax.vjp(
-            lambda item: _native_forward(item, plan),
-            value,
-        )[1](ct)[0]
+@pytest.mark.parametrize("dtype", [jnp.float32, jnp.complex64])
+@pytest.mark.parametrize("output_count", [1, 3, 9, 17])
+def test_reduction_output_rows_and_tails_finite_accuracy(dtype, output_count):
+    rng = np.random.default_rng(20260917)
+    source = rng.standard_normal((127, output_count)).astype(np.float32) / 16
+    if dtype == jnp.complex64:
+        source = source + 1j * source[::-1]
+    storage = jnp.asarray(source.ravel(), dtype=dtype)
+    actual = jax.jit(lambda value: reduce_sum(StridedView(value, source.shape, (output_count, 1), 0), (0,)))(storage)
+    expected = jnp.asarray(source.astype(np.complex128 if dtype == jnp.complex64 else np.float64).sum(axis=0), dtype=dtype)
+    assert_close(actual, expected)
+
+
+@pytest.mark.parametrize("special", [np.inf, np.nan])
+def test_long_reduction_preserves_nonfinite_contributions(special):
+    source = jnp.ones(65536, dtype=jnp.float32).at[32767].set(special)
+    actual = jax.jit(lambda value: reduce_sum(StridedView(value, (65536,), (1,), 0)))(source)
+    if np.isnan(special):
+        assert np.isnan(actual)
+    else:
+        assert np.isposinf(actual)
+
+
+def test_reduction_rank_above_eight_is_not_rejected():
+    shape, strides = (2,) * 9, tuple(3**axis for axis in range(8, -1, -1))
+    source = jnp.arange(sum(strides) + 1, dtype=jnp.float32) % 8
+    actual = jax.jit(lambda value: reduce_sum(StridedView(value, shape, strides, 0), (0, 2, 4, 6, 8)))(source)
+    expected = source[addresses(shape, strides, 0)].sum(axis=(0, 2, 4, 6, 8))
+    assert_close(actual, expected)
+
+
+def test_broadcast_map_transpose_accumulates_and_supports_nested_ad():
+    record = AffineRecord((3, 4), (0, -1), 3, (-1, 3), 2)
+    source = jnp.arange(4, dtype=jnp.float32)
+    native = lambda value: copy_p.bind(value, records=(record,), output_size=12, dtype=value.dtype)
+    reference = lambda value: jnp.zeros(12).at[addresses((3, 4), (-1, 3), 2)].set(value[addresses((3, 4), (0, -1), 3)])
+    native_pullback = lambda cot: jax.vjp(native, source)[1](cot)[0]
+    reference_pullback = lambda cot: jax.vjp(reference, source)[1](cot)[0]
+    cotangent = jnp.arange(36, dtype=jnp.float32).reshape(3, 12) / 4
+    assert_close(jax.jit(jax.vmap(native_pullback))(cotangent), jax.vmap(reference_pullback)(cotangent))
+    assert_close(jax.linear_transpose(native_pullback, cotangent[0])(jnp.ones_like(source))[0],
+                 jax.linear_transpose(reference_pullback, cotangent[0])(jnp.ones_like(source))[0])
+
+
+@pytest.mark.parametrize("invalid,message", [("version", "unsupported native reduction layout version"),
+    ("axes", "axis flag is not boolean"), ("output_shape", "shapes do not match axis roles"),
+    ("dtype", "dtype|element type")])
+def test_reduction_ffi_rejects_invalid_protocol_or_typed_output(invalid, message):
+    layout = encode_reduction_layout(source_shape=(2, 3), source_strides=(3, 1), source_offset=0,
+        output_shape=(2, 1), output_strides=(1, 1), output_offset=0, reduction_axes=(False, True), source_size=6, output_size=2)
+    words = layout.view("<u8")
+    if invalid == "version":
+        words[0] = 99
+    elif invalid == "axes":
+        words[-1] = 2
+    elif invalid == "output_shape":
+        words[12] = 3
+    dtype = jnp.complex64 if invalid == "dtype" else jnp.float32
+    call = jax.ffi.ffi_call(operation_target("reduction", np.dtype(jnp.float32)), jax.ShapeDtypeStruct((1, 2), dtype))
+    with pytest.raises(Exception, match=message):
+        call(jnp.ones((1, 6), dtype=jnp.float32), layout=layout,
+             coefficient_records=np.asarray([], dtype=np.int64)).block_until_ready()
+
+
+def test_reduction_non_cpu_lowering_fails_closed():
+    operation = jax.jit(lambda value: reduce_sum(StridedView(value, (2, 3), (3, 1), 0)))
+    with pytest.raises((RuntimeError, ValueError, NotImplementedError), match="tpu|TPU"):
+        operation.trace(jax.ShapeDtypeStruct((6,), jnp.float32)).lower(lowering_platforms=("tpu",))
+
+
+REDUCTION_DTYPES = (
+    "bool", "int8", "int16", "int32", "int64", "uint8", "uint16", "uint32", "uint64",
+    "float16", "bfloat16", "float32", "float64", "complex64", "complex128",
+)
+
+
+REDUCTION_FIBER = dict(source_shape=(3,), source_strides=(1,), source_offset=0, output_shape=(1,), output_strides=(1,), output_offset=0, reduction_axes=(True,))
+
+
+
+def _encode_reduction_records(records, *, source_size, output_size):
+    """Assemble multi-record protocol fixtures without a production batch API."""
+    header = np.asarray([1, source_size, output_size, len(records)], dtype="<u8").view(np.uint8)
+    payloads = [encode_reduction_layout(**record, source_size=source_size, output_size=output_size)[32:]
+                for record in records]
+    return np.concatenate([header, *payloads])
+
+
+
+def _raw_reduction_call(source, layout, *, shape=(1, 1), dtype="float32", coefficients=(), indices=(), aliases=None):
+    execute = jax.ffi.ffi_call(
+        operation_target("reduction", jnp.dtype(dtype)), jax.ShapeDtypeStruct(shape, dtype),
+        input_output_aliases=aliases,
     )
-
-    with pytest.raises(RuntimeError, match="native_structured_reduction_non_cpu"):
-        run.trace(source, cotangent).lower(lowering_platforms=("tpu",))
+    return execute(source, *coefficients, layout=layout, coefficient_records=np.asarray(indices, dtype=np.int64))
 
 
-@pytest.mark.skipif(not native_available(), reason="native CPU stride unavailable")
-def test_native_reduction_rejects_mutated_descriptor() -> None:
-    plan = _broadcast_plan()
-    compiled = lower_broadcast_transpose(plan)
-    descriptor = bytearray(compiled.descriptor)
-    descriptor[0] ^= 0xFF
-    cotangent = jnp.ones(plan.output_size, dtype=jnp.float32)
-    execute = jax.jit(
-        lambda value: _structured_reduction_ffi_call(
-            value,
-            descriptor=bytes(descriptor),
-            output_size=plan.source_size,
-            output_dtype=jnp.dtype(plan.source_dtype),
-        )
+
+@pytest.mark.parametrize("batch_shape", [(), (2,), (2, 3), (0,), (2, 0)])
+@pytest.mark.parametrize("axes", [None, (), (0,), (1,), (-1,), (1, 0)])
+@pytest.mark.parametrize("shape,strides,offset,storage_size", [
+    ((2, 3), (3, 1), 0, 6),
+    ((2, 3), (1, 2), 1, 8),
+    ((2, 3), (-3, -1), 6, 8),
+    ((2, 3), (0, 1), 1, 4),
+    ((0, 3), (3, 1), 0, 0),
+    ((2, 0), (1, 1), 0, 0),
+])
+def test_public_sum_layout_axes_and_batches(batch_shape, axes, shape, strides, offset, storage_size):
+    source = jnp.arange(prod(batch_shape) * storage_size, dtype=jnp.float32).reshape(
+        (*batch_shape, storage_size))
+    view = StridedView(source, shape, strides, offset)
+    indices = np.asarray([
+        offset + sum(coordinate * stride for coordinate, stride in zip(index, strides))
+        for index in np.ndindex(shape)
+    ], dtype=np.int64).reshape(shape)
+    selected = np.asarray(source)[..., indices]
+    logical_axes = tuple(range(len(shape))) if axes is None else tuple(axis % len(shape) for axis in axes)
+    expected = selected.sum(axis=tuple(len(batch_shape) + axis for axis in logical_axes))
+    for execute in (lambda bound: reduce_sum(bound, axes), jax.jit(lambda bound: reduce_sum(bound, axes))):
+        actual = execute(view)
+        assert actual.shape == expected.shape
+        np.testing.assert_array_equal(actual, expected)
+
+
+
+@pytest.mark.parametrize("x64", [False, True])
+@pytest.mark.parametrize("dtype", [
+    "bool", "int8", "int16", "int32", "int64", "uint8", "uint16", "uint32", "uint64",
+    "float16", "bfloat16", "float32", "float64", "complex64", "complex128",
+])
+def test_public_sum_default_dtype_resolution(dtype, x64):
+    with jax.enable_x64(x64):
+        concrete = jax.dtypes.canonicalize_dtype(jnp.dtype(dtype))
+        source = jnp.asarray([0, 1, 2, 3], dtype=concrete)
+        actual = reduce_sum(StridedView.from_dense(source, (2, 2)))
+        expected = jnp.sum(source)
+        assert actual.dtype == expected.dtype
+        np.testing.assert_array_equal(actual, expected)
+
+
+
+@pytest.mark.parametrize("axes", [None, ()])
+def test_public_sum_scalar_view(axes):
+    source = jnp.asarray([[5, 7, 9], [11, 13, 15]], dtype=jnp.int8)
+    actual = reduce_sum(StridedView(source, (), (), 1), axes)
+    np.testing.assert_array_equal(actual, [7, 13])
+    assert actual.dtype == jnp.sum(source[0, 1]).dtype
+
+
+
+def test_public_sum_real_output_layout(monkeypatch):
+    encode = _jax.encode_reduction_layout
+    captured = []
+
+    def capture(**fields):
+        captured.append(fields)
+        return encode(**fields)
+
+    monkeypatch.setattr(_jax, "encode_reduction_layout", capture)
+    view = StridedView.from_dense(jnp.arange(24, dtype=jnp.float32), (2, 3, 4))
+    actual = reduce_sum(view, (1,))
+    np.testing.assert_array_equal(actual, np.arange(24).reshape(2, 3, 4).sum(axis=1))
+    assert captured[0]["output_shape"] == (2, 1, 4)
+    assert captured[0]["output_strides"] == (4, 4, 1)
+    assert captured[0]["reduction_axes"] == (False, True, False)
+
+
+
+def test_public_sum_dtype_does_not_preconvert_source():
+    view = StridedView.from_dense(jnp.asarray([1.75, 1.75]), (2,))
+    np.testing.assert_array_equal(reduce_sum(view, dtype=jnp.int32), 3)
+    np.testing.assert_array_equal(jnp.sum(view.data, dtype=jnp.int32), 2)
+
+
+
+def test_public_sum_low_precision_uses_native_accumulation():
+    view = StridedView.from_dense(jnp.asarray([2048, 1, -2048], dtype=jnp.float16), (3,))
+    np.testing.assert_array_equal(reduce_sum(view), 0)
+    np.testing.assert_array_equal(jnp.sum(view.data), 1)
+    np.testing.assert_array_equal(reduce_sum(view, dtype=jnp.float32), 1)
+
+
+
+def test_public_sum_empty_axes_do_not_add_zero():
+    view = StridedView.from_dense(jnp.asarray([-0.0], dtype=jnp.float32), (1,))
+    assert np.signbit(np.asarray(reduce_sum(view, ())))[0]
+
+
+
+def test_public_sum_explicit_dtype_respects_x64():
+    with jax.enable_x64(False):
+        view = StridedView.from_dense(jnp.asarray([1, 2], dtype=jnp.float32), (2,))
+        assert reduce_sum(view, dtype=jnp.float64).dtype == jnp.float32
+
+
+
+def test_public_sum_high_rank_singleton_layout():
+    view = StridedView(jnp.asarray([7], dtype=jnp.int32), (1,) * 12, ((1 << 63) - 1,) * 12, 0)
+    np.testing.assert_array_equal(reduce_sum(view), 7)
+
+
+
+def test_public_sum_vmap_and_native_lowering():
+    execute = lambda source: reduce_sum(StridedView.from_dense(source, (2, 3)), (1,))
+    source = jnp.arange(24, dtype=jnp.float32).reshape(4, 2, 3)
+    actual = jax.jit(jax.vmap(execute))(source)
+    np.testing.assert_array_equal(actual, np.asarray(source).sum(axis=2))
+    lowered = str(jax.jit(execute).lower(source[0]).compiler_ir())
+    assert "tensor0_stride_reduction_f32_cpu_v1" in lowered
+
+
+
+@pytest.mark.parametrize("axes,error", [((True,), TypeError), ((0.0,), TypeError),
+                                       ((2,), ValueError), ((-3,), ValueError),
+                                       ((1, -1), ValueError)])
+def test_public_sum_invalid_axes(axes, error):
+    view = StridedView.from_dense(jnp.ones((2, 3)), (2, 3))
+    with pytest.raises(error):
+        reduce_sum(view, axes)
+
+
+
+def test_public_sum_unsupported_calls_fail_explicitly():
+    with pytest.raises(TypeError, match="StridedView"):
+        reduce_sum(jnp.ones(3))
+
+
+
+def test_public_sum_low_precision_complex_result_ad():
+    primal, tangent = jax.jvp(
+        lambda source: reduce_sum(StridedView.from_dense(source, (3,)), dtype="complex64"),
+        (jnp.ones(3, dtype=jnp.float16),), (jnp.ones(3, dtype=jnp.float16),))
+    assert primal.dtype == tangent.dtype == jnp.complex64
+    np.testing.assert_array_equal(primal, 3)
+    np.testing.assert_array_equal(tangent, 3)
+
+
+
+@pytest.mark.parametrize("dtype", REDUCTION_DTYPES)
+@pytest.mark.parametrize("batch_shape", [(), (3,), (2, 3), (0,), (2, 0)])
+@pytest.mark.parametrize("shared", ["scalar", "singleton", "batch"])
+def test_reduction_batches_coefficient_shapes_and_types(dtype, batch_shape, shared):
+    with jax.enable_x64():
+        source = jnp.broadcast_to(jnp.asarray([1, 2, 3], dtype=jnp.float32), (*batch_shape, 3))
+        factors = jnp.asarray(np.arange(prod(batch_shape)).reshape(batch_shape) % 3, dtype=dtype)
+        if shared != "batch":
+            factors = jnp.asarray(1 if shared == "scalar" else [2], dtype=dtype)
+        layout = encode_reduction_layout(**REDUCTION_FIBER, source_size=3, output_size=1)
+        execute = jax.jit(lambda data, coefficient: execute_reduction(
+            data, (coefficient,), coefficient_records=(0,), layout=layout, output_size=1))
+        result = execute(source, factors)
+        expected_factor = np.asarray(factors).reshape(()) if shared != "batch" else np.asarray(factors)
+        expected = np.broadcast_to(6 * expected_factor, batch_shape)[..., None]
+        np.testing.assert_array_equal(result, expected)
+        text = execute.lower(source, factors).as_text()
+        assert text.count("stablehlo.custom_call @tensor0_stride_reduction_f32_cpu_v1") == 1
+
+
+
+def test_reduction_batches_zero_record_preserves_prior_contributions_per_batch():
+    records = tuple(dict(REDUCTION_FIBER, source_shape=(1,), source_offset=index, output_offset=1)
+                    for index in range(3))
+    layout = _encode_reduction_records(records, source_size=3, output_size=3)
+    source = jnp.asarray([[7, np.nan, 3], [7, 2, np.inf], [7, 2, 3]], dtype=jnp.float32)
+    result = execute_reduction(
+        source, (jnp.asarray([0, 1, 2], dtype=jnp.float16), jnp.asarray([1, 0, 2], dtype=jnp.int32)),
+        coefficient_records=(1, 2), layout=layout, output_size=3)
+    np.testing.assert_array_equal(result, [[0, 10, 0], [0, 9, 0], [0, 17, 0]])
+
+
+
+@pytest.mark.parametrize("batch_shape", [(3,), (0,), (2, 0)])
+def test_reduction_batches_empty_reduction_with_per_batch_coefficients(batch_shape):
+    record = dict(REDUCTION_FIBER, source_shape=(0,), output_offset=2)
+    layout = encode_reduction_layout(**record, source_size=0, output_size=3)
+    result = execute_reduction(jnp.zeros((*batch_shape, 0)), (jnp.full(batch_shape, np.nan),),
+                               coefficient_records=(0,), layout=layout, output_size=3)
+    np.testing.assert_array_equal(result, np.zeros((*batch_shape, 3)))
+
+
+
+def test_reduction_batches_invalid_coefficient_batch_shapes():
+    layout = encode_reduction_layout(**dict(REDUCTION_FIBER, source_shape=(1,)), source_size=1, output_size=1)
+    source = jnp.ones((3, 1))
+    for coefficient in (jnp.ones(2), jnp.ones((3, 1)), jnp.ones(0)):
+        with pytest.raises(Exception, match="batch count"):
+            _raw_reduction_call(source, layout, shape=(3, 1), coefficients=(coefficient,), indices=(0,)).block_until_ready()
+
+
+
+@pytest.mark.parametrize("outer_size", [0, 3])
+def test_reduction_batches_outer_vmap_with_shared_storage_batch_coefficients_and_ad(outer_size):
+    factors = jnp.asarray([0, 1, 2], dtype=jnp.float32)
+    source = jnp.ones((outer_size, 3, 3), dtype=jnp.float32)
+
+    def execute(data):
+        return reduction_p.bind(
+            data, factors, coefficient_records=(0,),
+            records=(AffineRecord((3,), (1,), 0, (1,), 0),),
+            output_shapes=((1,),), reduction_axes=((True,),), output_size=1, dtype=data.dtype)
+
+    mapped = jax.vmap(execute)
+    result, tangent = jax.jit(lambda data: jax.jvp(mapped, (data,), (data,)))(source)
+    expected = np.broadcast_to(np.asarray([[0], [3], [6]]), (outer_size, 3, 1))
+    np.testing.assert_array_equal(result, expected)
+    np.testing.assert_array_equal(tangent, expected)
+    gradient = jax.jit(jax.grad(lambda data: mapped(data).sum()))(source)
+    np.testing.assert_array_equal(gradient, np.broadcast_to(np.asarray(factors)[:, None], source.shape))
+
+
+
+def test_reduction_batches_per_batch_fused_rounding_and_reused_coefficient_buffers():
+    layout = encode_reduction_layout(**REDUCTION_FIBER, source_size=3, output_size=1)
+    source = jnp.asarray([[2048, 1, -2048]] * 3, dtype=jnp.float16)
+    execute = jax.jit(lambda data, factors: execute_reduction(
+        data, (factors,), coefficient_records=(0,), layout=layout, output_size=1))
+    for factors, expected in (([0, 1, 1.5], [0, 0, 1.5]), ([1.5, 0, 1], [1.5, 0, 0])):
+        np.testing.assert_array_equal(execute(source, jnp.asarray(factors, dtype=jnp.float32)),
+                                      np.asarray(expected)[:, None])
+
+
+
+REDUCTION_FLOATS = ("float16", "bfloat16", "float32", "float64")
+
+
+
+REDUCTION_MIXED_PAIRS = [(source, result) for source in REDUCTION_FLOATS for result in REDUCTION_FLOATS if source != result] + [
+    ("complex64", "complex128"), ("complex128", "complex64")]
+
+
+
+@pytest.mark.parametrize("source_dtype,result_dtype", REDUCTION_MIXED_PAIRS)
+@pytest.mark.parametrize("batch_shape", [(), (2, 3), (0,), (2, 0)])
+@pytest.mark.parametrize("shape,strides,offset,axes", [((2, 3), (3, -1), 2, (1,)),
+    ((2, 3), (0, 1), 1, None), ((2, 2), (1, 1), 0, (0,)), ((2, 0), (1, 1), 0, (1,))])
+def test_mixed_reduction_reduce_sum_mixed_source_ad(source_dtype, result_dtype, batch_shape, shape, strides, offset, axes):
+    with jax.enable_x64():
+        source = (jnp.arange(prod(batch_shape) * 6, dtype=jnp.float32) % 11 / 8).astype(source_dtype).reshape((*batch_shape, 6))
+        if source_dtype.startswith("complex"):
+            source = source * (1 + .5j)
+        indices = np.asarray([offset + sum(index * stride for index, stride in zip(coordinate, strides))
+                              for coordinate in np.ndindex(shape)], dtype=np.int32).reshape(shape)
+        logical_axes = tuple(range(len(shape))) if axes is None else axes
+        reference_axes = tuple(len(batch_shape) + axis for axis in logical_axes)
+        run = lambda values: reduce_sum(StridedView(values, shape, strides, offset), axes, dtype=result_dtype)
+        oracle = lambda values: jnp.sum(values[..., indices], axis=reference_axes, dtype=result_dtype)
+        tolerance = 8 * max(float(jnp.finfo(source_dtype).eps), float(jnp.finfo(result_dtype).eps))
+        tangent = jnp.ones_like(source)
+        primal, direction = jax.jit(lambda values: jax.jvp(run, (values,), (tangent,)))(source)
+        expected_primal, expected_direction = jax.jvp(oracle, (source,), (tangent,))
+        for actual, expected in ((primal, expected_primal), (direction, expected_direction)):
+            assert actual.dtype == expected.dtype
+            np.testing.assert_allclose(actual, expected, rtol=tolerance, atol=tolerance)
+        cotangent = jnp.full(primal.shape, 1 + .5j if result_dtype.startswith("complex") else 1, dtype=result_dtype)
+        expected = jax.vjp(oracle, source)[1](cotangent)[0]
+        for reverse in (jax.vjp(run, source)[1], jax.linear_transpose(run, source)):
+            actual = jax.jit(reverse)(cotangent)[0]
+            assert actual.dtype == source.dtype
+            np.testing.assert_allclose(actual, expected, rtol=tolerance, atol=tolerance)
+
+
+
+@pytest.mark.parametrize("source_dtype,result_dtype", [("float16", "float32"), ("float32", "float16"),
+    ("float64", "float32"), ("complex64", "complex128"), ("complex128", "complex64")])
+@pytest.mark.parametrize("batch_shape", [(), (2,), (0,)])
+def test_mixed_reduction_multirecord_trace_mixed_source_ad(source_dtype, result_dtype, batch_shape):
+    with jax.enable_x64():
+        inputs = (SimpleNamespace(sizes=(2, 2, 2), strides=(4, 2, 1), offset=0),
+                  SimpleNamespace(sizes=(2, 2, 2), strides=(0, -2, -1), offset=3),
+                  SimpleNamespace(sizes=(2, 0, 0), strides=(1, 1, 1), offset=12))
+        outputs = (SimpleNamespace(sizes=(2,), strides=(1,), offset=1),
+                   SimpleNamespace(sizes=(2,), strides=(-1,), offset=3))
+        source = (jnp.arange(prod(batch_shape) * 12, dtype=jnp.float32) % 7 / 4).astype(source_dtype).reshape((*batch_shape, 12))
+        if source_dtype.startswith("complex"):
+            source = source * (1 + .5j)
+        factor = jnp.asarray(1.5 + .5j if source_dtype.startswith("complex") else 1.5, dtype=source_dtype)
+        second = jnp.float32(-2)
+        run = lambda values: _strided_tensortrace(
+            values, destination_size=5, source_subblocks=inputs, destination_subblocks=outputs,
+            entries=((2, 0, None), (0, 0, None), (1, 1, factor), (0, 1, second)),
+            result_dtype=result_dtype, permutation=(), num_open_out=1, num_open_in=0, trace_count=1)
+        def oracle(values):
+            first = values[..., jnp.asarray([[0, 3], [4, 7]])]
+            repeated = values[..., jnp.asarray([[3, 0], [3, 0]])]
+            result = jnp.zeros((*batch_shape, 5), dtype=result_dtype)
+            result = result.at[..., 1:3].add(jnp.sum(first, axis=-1, dtype=result_dtype))
+            result = result.at[..., jnp.asarray([3, 2])].add(jnp.sum(repeated * factor, axis=-1, dtype=result_dtype))
+            return result.at[..., jnp.asarray([3, 2])].add(jnp.sum(first * second, axis=-1, dtype=result_dtype))
+        tolerance = 8 * max(float(jnp.finfo(source_dtype).eps), float(jnp.finfo(result_dtype).eps))
+        tangent = jnp.ones_like(source)
+        for actual, expected in zip(jax.jit(lambda values: jax.jvp(run, (values,), (tangent,)))(source),
+                                    jax.jvp(oracle, (source,), (tangent,)), strict=True):
+            np.testing.assert_allclose(actual, expected, rtol=tolerance, atol=tolerance)
+        cotangent = jnp.full((*batch_shape, 5), 1 + .5j if result_dtype.startswith("complex") else 1, dtype=result_dtype)
+        actual = jax.jit(jax.vjp(run, source)[1])(cotangent)[0]
+        assert actual.dtype == source.dtype
+        np.testing.assert_allclose(actual, jax.vjp(oracle, source)[1](cotangent)[0], rtol=tolerance, atol=tolerance)
+        text = jax.jit(jax.linear_transpose(run, source)).lower(cotangent).as_text()
+        assert "stride_accumulation_" in text
+        assert "stablehlo.gather" not in text and "stablehlo.scatter" not in text
+
+
+
+def test_mixed_reduction_empty_input_with_nonempty_output_and_zero_tangent():
+    source = jnp.zeros(0, dtype=jnp.float16)
+    run = lambda values: reduce_sum(StridedView(values, (2, 0), (1, 1), 0), (1,), dtype=jnp.float32)
+    np.testing.assert_array_equal(run(source), [0, 0])
+    gradient = jax.vjp(run, source)[1](jnp.asarray([jnp.nan, jnp.inf]))[0]
+    assert gradient.shape == (0,) and gradient.dtype == source.dtype
+    _, tangent = jax.jvp(lambda values: run(jax.lax.stop_gradient(values)), (source,), (source,))
+    np.testing.assert_array_equal(tangent, [0, 0])
+
+
+
+def test_mixed_reduction_outer_vmap_and_nested_derivatives():
+    source = (jnp.arange(10, dtype=jnp.float32) / 4).astype(jnp.float16).reshape(2, 5)
+    run = jax.vmap(lambda values: reduce_sum(StridedView(values, (2, 3), (1, 1), 0), (1,), dtype=jnp.float32))
+    oracle = lambda values: jnp.sum(values[..., jnp.asarray([[0, 1, 2], [1, 2, 3]])], axis=-1, dtype=jnp.float32)
+    cotangent = jnp.ones((2, 2), dtype=jnp.float32)
+    reverse = lambda values: jax.linear_transpose(run, source)(values)[0]
+    np.testing.assert_allclose(jax.jit(reverse)(cotangent), jax.vjp(oracle, source)[1](cotangent)[0], rtol=1e-3, atol=1e-3)
+    np.testing.assert_allclose(jax.jit(jax.linear_transpose(reverse, cotangent))(jnp.ones_like(source))[0],
+                               oracle(jnp.ones_like(source)), rtol=1e-3, atol=1e-3)
+    actual = jax.jacfwd(jax.grad(lambda values: jnp.sum(run(values)**2)))(source)
+    expected = jax.jacfwd(jax.grad(lambda values: jnp.sum(oracle(values)**2)))(source)
+    np.testing.assert_allclose(actual, expected, rtol=1e-3, atol=1e-3)
+
+
+
+def test_mixed_reduction_reverse_product_range_and_coefficient_ad_boundary():
+    with jax.enable_x64():
+        source = jnp.asarray([.001], dtype=jnp.float64)
+        record = AffineRecord((1,), (1,), 0, (1,), 0)
+        def execute(values, factor):
+            return reduction_p.bind(values, factor, records=(record,), output_shapes=((1,),),
+                reduction_axes=((True,),), coefficient_records=(0,), output_size=1, dtype=jnp.dtype("float16"))
+        run = lambda values: execute(values, jnp.float16(1000))
+        actual = jax.jit(jax.vjp(run, source)[1])(jnp.asarray([1000], dtype=jnp.float16))[0]
+        assert actual.dtype == source.dtype
+        np.testing.assert_allclose(actual, [1_000_000], rtol=1e-14, atol=0)
+        _, tangent = jax.jvp(lambda factor: execute(source, factor), (jnp.float16(2),), (jnp.float16(1),))
+        np.testing.assert_array_equal(tangent, source.astype(jnp.float16))
+
+
+
+def test_mixed_reduction_batch_coefficients_and_zero_one_branches():
+    source = jnp.ones((3, 4), dtype=jnp.float16)
+    record = AffineRecord((2, 2), (1, 1), 0, (1, 1), 1)
+    factors = jnp.asarray([0, 1, 2], dtype=jnp.float32)
+    def execute(values, coefficients):
+        return reduction_p.bind(values, coefficients, records=(record,), output_shapes=((2, 1),),
+            reduction_axes=((False, True),), coefficient_records=(0,), output_size=4, dtype=jnp.dtype("float32"))
+    run = lambda values: execute(values, factors)
+    cotangent = jnp.asarray([[jnp.nan, 1, 2, jnp.nan]] * 3, dtype=jnp.float32)
+    actual = jax.jit(jax.vjp(run, source)[1])(cotangent)[0]
+    assert actual.dtype == source.dtype
+    np.testing.assert_allclose(actual, [[0, 0, 0, 0], [1, 3, 2, 0], [2, 6, 4, 0]], rtol=1e-3, atol=1e-3)
+    source_rows = jnp.stack((source, source * 2))
+    factor_rows = jnp.stack((factors, factors))
+    mapped = jax.vmap(execute)
+    expected = jnp.stack((run(source), run(source * 2)))
+    np.testing.assert_allclose(jax.jit(mapped)(source_rows, factor_rows), expected, rtol=1e-3, atol=1e-3)
+    _, tangent = jax.jvp(run, (source,), (jnp.full_like(source, jnp.inf),))
+    np.testing.assert_array_equal(tangent[0], [0, 0, 0, 0])
+    gradient = jax.linear_transpose(run, source)(jnp.full((3, 4), jnp.inf, dtype=jnp.float32))[0]
+    np.testing.assert_array_equal(gradient[0], [0, 0, 0, 0])
+    assert jnp.all(jnp.isposinf(gradient[1, :3]))
+    assert gradient[1, 3] == 0
+
+
+
+@pytest.mark.parametrize("source_dtype,result_dtype", [("float32", "int32")])
+def test_mixed_reduction_discrete_result_has_zero_tangent(source_dtype, result_dtype):
+    source = jnp.ones(2, dtype=source_dtype)
+    result, tangent = jax.jvp(
+        lambda values: reduce_sum(StridedView(values, (2,), (1,), 0), dtype=result_dtype),
+        (source,), (source,))
+    np.testing.assert_array_equal(result, 2)
+    assert tangent.dtype == jax.dtypes.float0 and tangent.shape == result.shape
+
+
+def test_packed_trace_multi_record_protocol_assembly():
+    first = encode_reduction_layout(
+        source_shape=(2,), source_strides=(1,), source_offset=0,
+        output_shape=(1,), output_strides=(1,), output_offset=1,
+        reduction_axes=(True,), source_size=4, output_size=3)
+    second = encode_reduction_layout(
+        source_shape=(), source_strides=(), source_offset=3,
+        output_shape=(), output_strides=(), output_offset=2,
+        reduction_axes=(), source_size=4, output_size=3)
+    merged = merge_reduction_layouts((first, second), source_size=4, output_size=3)
+    expected = [1, 4, 3, 2, 1, 0, 1, 2, 1, 1, 1, 1, 0, 3, 2]
+    assert merged.tobytes() == b"".join(word.to_bytes(8, "little") for word in expected)
+    np.testing.assert_array_equal(merge_reduction_layouts((first,), source_size=4, output_size=3), first)
+    empty = merge_reduction_layouts((), source_size=4, output_size=3)
+    np.testing.assert_array_equal(empty.view("<u8"), [1, 4, 3, 0])
+    with pytest.raises(ValueError, match="matching storage sizes"):
+        merge_reduction_layouts((first,), source_size=5, output_size=3)
+    with pytest.raises(ValueError, match="single-record"):
+        merge_reduction_layouts((merged,), source_size=4, output_size=3)
+
+@pytest.mark.parametrize("batch_shape", [(), (2,), (2, 3), (0,), (2, 0)])
+def test_packed_trace_real_trace_subblocks_coefficients_and_batches(batch_shape, monkeypatch):
+    inputs = (
+        SimpleNamespace(sizes=(2, 2, 2), strides=(4, 2, 1), offset=0),
+        SimpleNamespace(sizes=(2, 3, 3), strides=(9, 3, 1), offset=8),
     )
+    outputs = (SimpleNamespace(sizes=(2,), strides=(1,), offset=0),
+               SimpleNamespace(sizes=(2,), strides=(1,), offset=1))
+    source = jnp.arange(prod(batch_shape) * 26, dtype=jnp.float32).reshape((*batch_shape, 26))
+    captured = []
+    encode = _jax.encode_reduction_layout
 
-    with pytest.raises(Exception, match="reduction descriptor header mismatch"):
-        execute(cotangent).block_until_ready()
+    def capture(**fields):
+        captured.append(fields)
+        return encode(**fields)
 
+    monkeypatch.setattr(_jax, "encode_reduction_layout", capture)
 
-@pytest.mark.skipif(not native_available(), reason="native CPU stride unavailable")
-def test_native_reduction_rejects_typed_target_mismatch() -> None:
-    plan = _broadcast_plan()
-    compiled = lower_broadcast_transpose(plan)
-    cotangent = jnp.ones(plan.output_size, dtype=jnp.float32)
-    execute = jax.jit(
-        lambda value: _structured_reduction_ffi_call(
-            value,
-            descriptor=compiled.descriptor,
-            output_size=plan.source_size,
-            output_dtype=jnp.dtype(jnp.complex64),
-        )
+    def execute(data, half, integer):
+        return _strided_tensortrace(
+            data, destination_size=4, source_subblocks=inputs, destination_subblocks=outputs,
+            entries=((0, 0, None), (1, 1, half), (0, 1, integer)), result_dtype=jnp.float32,
+            permutation=(), num_open_out=1, num_open_in=0, trace_count=1)
+
+    compiled = jax.jit(execute)
+    first = np.trace(np.asarray(source)[..., :8].reshape((*batch_shape, 2, 2, 2)), axis1=-2, axis2=-1)
+    second = np.trace(np.asarray(source)[..., 8:].reshape((*batch_shape, 2, 3, 3)), axis1=-2, axis2=-1)
+    for half in (.5, 1.5):
+        expected = np.zeros((*batch_shape, 4), dtype=np.float32)
+        expected[..., :2] += first
+        expected[..., 1:3] += half * second + 2 * first
+        np.testing.assert_array_equal(compiled(source, jnp.float32(half), jnp.int32(2)), expected)
+    assert captured[0]["source_shape"] == (2, 2)
+    assert captured[0]["source_strides"] == (4, 3)
+    assert captured[0]["output_shape"] == (2, 1)
+    assert captured[0]["output_strides"] == (1, 1)
+    assert all("coefficient" not in fields for fields in captured)
+    expected_records = (
+        ((2, 2), (4, 3), 0, 0),
+        ((2, 3), (9, 4), 8, 1),
+        ((2, 2), (4, 3), 0, 1),
     )
+    assert len(captured) == len(expected_records)
+    for fields, (shape, strides, source_offset, output_offset) in zip(captured, expected_records, strict=True):
+        assert fields == dict(source_shape=shape, source_strides=strides, source_offset=source_offset,
+                             output_shape=(2, 1), output_strides=(1, 1), output_offset=output_offset,
+                             reduction_axes=(False, True), source_size=26, output_size=4)
+    assert "tensor0_stride_reduction_f32_cpu_v1" in compiled.lower(
+        source, jnp.float32(.5), jnp.int32(2)).as_text()
 
-    with pytest.raises(Exception, match="dtype does not match typed target"):
-        execute(cotangent).block_until_ready()
+@pytest.mark.parametrize("permutation", [(), (5, 2, 0, 4, 1, 3)])
+def test_packed_trace_two_pairs_with_open_input_and_output(permutation):
+    canonical_shape = (2, 2, 3, 2, 2, 3)
+    shape = canonical_shape if not permutation else tuple(
+        canonical_shape[permutation.index(axis)] for axis in range(6))
+    dense = np.arange(prod(shape), dtype=np.float32).reshape(shape)
+    canonical = dense if not permutation else dense.transpose(permutation)
+    expected = np.einsum("oabjab->oj", canonical)
+    source = jnp.asarray(dense.reshape(-1))
+    actual = _strided_tensortrace(
+        source, destination_size=6,
+        source_subblocks=(SimpleNamespace(sizes=shape, strides=contiguous_strides(shape), offset=0),),
+        destination_subblocks=(SimpleNamespace(sizes=(2, 2), strides=(2, 1), offset=1),),
+        entries=((0, 0, 1),), result_dtype=jnp.float32, permutation=permutation,
+        num_open_out=1, num_open_in=1, trace_count=2)
+    np.testing.assert_array_equal(actual, np.concatenate(([0], expected.reshape(-1), [0])))
 
+@pytest.mark.parametrize("strides,offset,storage_size", [((-2, -1), 3, 4), ((0, 0), 0, 1)])
+def test_packed_trace_signed_and_broadcast_trace(strides, offset, storage_size):
+    source = jnp.arange(1, storage_size + 1, dtype=jnp.float32)
+    actual = _strided_tensortrace(
+        source, destination_size=3,
+        source_subblocks=(SimpleNamespace(sizes=(2, 2), strides=strides, offset=offset),),
+        destination_subblocks=(SimpleNamespace(sizes=(), strides=(), offset=1),),
+        entries=((0, 0, 2),), result_dtype=jnp.float32, permutation=(),
+        num_open_out=0, num_open_in=0, trace_count=1)
+    expected = 2 * (source[offset] + source[offset + sum(strides)])
+    np.testing.assert_array_equal(actual, [0, expected, 0])
 
-def test_all_rank_two_native_reduction_descriptors_compile() -> None:
-    for broadcast_axes in ((0,), (1,), (0, 1)):
-        map_count = 2 - len(broadcast_axes)
-        for source_signs in product((-1, 1), repeat=map_count):
-            for destination_fastest in permutations(range(2)):
-                for destination_signs in product((-1, 1), repeat=2):
-                    plan = _broadcast_plan(
-                        broadcast_axes=broadcast_axes,
-                        source_signs=source_signs,
-                        destination_fastest=destination_fastest,
-                        destination_signs=destination_signs,
-                    )
-                    compiled = lower_broadcast_transpose(plan)
-                    assert compiled.semantic.records[0].reduction_axes == broadcast_axes
+@pytest.mark.parametrize("batch_shape", [(), (2, 3), (0,)])
+@pytest.mark.parametrize("entries", [(), ((0, 0, None),)])
+def test_packed_trace_empty_input_and_entries(batch_shape, entries):
+    actual = _strided_tensortrace(
+        jnp.zeros((*batch_shape, 0)), destination_size=3,
+        source_subblocks=(SimpleNamespace(sizes=(0, 0), strides=(1, 1), offset=0),),
+        destination_subblocks=(SimpleNamespace(sizes=(), strides=(), offset=2),),
+        entries=iter(entries), result_dtype=jnp.float32, permutation=(),
+        num_open_out=0, num_open_in=0, trace_count=1)
+    np.testing.assert_array_equal(actual, np.zeros((*batch_shape, 3)))
+
+def test_packed_trace_numeric_contract_and_coefficient_types():
+    with jax.enable_x64():
+        source = jnp.asarray([16777217], dtype=jnp.int32)
+        np.testing.assert_array_equal(scalar_trace(source, (None,), jnp.int64), [16777217])
+        np.testing.assert_array_equal(scalar_trace(source, (jnp.float32(1),), jnp.int64), [16777217])
+        source = jnp.asarray([-1, 1], dtype=jnp.float32)
+        np.testing.assert_array_equal(scalar_trace(source, (None, jnp.float64(1 + 2**-24)), jnp.float32), [2**-24])
+        source = jnp.asarray([1e30, np.inf], dtype=jnp.float32)
+        np.testing.assert_array_equal(scalar_trace(source, (None, 1e-46), jnp.float32), source[:1])
+        source = jnp.asarray([1, 1e20, -1e20], dtype=jnp.float32)
+        np.testing.assert_array_equal(scalar_trace(source, (None,) * 3, jnp.float32), [0])
+
+def test_packed_trace_vmap_and_ad_boundary():
+    execute = lambda source, factor: scalar_trace(source, (factor,), jnp.float32)
+    np.testing.assert_array_equal(jax.jit(jax.vmap(execute))(
+        jnp.asarray([[2.], [3.]]), jnp.asarray([3., 4.])), [[6], [12]])
+    np.testing.assert_array_equal(
+        jax.grad(lambda source: execute(source, jnp.float32(2)).sum())(jnp.ones(1)), [2])
+    np.testing.assert_array_equal(jax.grad(lambda factor: execute(jnp.ones(1), factor).sum())(jnp.float32(2)), 1)
+
+def test_packed_trace_zero_output_storage():
+    actual = _strided_tensortrace(
+        jnp.zeros((2, 0)), destination_size=0,
+        source_subblocks=(SimpleNamespace(sizes=(0, 2, 2), strides=(4, 2, 1), offset=0),),
+        destination_subblocks=(SimpleNamespace(sizes=(0,), strides=(1,), offset=0),),
+        entries=((0, 0, jnp.float32(2)),), result_dtype=jnp.float32, permutation=(),
+        num_open_out=1, num_open_in=0, trace_count=1)
+    assert actual.shape == (2, 0)
+
+def test_packed_trace_empty_record_keeps_original_coefficient_index():
+    actual = _strided_tensortrace(
+        jnp.asarray([2], dtype=jnp.int32), destination_size=1,
+        source_subblocks=(SimpleNamespace(sizes=(0, 0), strides=(1, 1), offset=0),
+                          SimpleNamespace(sizes=(1, 1), strides=(1, 1), offset=0)),
+        destination_subblocks=(SimpleNamespace(sizes=(), strides=(), offset=0),),
+        entries=((0, 0, None), (1, 0, jnp.int32(3))), result_dtype=jnp.int32,
+        permutation=(), num_open_out=0, num_open_in=0, trace_count=1)
+    np.testing.assert_array_equal(actual, [6])
+
+@pytest.mark.parametrize("change,message", [
+    ({"trace_count": -1}, "counts"), ({"permutation": (0, 0)}, "permutation"),
+    ({"entries": ((-1, 0, None),)}, "index"), ({"entries": ((0, 1, None),)}, "index"),
+    ({"entries": ((0, 0, jnp.ones(1)),)}, "scalars"),
+    ({"source_subblocks": (SimpleNamespace(sizes=(2, 3), strides=(3, 1), offset=0),)}, "sizes"),
+    ({"source_subblocks": (SimpleNamespace(sizes=(2,), strides=(1,), offset=0),)}, "rank"),
+    ({"destination_subblocks": (SimpleNamespace(sizes=(1,), strides=(1,), offset=0),)}, "shape"),
+    ({"source_subblocks": (SimpleNamespace(sizes=(2, 2), strides=(2**63 - 1,) * 2, offset=0),)}, "strides"),
+])
+def test_packed_trace_invalid_trace_layout_and_coefficients(change, message):
+    arguments = dict(destination_size=1,
+                     source_subblocks=(SimpleNamespace(sizes=(2, 2), strides=(2, 1), offset=0),),
+                     destination_subblocks=(SimpleNamespace(sizes=(), strides=(), offset=0),),
+                     entries=((0, 0, None),), result_dtype=jnp.float32, permutation=(),
+                     num_open_out=0, num_open_in=0, trace_count=1)
+    with pytest.raises(ValueError, match=message):
+        _strided_tensortrace(jnp.ones(4), **(arguments | change))

@@ -1,533 +1,239 @@
+"""Address encoding and operation-specific layout boundaries."""
+
 from __future__ import annotations
 
-from collections.abc import Callable
+from dataclasses import fields
 import hashlib
-from itertools import permutations
+from itertools import permutations, product
 from math import prod
 from pathlib import Path
-import sys
 import tomllib
-from typing import Any
 
 import jax.numpy as jnp
+import numpy as np
 import pytest
 
-from tensor0._stride._plan import (
-    CompleteMode,
-    AffinePlan,
-    AffineRecord,
-    StridedOutputInit,
-    StridedReductionKind,
-    StridedScalarKind,
-    StridedWriteKind,
-)
-from tensor0._stride._map import _execute_map
-from tensor0._stride._native_descriptor import (
-    AFFINE_DESCRIPTOR_MAGIC,
-    AFFINE_DESCRIPTOR_VERSION,
-    lower_plan,
-)
-from tensor0._stride._plan import (
-    PlanValidationError,
-    _DTYPE_C64,
-    _DTYPE_F32,
-    build_affine_plan,
-    transpose_plan,
-)
-from tensor0._stride._ops._selected_scale import build_selected_scale_plan
-from tensor0._stride._ops._update_support import build_base_accumulate_plan, build_base_assign_plan
+from tensor0._stride._ffi._calls import execute_accumulation, execute_copy, execute_reduction, execute_update
+from tensor0._stride._ffi._descriptor import encode_layout, encode_reduction_layout, merge_reduction_layouts
+from tensor0._stride._layout import AffineRecord, INT64_MAX
 
-from ._fixtures import (
-    contiguous_dtype_plan,
-    two_record_noncompact_plan,
-    u1_three_record_plan,
-    u1_two_record_plan,
-)
-from ._oracle import enumerate_addresses
+from ._support import native_available
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _VENDORED_FFI_FILE_HASHES = {
-    "include/xla/ffi/api/api.h": (
-        "7f76572a80ed2097e5924e6d02d84891c725300172280bd009c0a7c9ac7961eb"
-    ),
-    "include/xla/ffi/api/c_api.h": (
-        "85fc385c2d3a6b539a05b9cf4c3535aa24b4b41040f9e111c1f2c11b0e2fa539"
-    ),
-    "include/xla/ffi/api/ffi.h": (
-        "4e4a1d8f9825e88e15a2bcbb7c08eb6233f020b952cab5bbbb8510e3017515c5"
-    ),
-    "LICENSE.txt": (
-        "e3d8688a2c75d4e33641cc88046a8a1593ee79822411fa45a7bd32e37f847d29"
-    ),
+    "include/xla/ffi/api/api.h": "7f76572a80ed2097e5924e6d02d84891c725300172280bd009c0a7c9ac7961eb",
+    "include/xla/ffi/api/c_api.h": "85fc385c2d3a6b539a05b9cf4c3535aa24b4b41040f9e111c1f2c11b0e2fa539",
+    "include/xla/ffi/api/ffi.h": "4e4a1d8f9825e88e15a2bcbb7c08eb6233f020b952cab5bbbb8510e3017515c5",
+    "LICENSE.txt": "e3d8688a2c75d4e33641cc88046a8a1593ee79822411fa45a7bd32e37f847d29",
 }
+requires_native = pytest.mark.skipif(not native_available(), reason="native CPU stride unavailable")
+U1_LAYOUTS = [
+    ((AffineRecord((1, 1, 1), (1, 1, 1), 0, (1, 1, 1), 0),
+      AffineRecord((2, 2, 1), (1, 2, 1), 1, (2, 1, 1), 1)), 5),
+    ((AffineRecord((12, 16, 8), (8, 96, 1), 0, (256, 8, 1), 0),
+      AffineRecord((12, 16, 8), (8, 96, 1), 1536, (256, 8, 1), 128),
+      AffineRecord((12, 16, 8), (8, 96, 1), 3072, (128, 8, 1), 3072)), 4608),
+]
 
 
-def _compact_strides(
-    shape: tuple[int, ...],
-    axes_fastest_first: tuple[int, ...],
-) -> tuple[int, ...]:
+def compact_strides(shape, order):
     strides = [0] * len(shape)
-    expected = 1
-    for axis in axes_fastest_first:
-        strides[axis] = expected
-        expected *= shape[axis]
+    stride = 1
+    for axis in order:
+        strides[axis] = stride
+        stride *= shape[axis]
     return tuple(strides)
 
 
-def _single_plan(
-    shape: tuple[int, ...],
-    source_order: tuple[int, ...],
-    destination_order: tuple[int, ...],
-) -> AffinePlan:
-    size = prod(shape)
-    record = AffineRecord(
-        shape,
-        _compact_strides(shape, source_order),
-        0,
-        _compact_strides(shape, destination_order),
-        0,
-        -1.25,
-    )
-    return build_affine_plan(
-        records=(record,),
-        output_size=size,
-        coverage=CompleteMode.COMPLETE_UNIQUE,
-        source_size=size,
-        source_dtype=jnp.float32,
-        result_dtype=jnp.float32,
-    )
+def addresses(shape, strides, offset):
+    return np.asarray([offset + sum(index * stride for index, stride in zip(coordinates, strides, strict=True))
+                       for coordinates in product(*(range(extent) for extent in shape))], dtype=np.int64)
 
 
-def test_noncompact_multi_record_plan_binds_and_lowers_compactly() -> None:
-    bound = two_record_noncompact_plan()
-    lowered = lower_plan(bound)
-
-    assert bound.source_size == 16
-    assert bound.output_size == 16
-    assert bound.mapped_elements == 16
-    assert len(lowered.descriptor) < 1_024
-    assert len(lowered.descriptor) == 8 * len(lowered.words)
+def reduction_layout(source_shape=(4, 3), output_shape=(1, 3), output_strides=(3, 1),
+                     source_offset=0, source_size=12, output_size=3):
+    return encode_reduction_layout(source_shape=source_shape, source_strides=(3, 1), source_offset=source_offset,
+        output_shape=output_shape, output_strides=output_strides, output_offset=0,
+        reduction_axes=(True, False), source_size=source_size, output_size=output_size)
 
 
-def test_lowering_emits_one_semantic_affine_descriptor() -> None:
-    bound = contiguous_dtype_plan(jnp.float32, 1.25, size=6)
-
-    lowered = lower_plan(bound)
-
-    expected_words = (
-        AFFINE_DESCRIPTOR_MAGIC,
-        AFFINE_DESCRIPTOR_VERSION,
-        22,
-        6,
-        6,
-        6,
-        1,
-        1,
-        1,
-        1,
-        1,
-        0,
-        1,
-        0,
-        0,
-        0x3FA00000,
-        0,
-        0,
-        1,
-        6,
-        1,
-        1,
-    )
-    assert lowered.words == expected_words
-    assert lowered.descriptor == b"".join(
-        word.to_bytes(8, "little") for word in lowered.words
-    )
+def test_noncompact_records_encode_only_addresses():
+    records = (AffineRecord((4, 2), (4, 1), 0, (4, 1), 2), AffineRecord((4, 2), (4, 1), 2, (4, 1), 0))
+    layout = encode_layout(records, source_size=16, output_size=16)
+    assert tuple(field.name for field in fields(AffineRecord)) == (
+        "logical_shape", "source_strides", "source_offset", "destination_strides", "destination_offset")
+    np.testing.assert_array_equal(layout, [1, 16, 16, 2, 2, 0, 2, 4, 2, 4, 1, 4, 1,
+                                         2, 2, 0, 4, 2, 4, 1, 4, 1])
+    assert layout.dtype == np.int64 and layout.nbytes == 8 * layout.size
+    assert layout.nbytes < 1024
 
 
-def test_mixed_lowering_encodes_true_operand_and_scalar_policies() -> None:
-    forward = build_affine_plan(
-        records=(AffineRecord((4,), (1,), 0, (1,), 0, 1.0 + 2.0j),),
-        output_size=4,
-        coverage=CompleteMode.COMPLETE_UNIQUE,
-        source_size=4,
-        source_dtype=jnp.float32,
-        result_dtype=jnp.complex64,
-    )
-    reverse = transpose_plan(forward)
-
-    forward_execution = lower_plan(forward)
-    reverse_execution = lower_plan(reverse)
-
-    assert forward_execution.semantic is forward
-    assert forward_execution.words[8:12] == (_DTYPE_F32, _DTYPE_C64, 1, 0)
-    assert reverse_execution.semantic is reverse
-    assert reverse_execution.words[8:12] == (_DTYPE_C64, _DTYPE_F32, 2, 0)
+def test_single_record_encoding_is_deterministic_without_array_identity():
+    first = AffineRecord((6,), (1,), 0, (1,), 0)
+    second = AffineRecord((6,), (1,), 0, (1,), 0)
+    assert first == second and hash(first) == hash(second)
+    first_layout = encode_layout((first,), source_size=6, output_size=6)
+    second_layout = encode_layout((second,), source_size=6, output_size=6)
+    np.testing.assert_array_equal(first_layout, [1, 6, 6, 1, 1, 0, 0, 6, 1, 1])
+    assert first_layout.tobytes() == second_layout.tobytes()
 
 
-@pytest.mark.parametrize("dtype", [
-    "bool", "int8", "uint8", "int16", "uint16", "int32", "uint32",
-    "int64", "uint64", "float16", "bfloat16", "float32", "float64",
-    "complex64", "complex128",
-])
-def test_scalar_descriptor_words_preserve_width_and_component_order(dtype):
-    from tensor0._stride._native_descriptor import _descriptor_scale_words
-
-    scalar_dtype = jnp.dtype(dtype)
-    payload = bytes(range(scalar_dtype.itemsize))
-    first, second = _descriptor_scale_words(payload, scalar_dtype)
-    if jnp.issubdtype(scalar_dtype, jnp.complexfloating):
-        width = scalar_dtype.itemsize // 2
-        actual = first.to_bytes(width, "little") + second.to_bytes(width, "little")
-    else:
-        actual = first.to_bytes(scalar_dtype.itemsize, "little")
-        assert second == 0
-    assert actual == payload
-    for invalid in (payload[:-1], payload + b"\x00"):
-        with pytest.raises(ValueError, match="scale must contain"):
-            _descriptor_scale_words(invalid, scalar_dtype)
-
-
-def test_scalar_descriptor_words_reject_unsupported_dtype():
-    from tensor0._stride._native_descriptor import _descriptor_scale_words
-
-    with pytest.raises(ValueError, match="does not support"):
-        _descriptor_scale_words(bytes(4), jnp.dtype("V4"))
-
-
-def test_vendored_ffi_headers_and_license_match_frozen_hashes() -> None:
-    vendor_root = (
-        _REPO_ROOT / "crates" / "tensor0-py" / "vendor" / "jaxlib-0.10.1"
-    )
+def test_vendored_ffi_headers_and_license_match_frozen_hashes():
+    vendor_root = _REPO_ROOT / "crates" / "tensor0-py" / "vendor" / "jaxlib-0.10.1"
     for relative_path, expected in _VENDORED_FFI_FILE_HASHES.items():
-        actual = hashlib.sha256(
-            (vendor_root / relative_path).read_bytes()
-        ).hexdigest()
-        assert actual == expected
-
-    packaged_license = (
-        _REPO_ROOT / "src" / "tensor0" / "_licenses" / "JAXLIB_FFI_LICENSE.txt"
-    )
-    assert hashlib.sha256(packaged_license.read_bytes()).hexdigest() == (
-        _VENDORED_FFI_FILE_HASHES["LICENSE.txt"]
-    )
+        assert hashlib.sha256((vendor_root / relative_path).read_bytes()).hexdigest() == expected
+    packaged_license = _REPO_ROOT / "src" / "tensor0" / "_licenses" / "JAXLIB_FFI_LICENSE.txt"
+    assert hashlib.sha256(packaged_license.read_bytes()).hexdigest() == _VENDORED_FFI_FILE_HASHES["LICENSE.txt"]
 
 
-def test_declared_jax_runtime_matches_vendored_ffi_version() -> None:
+def test_declared_jax_runtime_matches_vendored_ffi_version():
     project = tomllib.loads((_REPO_ROOT / "pyproject.toml").read_text())
     dependencies = set(project["project"]["dependencies"])
     build_script = (_REPO_ROOT / "crates" / "tensor0-py" / "build.rs").read_text()
-
     assert "jax==0.10.1" in dependencies
     assert "jaxlib==0.10.1" in dependencies
     assert 'const VENDORED_JAX_VERSION: &str = "0.10.1";' in build_script
     assert 'const VENDORED_JAXLIB_VERSION: &str = "0.10.1";' in build_script
 
 
-def test_all_small_compact_axis_orders_preserve_exact_address_sets() -> None:
-    for shape in ((), (2,), (2, 3), (2, 3, 2), (2, 2, 2, 2)):
-        rank = len(shape)
-        orders = tuple(permutations(range(rank)))
-        for source_order in orders:
-            for destination_order in orders:
-                bound = _single_plan(shape, source_order, destination_order)
-                source_addresses = enumerate_addresses(
-                    bound.records[0],
-                    "source",
-                )
-                destination_addresses = enumerate_addresses(
-                    bound.records[0],
-                    "destination",
-                )
-                expected = list(range(prod(shape)))
-                assert sorted(source_addresses) == expected
-                assert sorted(destination_addresses) == expected
+@pytest.mark.parametrize("shape", [(), (2,), (2, 3), (2, 3, 2), (2, 2, 2, 2)])
+def test_compact_axis_orders_preserve_addresses_in_encoding(shape):
+    rank, size = len(shape), prod(shape)
+    for source_order, destination_order in product(permutations(range(rank)), repeat=2):
+        source_strides = compact_strides(shape, source_order)
+        destination_strides = compact_strides(shape, destination_order)
+        record = AffineRecord(shape, source_strides, 0, destination_strides, 0)
+        layout = encode_layout((record,), source_size=size, output_size=size)
+        np.testing.assert_array_equal(layout[7:7 + rank], shape)
+        np.testing.assert_array_equal(layout[7 + rank:7 + 2 * rank], source_strides)
+        np.testing.assert_array_equal(layout[7 + 2 * rank:], destination_strides)
+        for strides in (source_strides, destination_strides):
+            np.testing.assert_array_equal(np.sort(addresses(shape, strides, 0)), np.arange(size))
 
 
-def test_descriptor_size_depends_on_rank_not_logical_elements() -> None:
-    small = _single_plan((2, 3), (1, 0), (0, 1))
-    large = _single_plan((200, 300), (1, 0), (0, 1))
-
-    small_lowered = lower_plan(small)
-    large_lowered = lower_plan(large)
-
-    assert len(small_lowered.words) == len(large_lowered.words)
-    assert len(small_lowered.descriptor) == len(large_lowered.descriptor)
-    assert lower_plan(small) == small_lowered
+def test_descriptor_size_depends_on_rank_not_element_count():
+    small = encode_layout((AffineRecord((2, 3), (3, 1), 0, (1, 2), 0),), source_size=6, output_size=6)
+    large = encode_layout((AffineRecord((200, 300), (300, 1), 0, (1, 200), 0),), source_size=60000, output_size=60000)
+    assert small.size == large.size == 13
+    assert small.nbytes == large.nbytes
 
 
-def test_semantic_and_native_call_keys_exclude_array_identity() -> None:
-    first = _single_plan((2, 3, 2), (2, 0, 1), (1, 2, 0))
-    second = _single_plan((2, 3, 2), (2, 0, 1), (1, 2, 0))
-
-    assert first == second
-    assert hash(first) == hash(second)
-    assert lower_plan(first) == lower_plan(second)
-    assert hash(lower_plan(first)) == hash(lower_plan(second))
-
-
-def test_operation_policy_is_semantic_but_not_affine_execution_identity() -> None:
-    fresh = contiguous_dtype_plan(jnp.float32, None, size=6)
-    assign = build_base_assign_plan(fresh)
-    accumulate = build_base_accumulate_plan(fresh)
-    dynamic_scale = build_selected_scale_plan(fresh)
-
-    assert fresh.output_init is StridedOutputInit.UNINITIALIZED
-    assert fresh.write_kind is StridedWriteKind.ASSIGN
-    assert fresh.scalar_kind is StridedScalarKind.STATIC_SCALE_CAST
-    assert fresh.reduction_kind is StridedReductionKind.NONE
-    assert assign.output_init is StridedOutputInit.PRESERVE_BASE
-    assert assign.write_kind is StridedWriteKind.ASSIGN
-    assert accumulate.output_init is StridedOutputInit.PRESERVE_BASE
-    assert accumulate.write_kind is StridedWriteKind.ACCUMULATE
-    assert dynamic_scale.output_init is StridedOutputInit.PRESERVE_BASE
-    assert dynamic_scale.scalar_kind is StridedScalarKind.DYNAMIC_SCALE
-
-    assert (
-        len(
-            {
-                plan.semantic_key
-                for plan in (fresh, assign, accumulate, dynamic_scale)
-            }
-        )
-        == 4
-    )
-    assert len(
-        {lower_plan(plan).descriptor for plan in (fresh, assign, accumulate)}
-    ) == 1
+@requires_native
+def test_layout_reuse_does_not_capture_factors_or_initialization():
+    layout = encode_layout((AffineRecord((2,), (1,), 0, (1,), 1),), source_size=2, output_size=4)
+    before = layout.tobytes()
+    source, base = jnp.asarray([2., 3.], dtype=jnp.float32), jnp.full(4, 7., dtype=jnp.float32)
+    np.testing.assert_array_equal(execute_copy(source, layout=layout, output_size=4), [0, 2, 3, 0])
+    for factor in (1, 2, -1):
+        coefficient = jnp.float32(factor)
+        mapped = execute_accumulation(source, (coefficient,), coefficient_records=(0,), layout=layout, output_size=4)
+        np.testing.assert_array_equal(mapped, [0, 2 * factor, 3 * factor, 0])
+        for beta in (0, 1):
+            updated = execute_update(source, base, coefficient, jnp.int32(beta), layout=layout)
+            np.testing.assert_array_equal(updated, [7, 2 * factor + 7 * beta, 3 * factor + 7 * beta, 7])
+    assert layout.tobytes() == before
 
 
-def test_partial_fresh_map_defaults_to_zero_initialization() -> None:
-    plan = build_affine_plan(
-        records=(AffineRecord((2,), (1,), 0, (1,), 1),),
-        output_size=4,
-        coverage=CompleteMode.PARTIAL_UNIQUE_ZERO_FILL,
-        source_size=2,
-        source_dtype=jnp.float32,
-        result_dtype=jnp.float32,
-    )
-
-    assert plan.output_init is StridedOutputInit.ZERO
+def test_reduction_encoding_retains_real_output_shape_and_axes():
+    layout = reduction_layout()
+    assert layout.dtype == np.uint8
+    np.testing.assert_array_equal(layout.view("<u8"), [1, 12, 3, 1, 2, 0, 0, 4, 3, 3, 1, 1, 3, 3, 1, 1, 0])
 
 
-def test_uninitialized_output_requires_complete_coverage() -> None:
-    with pytest.raises(PlanValidationError, match="uninitialized output"):
-        build_affine_plan(
-            records=(AffineRecord((2,), (1,), 0, (1,), 1),),
-            output_size=4,
-            coverage=CompleteMode.PARTIAL_UNIQUE_ZERO_FILL,
-            source_size=2,
-            source_dtype=jnp.float32,
-            result_dtype=jnp.float32,
-            output_init=StridedOutputInit.UNINITIALIZED,
-        )
+@requires_native
+@pytest.mark.parametrize("empty", [False, True])
+def test_reduction_initializes_output_independently_of_input_size(empty):
+    count = 0 if empty else 12
+    source = jnp.arange(count, dtype=jnp.float32)
+    layout = reduction_layout(source_shape=(0, 3) if empty else (4, 3), source_size=count)
+    actual = execute_reduction(source, layout=layout, output_size=3)
+    np.testing.assert_array_equal(actual, np.zeros(3) if empty else np.arange(12).reshape(4, 3).sum(axis=0))
 
 
-def test_structured_sum_sets_zero_initialization_from_one_plan() -> None:
-    bound = build_affine_plan(
-        records=(
-            AffineRecord(
-                logical_shape=(4, 3),
-                source_strides=(3, 1),
-                source_offset=0,
-                destination_strides=(0, 1),
-                destination_offset=0,
-                reduction_axes=(0,),
-            ),
-        ),
-        output_size=3,
-        coverage=CompleteMode.COMPLETE_UNIQUE,
-        source_size=12,
-        source_dtype=jnp.float32,
-        result_dtype=jnp.float32,
-        reduction_kind=StridedReductionKind.SUM,
-    )
-
-    assert bound.output_init is StridedOutputInit.ZERO
-    assert bound.records[0].reduction_axes == (0,)
+@requires_native
+def test_multirecord_reduction_uses_one_initialization_without_mode_flags():
+    layouts = (reduction_layout(source_size=24), reduction_layout(source_offset=12, source_size=24))
+    merged = merge_reduction_layouts(layouts, source_size=24, output_size=3)
+    assert merged.view("<u8")[3] == 2
+    source = jnp.arange(24, dtype=jnp.float32)
+    np.testing.assert_array_equal(execute_reduction(source, layout=merged, output_size=3),
+                                  np.arange(24).reshape(8, 3).sum(axis=0))
 
 
-def test_empty_structured_sum_retains_semantic_reduction_axis() -> None:
-    plan = build_affine_plan(
-        records=(
-            AffineRecord(
-                (0, 3),
-                (3, 1),
-                0,
-                (0, 1),
-                0,
-                reduction_axes=(0,),
-            ),
-        ),
-        output_size=3,
-        coverage=CompleteMode.COMPLETE_UNIQUE,
-        source_size=0,
-        source_dtype=jnp.float32,
-        result_dtype=jnp.float32,
-        reduction_kind=StridedReductionKind.SUM,
-    )
-
-    assert plan.records[0].reduction_axes == (0,)
+@requires_native
+@pytest.mark.parametrize("output_shape,output_strides,output_size,message", [
+    ((2, 3), (3, 1), 6, "shapes do not match axis roles"),
+    ((1, 3), (3, 0), 3, "zero nontrivial stride"),
+    ((1, 3), (3, 2), 3, "address exceeds storage"),
+])
+def test_reduction_validates_true_output_layout(output_shape, output_strides, output_size, message):
+    layout = reduction_layout(output_shape=output_shape, output_strides=output_strides, output_size=output_size)
+    with pytest.raises(Exception, match=message):
+        execute_reduction(jnp.arange(12, dtype=jnp.float32), layout=layout, output_size=output_size).block_until_ready()
 
 
-@pytest.mark.parametrize(
-    ("record", "output_size", "message"),
-    (
-        (
-            AffineRecord((4, 3), (3, 1), 0, (1, 1), 0, reduction_axes=(0,)),
-            3,
-            "destination depends on reduction axis",
-        ),
-        (
-            AffineRecord((4, 3), (3, 1), 0, (3, 1), 0),
-            12,
-            "requires a reduction axis",
-        ),
-    ),
-)
-def test_structured_sum_rejects_unstructured_output_collisions(
-    record: AffineRecord,
-    output_size: int,
-    message: str,
-) -> None:
-    with pytest.raises(PlanValidationError, match=message):
-        build_affine_plan(
-            records=(record,),
-            output_size=output_size,
-            coverage=CompleteMode.COMPLETE_UNIQUE,
-            source_size=12,
-            source_dtype=jnp.float32,
-            result_dtype=jnp.float32,
-            reduction_kind=StridedReductionKind.SUM,
-        )
+@requires_native
+def test_empty_reduction_still_checks_nonempty_output_bounds():
+    layout = reduction_layout(source_shape=(0, 3), source_size=0, output_size=2)
+    with pytest.raises(Exception, match="address exceeds storage"):
+        execute_reduction(jnp.empty(0, dtype=jnp.float32), layout=layout, output_size=2).block_until_ready()
 
 
-def test_multi_record_structured_sum_requires_explicit_accumulation() -> None:
-    records = tuple(
-        AffineRecord(
-            logical_shape=(4, 3),
-            source_strides=(3, 1),
-            source_offset=offset,
-            destination_strides=(0, 1),
-            destination_offset=0,
-            reduction_axes=(0,),
-        )
-        for offset in (0, 12)
-    )
-    arguments: Any = dict(
-        records=records,
-        output_size=3,
-        coverage=CompleteMode.PARTIAL_UNIQUE_ZERO_FILL,
-        source_size=24,
-        source_dtype=jnp.float32,
-        result_dtype=jnp.float32,
-        reduction_kind=StridedReductionKind.SUM,
-    )
-
-    with pytest.raises(PlanValidationError, match="requires accumulate"):
-        build_affine_plan(**arguments)
-
-    plan = build_affine_plan(
-        **arguments,
-        write_kind=StridedWriteKind.ACCUMULATE,
-    )
-    assert len(plan.records) == 2
+@requires_native
+@pytest.mark.parametrize("records,size", U1_LAYOUTS)
+def test_frozen_u1_address_layouts_are_permutations_and_execute(records, size):
+    source = jnp.arange(size, dtype=jnp.float32)
+    expected = np.zeros(size, dtype=np.float32)
+    sources, destinations = [], []
+    for record in records:
+        selected = addresses(record.logical_shape, record.source_strides, record.source_offset)
+        target = addresses(record.logical_shape, record.destination_strides, record.destination_offset)
+        sources.extend(selected)
+        destinations.extend(target)
+        expected[target] = np.asarray(source)[selected]
+    np.testing.assert_array_equal(np.sort(sources), np.arange(size))
+    np.testing.assert_array_equal(np.sort(destinations), np.arange(size))
+    layout = encode_layout(records, source_size=size, output_size=size)
+    np.testing.assert_array_equal(execute_copy(source, layout=layout, output_size=size), expected)
 
 
-def test_fresh_map_executor_rejects_reduction_operation_plan() -> None:
-    plan = build_affine_plan(
-        records=(
-            AffineRecord(
-                (4, 3),
-                (3, 1),
-                0,
-                (0, 1),
-                0,
-                reduction_axes=(0,),
-            ),
-        ),
-        output_size=3,
-        coverage=CompleteMode.COMPLETE_UNIQUE,
-        source_size=12,
-        source_dtype=jnp.float32,
-        result_dtype=jnp.float32,
-        reduction_kind=StridedReductionKind.SUM,
-    )
-
-    with pytest.raises(ValueError, match="fresh affine map"):
-        _execute_map(jnp.arange(12, dtype=jnp.float32), plan=plan)
-
-
-@pytest.mark.parametrize(
-    ("factory", "record_count", "size"),
-    [
-        (u1_two_record_plan, 2, 5),
-        (u1_three_record_plan, 3, 4608),
-    ],
-)
-def test_frozen_u1_address_fixtures_validate(
-    factory: Callable[[], AffinePlan],
-    record_count: int,
-    size: int,
-) -> None:
-    bound = factory()
-
-    assert len(bound.records) == record_count
-    assert bound.source_size == size
-    assert bound.output_size == size
-    source_addresses = tuple(
-        address
-        for record in bound.records
-        for address in enumerate_addresses(record, "source")
-    )
-    destination_addresses = tuple(
-        address
-        for record in bound.records
-        for address in enumerate_addresses(record, "destination")
-    )
-    assert sorted(source_addresses) == list(range(size))
-    assert sorted(destination_addresses) == list(range(size))
-
-
-def test_positive_strides_that_repeat_source_addresses_are_allowed() -> None:
+@requires_native
+def test_repeated_positive_source_addresses_are_valid():
     record = AffineRecord((5, 5), (2, 2), 0, (5, 1), 0)
-
-    plan = build_affine_plan(
-        records=(record,),
-        output_size=25,
-        coverage=CompleteMode.COMPLETE_UNIQUE,
-        source_size=25,
-        source_dtype=jnp.float32,
-        result_dtype=jnp.float32,
-    )
-
-    assert plan.required_source_size == 17
+    source = jnp.arange(17, dtype=jnp.float32)
+    layout = encode_layout((record,), source_size=17, output_size=25)
+    expected = np.asarray(source)[addresses(record.logical_shape, record.source_strides, 0)]
+    np.testing.assert_array_equal(execute_copy(source, layout=layout, output_size=25), expected)
 
 
-def test_positive_destination_strides_that_alias_are_rejected() -> None:
-    record = AffineRecord((5, 5), (5, 1), 0, (2, 2), 0)
+@requires_native
+@pytest.mark.parametrize("strides", [(2, 2), (0, 1)])
+def test_map_rejects_repeated_targets_but_address_accumulation_accepts_them(strides):
+    record = AffineRecord((5, 5), (5, 1), 0, strides, 0)
+    source = jnp.arange(25, dtype=jnp.float32)
+    layout = encode_layout((record,), source_size=25, output_size=25)
+    with pytest.raises(Exception, match="injective"):
+        execute_copy(source, layout=layout, output_size=25).block_until_ready()
+    expected = np.zeros(25, dtype=np.float32)
+    np.add.at(expected, addresses(record.logical_shape, strides, 0), np.asarray(source))
+    np.testing.assert_array_equal(execute_accumulation(source, layout=layout, output_size=25), expected)
 
-    with pytest.raises(PlanValidationError, match="noninjective_view"):
-        build_affine_plan(
-            records=(record,),
-            output_size=25,
-            coverage=CompleteMode.COMPLETE_UNIQUE,
-            source_size=25,
-            source_dtype=jnp.float32,
-            result_dtype=jnp.float32,
-        )
+
+@pytest.mark.parametrize("record,size,message", [
+    (AffineRecord((2,), (), 0, (1,), 0), 2, "ranks must match"),
+    (AffineRecord((2,), (1,), -1, (1,), 0), 2, "nonnegative int64"),
+    (AffineRecord((2,), (1 << 63,), 0, (1,), 0), 2, "strides must fit int64"),
+    (AffineRecord((2,), (1,), 0, (1,), 0), 1 << 63, "nonnegative int64"),
+])
+def test_address_encoder_rejects_unrepresentable_fields(record, size, message):
+    with pytest.raises(ValueError, match=message):
+        encode_layout((record,), source_size=size, output_size=2)
 
 
-def test_host_pointer_domain_is_checked_when_binding() -> None:
-    extent = sys.maxsize // jnp.dtype(jnp.float32).itemsize + 2
-    record = AffineRecord((extent,), (1,), 0, (1,), 0)
-
-    with pytest.raises(PlanValidationError, match="host_address_overflow"):
-        build_affine_plan(
-            records=(record,),
-            output_size=extent,
-            coverage=CompleteMode.COMPLETE_UNIQUE,
-            source_size=extent,
-            source_dtype=jnp.float32,
-            result_dtype=jnp.float32,
-        )
+@requires_native
+def test_native_address_arithmetic_overflow_is_rejected_without_large_allocation():
+    record = AffineRecord((2,), (1,), INT64_MAX, (1,), 0)
+    layout = encode_layout((record,), source_size=INT64_MAX, output_size=2)
+    with pytest.raises(Exception, match="address arithmetic overflow"):
+        execute_copy(jnp.zeros(2, dtype=jnp.float32), layout=layout, output_size=2).block_until_ready()

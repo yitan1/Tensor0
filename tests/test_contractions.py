@@ -2,15 +2,13 @@ from collections import Counter
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
 
 import tensor0.operations.contractions.primitives as contractions
 import tensor0.operations.transforms as transforms
-from tensor0._stride._testing import (
-    _native_call_count_for_tests,
-    _reset_native_call_count_for_tests,
-    native_available,
-)
+from tensor0._stride._ops._reduction import _strided_tensortrace
+from tests.stride._support import native_available
 from tensor0 import (
     ComplexSpace,
     FermionNumber,
@@ -47,6 +45,21 @@ from tests.cases import (
 
 
 # Shared fixtures and independent dense oracles.
+@pytest.fixture
+def checked_trace_route(monkeypatch):
+    calls = []
+    assert contractions._strided_tensortrace is _strided_tensortrace
+
+    def execute(source, **arguments):
+        arguments["entries"] = tuple(arguments["entries"])
+        calls.append(arguments)
+        return _strided_tensortrace(source, **arguments)
+
+    monkeypatch.setattr(contractions, "_strided_tensortrace", execute)
+    yield calls
+    assert calls
+
+
 _SECTOR_CASES = (
     pytest.param(U1Irrep, 0, 1, id="u1"),
     pytest.param(Z2Irrep, 0, 1, id="z2"),
@@ -640,6 +653,7 @@ def test_tensortrace_rebuilds_trace_metadata_and_reuses_cached_basis(monkeypatch
     assert_allclose(second.storage.data, first.storage.data)
 
 
+@pytest.mark.usefixtures("checked_trace_route")
 def test_tensortrace_conjugation_remaps_original_codomain_axes():
     traced = space(U1Irrep, {0: 2})
     open_left = space(U1Irrep, {0: 3})
@@ -675,6 +689,7 @@ def test_tensortrace_conjugation_remaps_original_codomain_axes():
     assert_allclose(to_dense(result), expected)
 
 
+@pytest.mark.usefixtures("checked_trace_route")
 def test_tensortrace_partial_trace_matches_dense_oracle():
     open_out = space(U1Irrep, {0: 2})
     traced = space(U1Irrep, {0: 3})
@@ -696,6 +711,7 @@ def test_tensortrace_partial_trace_matches_dense_oracle():
     ("sector_type", "sector", "coefficient"),
     _SECTOR_CASES,
 )
+@pytest.mark.usefixtures("checked_trace_route")
 def test_tensortrace_full_trace_across_sector_families(
     sector_type,
     sector,
@@ -714,6 +730,7 @@ def test_tensortrace_full_trace_across_sector_families(
     assert_allclose(scalar(result), coefficient * tensor.storage.data[0])
 
 
+@pytest.mark.usefixtures("checked_trace_route")
 def test_tensortrace_su2_partial_trace_matches_dense_oracle():
     half = space(SU2Irrep, {1: 1})
     tensor = _tensor(hom((half, half), (half, half)))
@@ -730,7 +747,7 @@ def test_tensortrace_su2_partial_trace_matches_dense_oracle():
 
 
 @pytest.mark.parametrize("dtype", [jnp.float32, jnp.complex64])
-def test_tensortrace_su2_grouped_transform_matches_dense_oracle(dtype, monkeypatch):
+def test_tensortrace_su2_grouped_transform_matches_dense_oracle(dtype, monkeypatch, checked_trace_route):
     half = space(SU2Irrep, {1: 1})
     source = hom(
         (half, half, half, half.dual()),
@@ -752,8 +769,12 @@ def test_tensortrace_su2_grouped_transform_matches_dense_oracle(dtype, monkeypat
 
     assert result.space == hom((half, half), ())
     assert_allclose(to_dense(result), expected)
+    entries = checked_trace_route[0]["entries"]
+    assert len(entries) > 1
+    assert any(coefficient not in (-1, 0, 1) for _, _, coefficient in entries)
 
 
+@pytest.mark.usefixtures("checked_trace_route")
 def test_tensortrace_su2_grouped_transform_handles_multiple_destination_rows():
     half = space(SU2Irrep, {1: 1})
     unit = space(SU2Irrep, {0: 1})
@@ -776,6 +797,7 @@ def test_tensortrace_su2_grouped_transform_handles_multiple_destination_rows():
     assert_allclose(to_dense(result), expected)
 
 
+@pytest.mark.usefixtures("checked_trace_route")
 def test_tensortrace_su2_grouped_transform_is_jittable_and_differentiable():
     half = space(SU2Irrep, {1: 1})
     source = hom((half, half, half, half.dual()), ())
@@ -801,10 +823,11 @@ def test_tensortrace_su2_grouped_transform_is_jittable_and_differentiable():
 
 
 @pytest.mark.skipif(not native_available(), reason="native CPU stride unavailable")
-def test_tensortrace_su2_grouped_transform_is_one_native_reduction() -> None:
+@pytest.mark.parametrize("dtype", [jnp.float16, jnp.float32, jnp.complex64])
+def test_tensortrace_su2_grouped_transform_is_one_native_reduction(checked_trace_route, dtype) -> None:
     half = space(SU2Irrep, {1: 1})
     source = hom((half, half, half, half.dual()), ())
-    tensor = _tensor(source)
+    tensor = _tensor(source, dtype=dtype)
 
     def run(data):
         return tensortrace(
@@ -813,21 +836,32 @@ def test_tensortrace_su2_grouped_transform_is_one_native_reduction() -> None:
             output=((1, 2), ()),
         ).storage.data
 
-    compiled = jax.jit(run)
-    lowered = compiled.lower(tensor.storage.data)
+    expected = run(tensor.storage.data)
+    lowered = jax.jit(run).lower(tensor.storage.data)
+    compiled = lowered.compile()
     stablehlo = str(lowered.compiler_ir(dialect="stablehlo")).lower()
-    _reset_native_call_count_for_tests()
     result = compiled(tensor.storage.data)
     result.block_until_ready()
 
-    assert _native_call_count_for_tests() == 1
     assert stablehlo.count("stablehlo.custom_call") == 1
-    assert "structured_reduction" in stablehlo
+    assert "tensor0_stride_reduction_" in stablehlo
+    assert "@tensor0_stride1_" not in stablehlo
     assert "dot_general" not in stablehlo
     assert "gather" not in stablehlo
     assert "scatter" not in stablehlo
+    assert "structured_reduction" not in stablehlo
+    tolerance = 2e-3 if dtype == jnp.float16 else 1e-5
+    for factor in (1, 2):
+        np.testing.assert_allclose(compiled(tensor.storage.data * factor), expected * factor,
+                                   rtol=tolerance, atol=1e-6)
+    for count in (0, 2):
+        batch = jnp.broadcast_to(tensor.storage.data, (count, *tensor.storage.data.shape))
+        np.testing.assert_allclose(jax.jit(jax.vmap(run))(batch),
+                                   jnp.broadcast_to(expected, (count, *expected.shape)),
+                                   rtol=tolerance, atol=1e-6)
 
 
+@pytest.mark.usefixtures("checked_trace_route")
 def test_tensortrace_su2_grouped_transform_nested_transpose_is_closed() -> None:
     half = space(SU2Irrep, {1: 1})
     unit = space(SU2Irrep, {0: 1})
@@ -854,6 +888,7 @@ def test_tensortrace_su2_grouped_transform_nested_transpose_is_closed() -> None:
     assert_allclose(roundtrip, value)
 
 
+@pytest.mark.usefixtures("checked_trace_route")
 def test_tensortrace_dual_fermion_orientation_matches_trace():
     factor = space(FermionParity, {1: 1}).dual()
     tensor = TensorMap(
@@ -867,6 +902,7 @@ def test_tensortrace_dual_fermion_orientation_matches_trace():
     assert_allclose(scalar(result), tensor.tr())
 
 
+@pytest.mark.usefixtures("checked_trace_route")
 def test_tensortrace_reversed_fermion_orientation_matches_canonical_trace():
     odd = space(FermionParity, {1: 1})
     tensor = TensorMap(
@@ -881,6 +917,7 @@ def test_tensortrace_reversed_fermion_orientation_matches_canonical_trace():
     assert_allclose(result.storage.data, expected.storage.data)
 
 
+@pytest.mark.usefixtures("checked_trace_route")
 def test_tensortrace_partial_trace_reorders_and_repartitions_open_axes():
     first_out = space(U1Irrep, {0: 2})
     traced = space(U1Irrep, {0: 2})
@@ -909,6 +946,7 @@ def test_tensortrace_partial_trace_reorders_and_repartitions_open_axes():
     assert_allclose(to_dense(result), expected)
 
 
+@pytest.mark.usefixtures("checked_trace_route")
 def test_tensortrace_multiple_pairs_updates_column_axis_after_each_trace():
     open_out = space(U1Irrep, {0: 2})
     first_trace = space(U1Irrep, {0: 2})
@@ -932,6 +970,7 @@ def test_tensortrace_multiple_pairs_updates_column_axis_after_each_trace():
     assert_allclose(to_dense(result), expected)
 
 
+@pytest.mark.usefixtures("checked_trace_route")
 def test_tensortrace_handles_strided_subblocks():
     first = space(U1Irrep, {0: 2, 1: 1})
     second = space(U1Irrep, {0: 1, 1: 1})
@@ -966,7 +1005,7 @@ def test_tensortrace_handles_strided_subblocks():
     [jnp.float32, jnp.complex64],
     ids=["float32", "complex64"],
 )
-def test_tensortrace_unit_coefficients_preserve_dtype(dtype):
+def test_tensortrace_unit_coefficients_preserve_dtype(dtype, checked_trace_route):
     factor = space(U1Irrep, {0: 2})
     tensor = _tensor(hom((factor,), (factor,)), dtype=dtype)
 
@@ -976,8 +1015,10 @@ def test_tensortrace_unit_coefficients_preserve_dtype(dtype):
     assert result.space.codomain.sector_spec == factor.sector_spec
     assert result.storage.data.dtype == dtype
     assert_allclose(scalar(result), tensor.tr())
+    assert checked_trace_route[0]["result_dtype"] == jnp.dtype(dtype)
 
 
+@pytest.mark.usefixtures("checked_trace_route")
 def test_tensortrace_nonunit_coefficient_promotes_float16_storage():
     half = space(SU2Irrep, {1: 1})
     tensor = TensorMap(
@@ -989,6 +1030,18 @@ def test_tensortrace_nonunit_coefficient_promotes_float16_storage():
 
     assert result.storage.data.dtype == jnp.float32
     assert_allclose(scalar(result), jnp.asarray(6, dtype=jnp.float32))
+
+
+def test_tensortrace_su2_scalar_source_gradient(checked_trace_route):
+    half = space(SU2Irrep, {1: 1})
+    target = hom((half,), (half,))
+
+    def run(data):
+        return tensortrace(TensorMap(target, data), axes=((0,), (1,)),
+                           output=((), ())).storage.data.sum()
+
+    source = jnp.ones(1)
+    np.testing.assert_allclose(jax.jit(jax.grad(run))(source), [run(source)], rtol=1e-6)
 
 
 # Explicit contraction order.

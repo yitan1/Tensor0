@@ -1,3 +1,5 @@
+"""Complex layout and arithmetic acceptance, independent of kernel selection."""
+
 from __future__ import annotations
 
 from itertools import product
@@ -7,364 +9,150 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from tensor0._stride._plan import (
-    CompleteMode,
-    AffinePlan,
-    AffineRecord,
-)
-from tensor0._stride._map import _execute_map
-from tensor0._stride._testing import (
-    _native_call_count_for_tests,
-    _native_worker_counts_for_tests,
-    _reset_native_call_count_for_tests,
-    _set_native_disable_f32_c64_contiguous_simd_for_tests,
-    _set_native_worker_limit_for_tests,
-    native_available,
-)
-from tensor0._stride._ops._selected_scale import build_selected_scale_plan
-from tests.stride._fixtures import execute_update_scale
-from tensor0._stride._plan import build_affine_plan
+from tensor0._stride import StridedView, enable_threads, get_num_threads, scale, set_num_threads
+from tensor0._stride._jax import accumulation_p
+from tensor0._stride._layout import AffineRecord
 
-from ._oracle import execute_reference, execute_selected_scale_reference
+from ._support import native_available
 
 
-def _plan(
-    shape: tuple[int, ...],
-    source_strides: tuple[int, ...],
-    destination_strides: tuple[int, ...],
-    scale: complex,
-) -> AffinePlan:
-    size = int(np.prod(shape, dtype=np.int64))
-    return build_affine_plan(
-        records=(
-            AffineRecord(
-                shape,
-                source_strides,
-                0,
-                destination_strides,
-                0,
-                scale,
-            ),
-        ),
-        output_size=size,
-        coverage=CompleteMode.COMPLETE_UNIQUE,
-        source_size=size,
-        source_dtype=jnp.complex64,
-        result_dtype=jnp.complex64,
-    )
+pytestmark = pytest.mark.skipif(not native_available(), reason="native CPU stride unavailable")
+FACTORS = [complex(0., -0.), .125 + 1j, 2.5 + 3.5j, -1.25 + .75j]
+COMPONENTS = np.asarray([0., -0., 1.25, -2.5, .125, 1e10, -1e10, 1e-10, 1e-20], dtype=np.float32)
 
 
-def _compact(size: int, scale: complex) -> AffinePlan:
-    return _plan((size,), (1,), (1,), scale)
+def rank_two(rows, columns, forward):
+    source = (1, rows) if forward else (columns, 1)
+    destination = (columns, 1) if forward else (1, rows)
+    return AffineRecord((rows, columns), source, 0, destination, 0)
 
 
-def _rank2(
-    rows: int,
-    columns: int,
-    scale: complex,
-    *,
-    forward: bool,
-) -> AffinePlan:
-    if forward:
-        return _plan(
-            (rows, columns),
-            (1, rows),
-            (columns, 1),
-            scale,
-        )
-    return _plan(
-        (rows, columns),
-        (columns, 1),
-        (1, rows),
-        scale,
-    )
+def values(size):
+    indices = jnp.arange(size, dtype=jnp.float32)
+    return ((indices % 4093) / 1024 - 2 + 1j * (.5 - (indices % 4079) / 2048)).astype(jnp.complex64)
 
 
-def _complete_selected_scale(size: int):
-    return build_selected_scale_plan(
-        build_affine_plan(
-            records=(
-                AffineRecord((size,), (1,), 0, (1,), 0),
-            ),
-            output_size=size,
-            coverage=CompleteMode.COMPLETE_UNIQUE,
-            source_size=size,
-            source_dtype=jnp.complex64,
-            result_dtype=jnp.complex64,
-        )
-    )
+def finite_components(size):
+    data = np.asarray([complex(real, imaginary) for real, imaginary in product(COMPONENTS, repeat=2)],
+                      dtype=np.complex64)
+    return jnp.asarray(np.resize(data, size))
 
 
-def _values(size: int) -> jax.Array:
-    values = jnp.arange(size, dtype=jnp.float32)
-    real = (values % 4093) / 1024 - 2
-    imaginary = 0.5 - (values % 4079) / 2048
-    return jnp.asarray(real + 1j * imaginary, dtype=jnp.complex64)
+def mapped(source, record, factor):
+    return accumulation_p.bind(source, jnp.complex64(factor), records=(record,), coefficient_records=(0,),
+                               output_size=int(np.prod(record.logical_shape)), dtype=jnp.dtype(jnp.complex64))
 
 
-def _assert_close(actual: object, expected: object) -> None:
-    actual_array = np.asarray(actual, dtype=np.complex64)
-    expected_array = np.asarray(expected, dtype=np.complex64)
-    np.testing.assert_allclose(actual_array, expected_array, rtol=2e-6, atol=1e-6)
+def reference(source, record, factor):
+    source_indices = np.zeros(record.logical_shape, dtype=np.int64)
+    destinations = np.zeros(record.logical_shape, dtype=np.int64)
+    for axis, extent in enumerate(record.logical_shape):
+        coordinate = np.arange(extent).reshape((1,) * axis + (extent,) + (1,) * (len(record.logical_shape) - axis - 1))
+        source_indices += coordinate * record.source_strides[axis]
+        destinations += coordinate * record.destination_strides[axis]
+    output = jnp.zeros((*source.shape[:-1], source_indices.size), dtype=jnp.complex64)
+    selected = source[..., source_indices.ravel()] * jnp.complex64(factor)
+    return output.at[..., destinations.ravel()].set(selected)
 
 
-@pytest.mark.skipif(not native_available(), reason="native CPU stride unavailable")
-def test_n6_mixed_compact_execution_uses_parallel_generic_range() -> None:
+def assert_close(actual, expected):
+    assert actual.shape == expected.shape and actual.dtype == expected.dtype
+    np.testing.assert_allclose(actual, expected, rtol=2e-6, atol=1e-6)
+
+
+def assert_native(lowered):
+    text = lowered.as_text().lower()
+    assert text.count("custom_call") == 1 and "tensor0_stride_" in text
+    assert "gather" not in text and "scatter" not in text
+
+
+def restore_threads(previous):
+    if previous is None:
+        enable_threads()
+    else:
+        set_num_threads(previous)
+
+
+def test_large_mixed_compact_mapping_under_thread_limits():
     size = (1 << 19) + 3
-    plan = build_affine_plan(
-        records=(
-            AffineRecord(
-                (size,),
-                (1,),
-                0,
-                (1,),
-                0,
-                0.75 - 0.5j,
-            ),
-        ),
-        output_size=size,
-        coverage=CompleteMode.COMPLETE_UNIQUE,
-        source_size=size,
-        source_dtype=jnp.float32,
-        result_dtype=jnp.complex64,
-    )
+    record = AffineRecord((size,), (1,), 0, (1,), 0)
     source = jnp.arange(size, dtype=jnp.float32) / 1024 - 2
-
-    _set_native_worker_limit_for_tests(4)
+    operation = jax.jit(lambda value: mapped(value, record, .75 - .5j))
+    expected = source * jnp.complex64(.75 - .5j)
+    assert_native(operation.lower(source))
+    previous = get_num_threads()
     try:
-        actual = jax.jit(
-            lambda value: _execute_map(
-                value,
-                plan=plan,
-            )
-        )(source)
-        actual.block_until_ready()
-        workers, available = _native_worker_counts_for_tests()
+        for limit in (1, 4):
+            set_num_threads(limit)
+            assert_close(operation(source), expected)
     finally:
-        _set_native_worker_limit_for_tests(None)
-
-    assert available >= workers > 1
-    _assert_close(actual, execute_reference(source, plan))
+        restore_threads(previous)
 
 
-@pytest.mark.parametrize(
-    "scale",
-    (
-        complex(0.0, -0.0),
-        complex(.125, 1.0),
-        complex(2.5, 3.5),
-        complex(-1.25, 0.75),
-    ),
-)
-@pytest.mark.skipif(not native_available(), reason="native CPU stride unavailable")
-def test_n6_promoted_complex_contiguous_simd_matches_scalar_accuracy(
-    scale: complex,
-) -> None:
-    components = np.asarray(
-        [
-            0.0,
-            -0.0,
-            1.25,
-            -2.5,
-            .125,
-            np.float32(1e10),
-            -np.float32(1e10),
-            np.float32(1e-10),
-            np.float32(1e-20),
-        ],
-        dtype=np.float32,
-    )
-    source = jnp.asarray(np.resize(components, 73))
-    plan = build_affine_plan(
-        records=(
-            AffineRecord((source.size,), (1,), 0, (1,), 0, scale),
-        ),
-        output_size=source.size,
-        coverage=CompleteMode.COMPLETE_UNIQUE,
-        source_size=source.size,
-        source_dtype=jnp.float32,
-        result_dtype=jnp.complex64,
-    )
-    executable = jax.jit(
-        lambda value: _execute_map(value, plan=plan)
-    ).lower(source).compile()
+@pytest.mark.parametrize("factor", FACTORS)
+def test_real_to_complex_compact_finite_values(factor):
+    source = jnp.asarray(np.resize(COMPONENTS, 73))
+    record = AffineRecord((73,), (1,), 0, (1,), 0)
+    actual = jax.jit(lambda value: mapped(value, record, factor))(source)
+    assert_close(actual, source * jnp.complex64(factor))
 
-    _set_native_disable_f32_c64_contiguous_simd_for_tests(True)
+
+@pytest.mark.parametrize("record", [AffineRecord((131075,), (1,), 0, (1,), 0),
+                                    rank_two(256, 256, True), rank_two(517, 263, False)])
+def test_complex_large_layouts_and_tails(record):
+    source = values(int(np.prod(record.logical_shape)))
+    operation = jax.jit(lambda value: mapped(value, record, 1.25 - .75j))
+    assert_native(operation.lower(source))
+    assert_close(operation(source), reference(source, record, 1.25 - .75j))
+
+
+@pytest.mark.parametrize("forward", [False, True])
+@pytest.mark.parametrize("factor", FACTORS)
+def test_rank_two_finite_component_combinations_and_tails(forward, factor):
+    record = rank_two(17, 13, forward)
+    source = finite_components(221)
+    assert_close(jax.jit(lambda value: mapped(value, record, factor))(source), reference(source, record, factor))
+
+
+def test_complex_compact_batch_jvp_and_vjp():
+    size = 65539
+    record = AffineRecord((size,), (1,), 0, (1,), 0)
+    source = jnp.stack((values(size), values(size) + 1j))
+    direction = source * jnp.complex64(.25 + .125j)
+    cotangent = source * jnp.complex64(-.5 + .25j)
+    operation = lambda value: mapped(value, record, .75 - .5j)
+    oracle = lambda value: value * jnp.complex64(.75 - .5j)
+    assert_close(jax.jit(operation)(source), oracle(source))
+    assert_close(jax.jit(jax.vmap(operation))(source), oracle(source))
+    actual = jax.jit(lambda value, tangent: jax.jvp(operation, (value,), (tangent,)))(source, direction)
+    expected = jax.jvp(oracle, (source,), (direction,))
+    for result, wanted in zip(actual, expected, strict=True):
+        assert_close(result, wanted)
+    pullback = jax.jit(lambda cot: jax.vjp(operation, source)[1](cot)[0])
+    assert_close(pullback(cotangent), jax.vjp(oracle, source)[1](cotangent)[0])
+    assert_native(pullback.lower(cotangent))
+
+
+@pytest.mark.parametrize("factor", FACTORS)
+def test_selected_complex_scale_finite_components_and_tails(factor):
+    base = finite_components(67)
+    coefficient = jnp.complex64(factor)
+    operation = jax.jit(lambda data, alpha: scale(StridedView(data, (67,), (1,), 0), alpha).data)
+    assert_native(operation.lower(base, coefficient))
+    assert_close(operation(base, coefficient), base * coefficient)
+
+
+def test_selected_scale_batched_factors_under_thread_limits():
+    size = 262147
+    base = jnp.stack(tuple(values(size) + index for index in range(3)))
+    factors = jnp.asarray([.75 - .5j, -1.25 + .25j, 2 + .125j], dtype=jnp.complex64)
+    operation = jax.jit(lambda data, alpha: scale(StridedView(data, (size,), (1,), 0), alpha).data)
+    expected = base * factors[:, None]
+    assert_native(operation.lower(base, factors))
+    previous = get_num_threads()
     try:
-        expected = executable(source)
-        expected.block_until_ready()
+        for limit in (1, 8):
+            set_num_threads(limit)
+            assert_close(operation(base, factors), expected)
     finally:
-        _set_native_disable_f32_c64_contiguous_simd_for_tests(False)
-    actual = executable(source)
-    actual.block_until_ready()
-
-    _assert_close(actual, expected)
-    _assert_close(actual, execute_reference(source, plan))
-
-
-@pytest.mark.parametrize(
-    "plan",
-    (
-        _compact(131_075, 1.25 - 0.75j),
-        _rank2(256, 256, 1.25 - 0.75j, forward=True),
-        _rank2(517, 263, 1.25 - 0.75j, forward=False),
-    ),
-)
-@pytest.mark.skipif(not native_available(), reason="native CPU stride unavailable")
-def test_n6_complex_kernels_match_reference_for_finite_values(
-    plan: AffinePlan,
-) -> None:
-    source = _values(plan.source_size)
-    function = jax.jit(
-        lambda value: _execute_map(value, plan=plan)
-    )
-
-    _reset_native_call_count_for_tests()
-    actual = function(source)
-    actual.block_until_ready()
-    expected = execute_reference(source, plan)
-
-    assert _native_call_count_for_tests() == 1
-    _assert_close(actual, expected)
-
-
-@pytest.mark.parametrize("forward", (False, True))
-@pytest.mark.parametrize(
-    "scale",
-    (
-        complex(0.0, -0.0),
-        complex(.125, 1.0),
-        complex(2.5, 3.5),
-        complex(-1.25, 0.75),
-    ),
-)
-@pytest.mark.skipif(not native_available(), reason="native CPU stride unavailable")
-def test_n6_rank_two_simd_matches_finite_values_and_tails(
-    forward: bool,
-    scale: complex,
-) -> None:
-    plan = _rank2(17, 13, scale, forward=forward)
-    components = np.asarray(
-        [
-            0.0,
-            -0.0,
-            1.25,
-            -2.5,
-            .125,
-            np.float32(1e10),
-            -np.float32(1e10),
-            np.float32(1e-10),
-        ],
-        dtype=np.float32,
-    )
-    source = np.asarray(
-        [complex(real, imaginary) for real, imaginary in product(components, repeat=2)],
-        dtype=np.complex64,
-    )
-    source = jnp.asarray(np.resize(source, plan.source_size))
-
-    actual = _execute_map(source, plan=plan)
-    expected = execute_reference(source, plan)
-
-    _assert_close(actual, expected)
-
-
-@pytest.mark.skipif(not native_available(), reason="native CPU stride unavailable")
-def test_n6_compact_simd_batch_jvp_and_vjp_match_reference() -> None:
-    plan = _compact(65_539, 0.75 - 0.5j)
-    source = jnp.stack((_values(plan.source_size), _values(plan.source_size) + 1j))
-    tangent = source * jnp.complex64(0.25 + 0.125j)
-    cotangent = source * jnp.complex64(-0.5 + 0.25j)
-    native = lambda value: _execute_map(
-        value,
-        plan=plan,
-    )
-    reference = lambda value: execute_reference(value, plan)
-
-    actual_jvp = jax.jit(lambda x, dx: jax.jvp(native, (x,), (dx,)))(
-        source,
-        tangent,
-    )
-    expected_jvp = jax.jvp(reference, (source,), (tangent,))
-    for actual, expected in zip(actual_jvp, expected_jvp, strict=True):
-        _assert_close(actual, expected)
-
-    actual_vjp = jax.jit(lambda ct: jax.vjp(native, source)[1](ct)[0])(
-        cotangent
-    )
-    expected_vjp = jax.vjp(reference, source)[1](cotangent)[0]
-    _assert_close(actual_vjp, expected_vjp)
-
-
-@pytest.mark.parametrize(
-    "factor",
-    (
-        complex(0.0, -0.0),
-        complex(.125, 1.0),
-        complex(2.5, 3.5),
-        complex(-1.25, 0.75),
-    ),
-)
-@pytest.mark.skipif(not native_available(), reason="native CPU stride unavailable")
-def test_n6_selected_scale_compact_simd_matches_finite_values_and_tails(
-    factor: complex,
-) -> None:
-    plan = _complete_selected_scale(67)
-    components = np.asarray(
-        [
-            0.0,
-            -0.0,
-            1.25,
-            -2.5,
-            .125,
-            np.float32(1e10),
-            -np.float32(1e10),
-            np.float32(1e-10),
-        ],
-        dtype=np.float32,
-    )
-    values = np.asarray(
-        [complex(real, imaginary) for real, imaginary in product(components, repeat=2)],
-        dtype=np.complex64,
-    )
-    base = jnp.asarray(np.resize(values, 67))
-    factor_array = jnp.asarray(factor, dtype=jnp.complex64)
-    function = jax.jit(lambda old, value: execute_update_scale(old, value, plan=plan))
-
-    _reset_native_call_count_for_tests()
-    actual = function(base, factor_array)
-    actual.block_until_ready()
-    expected = execute_selected_scale_reference(base, factor_array, plan)
-
-    assert _native_call_count_for_tests() == 1
-    _assert_close(actual, expected)
-
-
-@pytest.mark.skipif(not native_available(), reason="native CPU stride unavailable")
-def test_n6_selected_scale_batched_factors_match_serial_and_parallel() -> None:
-    size = 262_147
-    plan = _complete_selected_scale(size)
-    base = jnp.stack(tuple(_values(size) + index for index in range(3)))
-    factor = jnp.asarray(
-        [0.75 - 0.5j, -1.25 + 0.25j, 2 + 0.125j],
-        dtype=jnp.complex64,
-    )
-    function = jax.jit(lambda old, value: execute_update_scale(old, value, plan=plan))
-
-    _set_native_worker_limit_for_tests(1)
-    try:
-        sequential = function(base, factor)
-        sequential.block_until_ready()
-    finally:
-        _set_native_worker_limit_for_tests(None)
-    _set_native_worker_limit_for_tests(8)
-    try:
-        parallel = function(base, factor)
-        parallel.block_until_ready()
-        workers, available = _native_worker_counts_for_tests()
-    finally:
-        _set_native_worker_limit_for_tests(None)
-
-    if available > 1:
-        assert workers > 1
-    _assert_close(parallel, sequential)
+        restore_threads(previous)

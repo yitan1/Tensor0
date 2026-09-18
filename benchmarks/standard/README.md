@@ -130,12 +130,12 @@ Run `uv run python -m benchmarks.standard.diagnostics.stride_update --size 512 -
 to compare contiguous and transposed conversion, assignment, accumulation,
 weighted update, scaling, and JVP execution. It also compares fresh maps and
 updates across contiguous, transposed, broadcast, and rank-4 layouts with
-complete and partial coverage, identity mappings, and explicit static factors.
-The layout matrix covers float16, float32, and complex64. Compare a fresh
-static single scale with an identity-mapped dynamic scale to check equivalent
-kernel performance; the leaf-dispatch tests separately observe actual kernel
-selection, including zero/one factors and non-aligned tile tails.
-The JSON output includes native
-call counts and compiled allocation statistics; compare timing on the same
+complete and partial coverage, identity mappings, and explicit factors.
+The layout matrix covers float16, float32, and complex64. The diagnostic uses
+native Copy, address accumulation, and Update; coefficients are separate from
+layout records. It measures operation performance, not specialized kernel
+selection or parity with the old backend.
+The JSON output includes synchronized timing and compiled allocation
+statistics, not legacy native-call counters; compare timing on the same
 idle machine after warming both builds. This diagnostic is independent of the
 standard scenario runner.
