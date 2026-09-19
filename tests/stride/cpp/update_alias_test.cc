@@ -1,23 +1,32 @@
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cassert>
 #include <cmath>
 #include <complex>
 #include <cstdint>
 #include <cstring>
+#include <functional>
 #include <limits>
-#include <type_traits>
+#include <memory>
 #include <sys/mman.h>
+#include <type_traits>
 #include <unistd.h>
+#include "xla/ffi/api/ffi.h"
+
+namespace ffi = xla::ffi;
 #include "numeric/scalar.inc"
 #include "numeric/expression.inc"
-#include "layout/types.inc"
-#include "layout/address.inc"
-#include "layout/construction.inc"
-#include "layout/planning.inc"
+#include "layout/record.inc"
+#include "layout/traversal.inc"
 #include "layout/blocking.inc"
-#include "kernels/affine.inc"
-#include "execute/update.inc"
+#include "ffi/descriptor.inc"
+#include "kernels/generic.inc"
+#include "kernels/specialized.inc"
+#include "kernels/dispatch.inc"
+#include "execute/scheduling.inc"
+#include "execute/map.inc"
+#include "thread_pool_test_support.h"
 
 void CheckBranches() {
   auto record = layout::BuildLayout({2}, {-2}, 5, {-2}, 5, 8, 8, 0);
@@ -29,9 +38,12 @@ void CheckBranches() {
   const auto original = storage;
   const std::array<double, 3> factors{0, 1, 2};
   const int32_t zero = 0;
-  ExecuteUpdateBatches<scalar::F32, scalar::F64, scalar::S32>(
-      records, storage.data(), storage.data(), storage.data(), 8, 8, 3, factors.data(), 3,
-      &zero, 1, expression::Identity<scalar::F32>{}, expression::Identity<scalar::F32>{});
+  {
+    testing::ThreadPool pool(1);
+    assert(!testing::CompletedError(ExecuteUpdate<scalar::F32, scalar::F64, scalar::S32>(
+        pool.get(), records, storage.data(), storage.data(), storage.data(), 8, 8, 3, factors.data(), 3,
+        &zero, 1, expression::Identity<scalar::F32>{}, expression::Identity<scalar::F32>{})).failure());
+  }
   for (std::size_t batch = 0; batch < 3; ++batch) {
     for (std::size_t index = 0; index < 8; ++index) {
       const bool selected = index == 1 || index == 3 || index == 5;
@@ -39,21 +51,28 @@ void CheckBranches() {
     }
   }
   const auto before = storage;
-  bool rejected = false;
-  try {
-    ExecuteUpdateBatches<scalar::F32, scalar::F64, scalar::S32>(
-        records, storage.data(), storage.data(), storage.data(), 8, 8, 3, factors.data(), 2,
-        &zero, 1, expression::Identity<scalar::F32>{}, expression::Identity<scalar::F32>{});
-  } catch (const std::invalid_argument&) {
-    rejected = true;
+  {
+    testing::ThreadPool pool(1);
+    const auto error = testing::CompletedError(ExecuteUpdate<scalar::F32, scalar::F64, scalar::S32>(
+        pool.get(), records, storage.data(), storage.data(), storage.data(), 8, 8, 3,
+        factors.data(), 2, &zero, 1,
+        expression::Identity<scalar::F32>{}, expression::Identity<scalar::F32>{}));
+    assert(error.failure());
+    assert(error.message() == "tensor0-native: update coefficients must be shared or one value per batch");
+    assert(storage == before);
   }
-  assert(rejected && storage == before);
-  ExecuteUpdateBatches<scalar::F32, scalar::F64, scalar::S32>(
-      records, static_cast<const float*>(nullptr), nullptr, nullptr, 8, 8, 0, nullptr, 0,
-      &zero, 1, expression::Identity<scalar::F32>{}, expression::Identity<scalar::F32>{});
-  ExecuteUpdateBatches<scalar::F32, scalar::F64, scalar::S32>(
-      {}, static_cast<const float*>(nullptr), nullptr, nullptr, 0, 0, 2, nullptr, 1,
-      &zero, 1, expression::Identity<scalar::F32>{}, expression::Identity<scalar::F32>{});
+  {
+    testing::ThreadPool pool(1);
+    assert(!testing::CompletedError(ExecuteUpdate<scalar::F32, scalar::F64, scalar::S32>(
+        pool.get(), records, static_cast<const float*>(nullptr), nullptr, nullptr, 8, 8, 0, nullptr, 0,
+        &zero, 1, expression::Identity<scalar::F32>{}, expression::Identity<scalar::F32>{})).failure());
+  }
+  {
+    testing::ThreadPool pool(1);
+    assert(!testing::CompletedError(ExecuteUpdate<scalar::F32, scalar::F64, scalar::S32>(
+        pool.get(), {}, static_cast<const float*>(nullptr), nullptr, nullptr, 0, 0, 2, nullptr, 1, &zero,
+        1, expression::Identity<scalar::F32>{}, expression::Identity<scalar::F32>{})).failure());
+  }
 }
 
 void CheckNoWholeStorageAccess() {
@@ -69,9 +88,13 @@ void CheckNoWholeStorageAccess() {
   const auto record = layout::BuildLayout({}, {}, offset, {}, offset, size, size, 0);
   for (float factor : {2.0F, 1.0F, 0.0F}) {
     const auto expected = storage[offset] * factor;
-    ExecuteUpdate<scalar::F32, scalar::F32, scalar::S32>(
-        {record}, storage, storage, storage, size, factor, 0,
-        expression::Identity<scalar::F32>{}, expression::Identity<scalar::F32>{});
+    {
+      const auto programs = layout::PrepareGeneratedRecords(
+          {record}, sizeof(*storage), sizeof(scalar::Value<scalar::F32>));
+      ExecuteUpdateBatch<scalar::F32, scalar::F32, scalar::S32>(
+          programs, storage, storage, storage, size, factor, 0, expression::Identity<scalar::F32>{},
+          expression::Identity<scalar::F32>{});
+    }
     assert(storage[offset] == expected);
   }
   assert(munmap(mapping, 3 * page_size) == 0);

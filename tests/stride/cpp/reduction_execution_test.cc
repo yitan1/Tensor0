@@ -1,21 +1,30 @@
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cassert>
 #include <cmath>
 #include <complex>
 #include <cstdint>
 #include <cstring>
+#include <functional>
 #include <limits>
+#include <memory>
 #include <type_traits>
+#include "xla/ffi/api/ffi.h"
+
+namespace ffi = xla::ffi;
 #include "numeric/scalar.inc"
 #include "numeric/expression.inc"
-#include "layout/types.inc"
-#include "layout/address.inc"
-#include "layout/construction.inc"
-#include "layout/planning.inc"
-#include "kernels/affine.inc"
-#include "kernels/reduction.inc"
+#include "layout/record.inc"
+#include "layout/traversal.inc"
+#include "layout/blocking.inc"
+#include "ffi/descriptor.inc"
+#include "kernels/generic.inc"
+#include "kernels/specialized.inc"
+#include "kernels/dispatch.inc"
+#include "execute/scheduling.inc"
 #include "execute/reduction.inc"
+#include "thread_pool_test_support.h"
 #include "reduction_input.inc"
 
 template <typename Dtype>
@@ -49,19 +58,29 @@ void CheckRecords(bool optimize) {
   for (int repeat = 0; repeat < 2; ++repeat) {
     uint64_t calls = 0;
     std::vector<std::size_t> bound;
-    ExecuteReduction<Dtype, Dtype>(records, source.data(), storage.data() + 1, 10, 8, 1,
-        [&](std::size_t index, uint64_t, auto execute) {
-          bound.push_back(index);
-          execute(Observed<Dtype>{&calls});
-        });
+    {
+      const auto programs = layout::PrepareGeneratedRecords(
+          records, sizeof(scalar::Value<Dtype>), sizeof(scalar::Value<Dtype>), false);
+      ExecuteReductionBatch<Dtype, Dtype>(
+          programs, source.data(), storage.data() + 1, 8,
+          [&](std::size_t index, auto execute) {
+            bound.push_back(index);
+            execute(Observed<Dtype>{&calls});
+          });
+    }
     assert(calls == 10);
     assert((bound == std::vector<std::size_t>{7, 9}));
     assert((storage == std::array<Value, 10>{7, 0, 0, 50, 0, 0, 60, 0, 0, 7}));
     assert(source == original_source);
   }
   uint64_t calls = 0;
-  ExecuteReduction<Dtype, Dtype>({}, nullptr, storage.data() + 1, 0, 8, 1,
-      [&](std::size_t, uint64_t, auto execute) { execute(Observed<Dtype>{&calls}); });
+  {
+    const auto programs = layout::PrepareGeneratedRecords(
+        {}, sizeof(scalar::Value<Dtype>), sizeof(scalar::Value<Dtype>), false);
+    ExecuteReductionBatch<Dtype, Dtype>(
+        programs, nullptr, storage.data() + 1, 8,
+        [&](std::size_t, auto execute) { execute(Observed<Dtype>{&calls}); });
+  }
   assert(calls == 0);
   assert((storage == std::array<Value, 10>{7, 0, 0, 0, 0, 0, 0, 0, 0, 7}));
 }
@@ -80,18 +99,34 @@ void CheckEmpty(bool optimize) {
     assert(false);
     execute(Observed<Dtype>{&calls});
   };
-  ExecuteReduction<Dtype, Dtype>({record}, nullptr, storage.data() + 1, 0, 3, 2, bind);
+  {
+    testing::ThreadPool pool(1);
+    assert(!testing::CompletedError(ExecuteReduction<Dtype, Dtype>(
+        pool.get(), {record}, nullptr, storage.data() + 1, 0, 3, 2, bind)).failure());
+  }
   assert(calls == 0);
   assert((storage == std::array<Value, 8>{7, 0, 0, 0, 0, 0, 0, 7}));
-  ExecuteReduction<Dtype, Dtype>({record}, nullptr, nullptr, 0, 3, 0, bind);
+  {
+    testing::ThreadPool pool(1);
+    assert(!testing::CompletedError(ExecuteReduction<Dtype, Dtype>(
+        pool.get(), {record}, nullptr, nullptr, 0, 3, 0, bind)).failure());
+  }
 
   const ReductionInput no_output{7, 0, 0, {0, 3}, {3, 1}, {0, 1}, {1, 1}, {false, true}};
   auto empty_record = Build(no_output, 0, 0);
   if (optimize) {
     layout::OptimizeRecordForExecution(&empty_record);
   }
-  ExecuteReduction<Dtype, Dtype>({empty_record}, nullptr, nullptr, 0, 0, 3, bind);
-  ExecuteReduction<Dtype, Dtype>({}, nullptr, nullptr, 0, 0, 3, bind);
+  {
+    testing::ThreadPool pool(1);
+    assert(!testing::CompletedError(ExecuteReduction<Dtype, Dtype>(
+        pool.get(), {empty_record}, nullptr, nullptr, 0, 0, 3, bind)).failure());
+  }
+  {
+    testing::ThreadPool pool(1);
+    assert(!testing::CompletedError(ExecuteReduction<Dtype, Dtype>(
+        pool.get(), {}, nullptr, nullptr, 0, 0, 3, bind)).failure());
+  }
   assert(calls == 0);
 }
 
@@ -103,7 +138,13 @@ void CheckOrder() {
   layout::OptimizeRecordForExecution(&record);
   const std::array<float, 10> source{0, 0, 1e20f, -1e20f, 1, 0, 0, 0, 0, 0};
   float result = 7;
-  ExecuteReduction<scalar::F32, scalar::F32>({record}, source.data(), &result, 10, 1, 1, bind);
+  {
+    const auto programs = layout::PrepareGeneratedRecords(
+        {record}, sizeof(scalar::Value<scalar::F32>), sizeof(scalar::Value<scalar::F32>), false);
+    ExecuteReductionBatch<scalar::F32, scalar::F32>(
+        programs, source.data(), &result, 1,
+        [&](std::size_t index, auto apply) { bind(index, 0, apply); });
+  }
   assert(result == 1.0f);
 
   const ReductionInput scalar_input{};
@@ -114,10 +155,22 @@ void CheckOrder() {
     records.push_back(Build(scalar_record, 3, 1));
   }
   const std::array<float, 3> values{1e20f, -1e20f, 1};
-  ExecuteReduction<scalar::F32, scalar::F32>(records, values.data(), &result, 3, 1, 1, bind);
+  {
+    const auto programs = layout::PrepareGeneratedRecords(
+        records, sizeof(scalar::Value<scalar::F32>), sizeof(scalar::Value<scalar::F32>), false);
+    ExecuteReductionBatch<scalar::F32, scalar::F32>(
+        programs, values.data(), &result, 1,
+        [&](std::size_t index, auto apply) { bind(index, 0, apply); });
+  }
   assert(result == 1.0f);
   std::reverse(records.begin(), records.end());
-  ExecuteReduction<scalar::F32, scalar::F32>(records, values.data(), &result, 3, 1, 1, bind);
+  {
+    const auto programs = layout::PrepareGeneratedRecords(
+        records, sizeof(scalar::Value<scalar::F32>), sizeof(scalar::Value<scalar::F32>), false);
+    ExecuteReductionBatch<scalar::F32, scalar::F32>(
+        programs, values.data(), &result, 1,
+        [&](std::size_t index, auto apply) { bind(index, 0, apply); });
+  }
   assert(result == 0.0f);
 }
 
@@ -131,8 +184,13 @@ void CheckRecordGroupingBoundary() {
       for (auto& record : records) layout::OptimizeRecordForExecution(&record);
     }
     float result = 7;
-    ExecuteReduction<scalar::F32, scalar::F32>(records, source.data(), &result, 3, 1, 1,
-        [](std::size_t, uint64_t, auto execute) { execute(expression::Identity<scalar::F32>{}); });
+    {
+      const auto programs = layout::PrepareGeneratedRecords(
+          records, sizeof(scalar::Value<scalar::F32>), sizeof(scalar::Value<scalar::F32>), false);
+      ExecuteReductionBatch<scalar::F32, scalar::F32>(
+          programs, source.data(), &result, 1,
+          [](std::size_t, auto execute) { execute(expression::Identity<scalar::F32>{}); });
+    }
     assert(result == 0.0f);
   }
 }
@@ -165,17 +223,27 @@ void CheckIndependentRecords(bool optimize) {
       execute(expression::Scale<scalar::S32, expression::Identity<scalar::F32>>{2});
     }
   };
-  ExecuteReduction<scalar::F32, scalar::F32>(records, source.data(), result.data() + 1,
-      5, 5, 2, bind);
-  assert((bound == std::vector<std::size_t>{7, 7, 2, 2, 4, 4}));
+  {
+    testing::ThreadPool pool(1);
+    assert(!testing::CompletedError(ExecuteReduction<scalar::F32, scalar::F32>(
+        pool.get(), records, source.data(), result.data() + 1, 5, 5, 2, bind)).failure());
+  }
+  assert((bound == std::vector<std::size_t>{7, 2, 4, 7, 2, 4}));
   assert((result == std::array<float, 12>{7, 3, 0, 3.5f, 10, 0, 13, 0, 8.5f, 20, 0, 7}));
   factor = 1.5f;
   bound.clear();
-  ExecuteReduction<scalar::F32, scalar::F32>(records, source.data(), result.data() + 1,
-      5, 5, 2, bind);
-  assert((bound == std::vector<std::size_t>{7, 7, 2, 2, 4, 4}));
+  {
+    testing::ThreadPool pool(1);
+    assert(!testing::CompletedError(ExecuteReduction<scalar::F32, scalar::F32>(
+        pool.get(), records, source.data(), result.data() + 1, 5, 5, 2, bind)).failure());
+  }
+  assert((bound == std::vector<std::size_t>{7, 2, 4, 7, 2, 4}));
   assert((result == std::array<float, 12>{7, 3, 0, 10.5f, 10, 0, 13, 0, 25.5f, 20, 0, 7}));
-  ExecuteReduction<scalar::F32, scalar::F32>(records, nullptr, nullptr, 5, 5, 0, bind);
+  {
+    testing::ThreadPool pool(1);
+    assert(!testing::CompletedError(ExecuteReduction<scalar::F32, scalar::F32>(
+        pool.get(), records, nullptr, nullptr, 5, 5, 0, bind)).failure());
+  }
   assert(bound.size() == 6);
 }
 
@@ -203,24 +271,27 @@ void CheckMixedRecordWriteback(bool optimize) {
     for (bool narrow : {false, true}) {
       for (float factor : {1.0f, 2.0f}) {
         std::vector<std::size_t> bound;
-        ExecuteReduction<scalar::F64, scalar::F32>(
-            records, source.data(), result.data() + 1, 5, 5, 2,
-            [&](std::size_t index, uint64_t, auto execute) {
-              bound.push_back(index);
-              if (index == 7) {
-                execute(Narrow{});
-              } else if (index == 2) {
-                if (narrow) execute(expression::Scale<scalar::F32, Narrow>{factor});
-                else execute(expression::Scale<scalar::F32, Input>{factor});
-              } else {
-                assert(index == 9 || index == 4);
-                if (narrow) execute(Narrow{});
-                else execute(Input{});
-              }
-            });
+        {
+          testing::ThreadPool pool(1);
+          assert(!testing::CompletedError(ExecuteReduction<scalar::F64, scalar::F32>(
+              pool.get(), records, source.data(), result.data() + 1, 5, 5, 2,
+              [&](std::size_t index, uint64_t, auto execute) {
+                bound.push_back(index);
+                if (index == 7) {
+                  execute(Narrow{});
+                } else if (index == 2) {
+                  if (narrow) execute(expression::Scale<scalar::F32, Narrow>{factor});
+                  else execute(expression::Scale<scalar::F32, Input>{factor});
+                } else {
+                  assert(index == 9 || index == 4);
+                  if (narrow) execute(Narrow{});
+                  else execute(Input{});
+                }
+              })).failure());
+        }
         const std::vector<std::size_t> expected_bound = split
-            ? std::vector<std::size_t>{7, 7, 2, 2, 9, 9, 4, 4}
-            : std::vector<std::size_t>{7, 7, 2, 2, 9, 9};
+            ? std::vector<std::size_t>{7, 2, 9, 4, 7, 2, 9, 4}
+            : std::vector<std::size_t>{7, 2, 9, 7, 2, 9};
         assert(bound == expected_bound);
         const float mixed = narrow ? factor - 1
             : (factor == 1 ? 0x1p-24f : 1 + 0x1p-23f);
@@ -239,17 +310,16 @@ void CheckBatchOverflow() {
       {UINT64_C(1) << 62, 1, 1}, {0, UINT64_C(1) << 62, 1}}};
   for (const auto& size : sizes) {
     float result = 7;
-    bool rejected = false;
-    try {
-      ExecuteReduction<scalar::F32, scalar::F32>({}, nullptr, &result,
-          size[0], size[1], size[2], [](std::size_t, uint64_t, auto execute) {
-            assert(false);
-            execute(expression::Identity<scalar::F32>{});
-          });
-    } catch (const std::invalid_argument&) {
-      rejected = true;
-    }
-    assert(rejected && result == 7);
+    testing::ThreadPool pool(1);
+    const auto error = testing::CompletedError(ExecuteReduction<scalar::F32, scalar::F32>(
+        pool.get(), {}, nullptr, &result, size[0], size[1], size[2],
+        [](std::size_t, uint64_t, auto execute) {
+          assert(false);
+          execute(expression::Identity<scalar::F32>{});
+        }));
+    assert(error.failure());
+    assert(error.message() == "tensor0-native: reduction batch storage exceeds address range");
+    assert(result == 7);
   }
 }
 

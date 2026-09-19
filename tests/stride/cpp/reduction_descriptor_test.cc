@@ -1,18 +1,26 @@
+#include <atomic>
 #include <cassert>
 #include <complex>
 #include <cstdint>
 #include <cstring>
+#include <functional>
+#include <memory>
 #include <type_traits>
+#include "xla/ffi/api/ffi.h"
+
+namespace ffi = xla::ffi;
 #include "numeric/scalar.inc"
 #include "numeric/expression.inc"
-#include "layout/types.inc"
-#include "layout/address.inc"
-#include "layout/construction.inc"
-#include "layout/planning.inc"
+#include "layout/record.inc"
+#include "layout/traversal.inc"
+#include "layout/blocking.inc"
 #include "ffi/descriptor.inc"
-#include "kernels/affine.inc"
-#include "kernels/reduction.inc"
+#include "kernels/generic.inc"
+#include "kernels/specialized.inc"
+#include "kernels/dispatch.inc"
+#include "execute/scheduling.inc"
 #include "execute/reduction.inc"
+#include "thread_pool_test_support.h"
 #include "reduction_input.inc"
 
 std::string Bytes(const std::vector<uint64_t>& words) {
@@ -76,14 +84,17 @@ void CheckExecution() {
   result.fill(99);
   for (int32_t factor : {1, 2}) {
     std::vector<std::size_t> bound;
-    ExecuteReduction<scalar::S32, scalar::S32>(
-        decoded.records, source.data(), result.data() + 1,
-        decoded.source_size, decoded.output_size, 2,
-        [&](std::size_t index, uint64_t, auto execute) {
-          bound.push_back(index);
-          execute(expression::Scale<scalar::S32>{factor});
-        });
-    assert((bound == std::vector<std::size_t>{0, 0, 1, 1, 2, 2}));
+    {
+      testing::ThreadPool pool(1);
+      assert(!testing::CompletedError(ExecuteReduction<scalar::S32, scalar::S32>(
+          pool.get(), decoded.records, source.data(), result.data() + 1, decoded.source_size,
+          decoded.output_size, 2,
+          [&](std::size_t index, uint64_t, auto execute) {
+            bound.push_back(index);
+            execute(expression::Scale<scalar::S32>{factor});
+          })).failure());
+    }
+    assert((bound == std::vector<std::size_t>{0, 1, 2, 0, 1, 2}));
     assert((result == std::array<int32_t, 12>{
         99, 0, 15 * factor, 0, 13 * factor, 0,
         0, 30 * factor, 0, 26 * factor, 0, 99}));
@@ -102,12 +113,16 @@ void CheckBoundary() {
   const auto empty = Bytes({1, 0, 3, 0});
   const auto decoded = descriptor::DecodeReductionLayout(empty.data(), empty.size());
   std::array<int32_t, 3> result{7, 7, 7};
-  ExecuteReduction<scalar::S32, scalar::S32>(
-      decoded.records, nullptr, result.data(), decoded.source_size, decoded.output_size, 1,
-      [](std::size_t, uint64_t, auto execute) {
-        assert(false);
-        execute(expression::Identity<scalar::S32>{});
-      });
+  {
+    const auto programs = layout::PrepareGeneratedRecords(
+        decoded.records, sizeof(scalar::Value<scalar::S32>), sizeof(scalar::Value<scalar::S32>), false);
+    ExecuteReductionBatch<scalar::S32, scalar::S32>(
+        programs, nullptr, result.data(), decoded.output_size,
+        [](std::size_t, auto execute) {
+          assert(false);
+          execute(expression::Identity<scalar::S32>{});
+        });
+  }
   assert((result == std::array<int32_t, 3>{0, 0, 0}));
   const ReductionInput broadcast{0, 0, 0, {UINT64_MAX}, {0}, {1}, {INT64_MIN}, {true}};
   const auto huge = Bytes(Encode({broadcast}, 1, 1));

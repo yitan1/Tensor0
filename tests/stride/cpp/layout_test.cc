@@ -1,6 +1,5 @@
-#include "layout/types.inc"
-#include "layout/address.inc"
-#include "layout/planning.inc"
+#include "layout/record.inc"
+#include "layout/traversal.inc"
 #include "layout/blocking.inc"
 
 #include <cassert>

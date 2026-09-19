@@ -75,7 +75,7 @@ def test_backend_invalidation_and_failed_compile(build):
         assert result.returncode == 0
         assert len(commands) == 1
         assert f"{backend}/stride_ffi.cc" in commands[0]
-    for name in ("numeric/scalar.inc", "execute/dot.inc", "layout/construction.inc",
+    for name in ("numeric/scalar.inc", "execute/reduction.inc", "layout/record.inc",
                  "kernels/avx2.inc"):
         source = manifest / "native" / name
         source.write_text(source.read_text() + " changed")

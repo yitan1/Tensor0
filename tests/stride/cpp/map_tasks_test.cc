@@ -15,17 +15,15 @@ namespace ffi = xla::ffi;
 namespace tensor0::stride {
 #include "numeric/scalar.inc"
 #include "numeric/expression.inc"
-#include "layout/types.inc"
-#include "layout/address.inc"
-#include "layout/construction.inc"
-#include "layout/planning.inc"
+#include "layout/record.inc"
+#include "layout/traversal.inc"
 #include "layout/blocking.inc"
 #include "ffi/descriptor.inc"
-#include "runtime/runtime.inc"
-#include "kernels/affine.inc"
+#include "kernels/generic.inc"
+#include "kernels/specialized.inc"
+#include "kernels/dispatch.inc"
+#include "execute/scheduling.inc"
 #include "execute/map.inc"
-#include "execute/update.inc"
-#include "execute/map_tasks.inc"
 }
 #include "thread_pool_test_support.h"
 
@@ -71,7 +69,7 @@ void CheckCopyAndUpdate() {
       }
       expected_copy[1] = source[0];
       testing::ThreadPool pool(threads);
-      auto copy = native::ExecuteCopyBatches<scalar::F64, scalar::F32>(
+      auto copy = native::ExecuteCopy<scalar::F64, scalar::F32>(
           pool.get(), records, source.data(), copied.data(), size, output_size, 1);
       if (threads == 4) assert(copied == std::vector<float>(output_size, 0));
       Complete(pool, std::move(copy), threads == 4);
@@ -87,7 +85,7 @@ void CheckCopyAndUpdate() {
           for (bool alias : {false, true}) {
             auto result = alias ? base : std::vector<float>(output_size, 99);
             const auto* original_base = alias ? result.data() : base.data();
-            auto update = native::ExecuteUpdateTasks<scalar::F32, scalar::F64, scalar::S32>(
+            auto update = native::ExecuteUpdate<scalar::F32, scalar::F64, scalar::S32>(
                 pool.get(), records, alpha == 0 ? nullptr : source.data(), original_base,
                 result.data(), size, output_size, 1, &alpha, 1, &beta, 1,
                 expression::Identity<scalar::F64>{}, expression::Identity<scalar::F32>{});
@@ -109,7 +107,7 @@ void CheckAliasedStorageAndLifetime() {
   std::vector<float> storage(2 * size + 2, 3);
   float alpha = 2, beta = 1;
   testing::ThreadPool pool(4);
-  auto future = native::ExecuteUpdateTasks<scalar::F32, scalar::F32, scalar::F32>(
+  auto future = native::ExecuteUpdate<scalar::F32, scalar::F32, scalar::F32>(
       pool.get(), records, storage.data(), storage.data(), storage.data(),
       storage.size(), storage.size(), 1, &alpha, 1, &beta, 1,
       expression::Identity<scalar::F32>{}, expression::Identity<scalar::F32>{});
@@ -121,7 +119,7 @@ void CheckAliasedStorageAndLifetime() {
   bool ready = false;
   auto owner = std::make_shared<int>(7);
   std::weak_ptr<int> lifetime = owner;
-  auto pending = native::ExecuteMapTasks(pool.get(), records, 4, 4, [] {},
+  auto pending = native::ExecuteMapTasks(pool.get(), layout::PrepareGeneratedRecords(records, 4, 4), [] {},
       [owner](const auto& block) {
         assert(*owner == 7);
         if (block.source_offset == 2 * size) throw std::runtime_error("injected failure");
@@ -143,10 +141,10 @@ void CheckEmptyAndBatchScheduling() {
   std::vector<float> result(9, 99), base(9, 3);
   const float alpha = 2, beta = 1;
   const std::vector<layout::Record> empty;
-  Complete(pool, native::ExecuteCopyBatches<scalar::F32, scalar::F32>(
+  Complete(pool, native::ExecuteCopy<scalar::F32, scalar::F32>(
       pool.get(), empty, nullptr, result.data(), 0, 9, 1), false);
   assert(result == std::vector<float>(9, 0));
-  Complete(pool, native::ExecuteUpdateTasks<scalar::F32, scalar::F32, scalar::F32>(
+  Complete(pool, native::ExecuteUpdate<scalar::F32, scalar::F32, scalar::F32>(
       pool.get(), empty, nullptr, base.data(), result.data(), 0, 9, 1,
       &alpha, 1, &beta, 1, expression::Identity<scalar::F32>{}, expression::Identity<scalar::F32>{}), false);
   assert(result == base);
@@ -185,7 +183,7 @@ void CheckBatchInitialization() {
           }
         }
       }
-      Complete(pool, native::ExecuteCopyBatches<scalar::F32, scalar::F32>(
+      Complete(pool, native::ExecuteCopy<scalar::F32, scalar::F32>(
           pool.get(), records, source.data(), copied.data(), size, size, batches), threads == 4);
       assert(copied == expected_copy);
       auto expected = base;
@@ -200,7 +198,7 @@ void CheckBatchInitialization() {
       }
       for (bool alias : {false, true}) {
         auto result = alias ? base : std::vector<float>(batches * size, 99);
-        Complete(pool, native::ExecuteUpdateTasks<scalar::F32, scalar::F32, scalar::F32>(
+        Complete(pool, native::ExecuteUpdate<scalar::F32, scalar::F32, scalar::F32>(
             pool.get(), records, source.data(), alias ? result.data() : base.data(),
             result.data(), size, size, batches, alpha.data(), batches, beta.data(), batches,
             expression::Identity<scalar::F32>{}, expression::Identity<scalar::F32>{}), threads == 4);
@@ -220,7 +218,7 @@ void CheckWorkerLimit() {
     assert(native::AvailableWorkerCount(pool.get()) == workers);
     std::atomic<uint64_t> visited{0};
     int initializations = 0;
-    auto future = native::ExecuteMapTasks(pool.get(), {record}, 4, 4,
+    auto future = native::ExecuteMapTasks(pool.get(), layout::PrepareGeneratedRecords({record}, 4, 4),
         [&] { ++initializations; }, [&](const auto& domain) {
           assert(initializations == 1);
           visited.fetch_add(layout::ElementCount(domain));
@@ -238,7 +236,41 @@ void CheckWorkerLimit() {
   native::worker_limit.store(UINT64_MAX);
 }
 
+void CheckPreparedLifetimeAndFailure() {
+  constexpr uint64_t size = 65536, batches = 7;
+  testing::ThreadPool pool(4);
+  std::vector<float> source(size * batches, 2), base(size * batches, 3), result(size * batches, 99);
+  const float alpha = 2, beta = 0;
+  const auto record = layout::BuildLayout({1}, {1}, 0, {1}, 1, size, size, 0);
+  // Temporary record vectors must not be retained by asynchronous batch callbacks.
+  Complete(pool, native::ExecuteCopy<scalar::F32, scalar::F32>(
+      pool.get(), {record}, source.data(), result.data(), size, size, batches), true);
+  for (uint64_t index = 0; index < result.size(); ++index) {
+    assert(result[index] == (index % size == 1 ? 2 : 0));
+  }
+  Complete(pool, native::ExecuteUpdate<scalar::F32, scalar::F32, scalar::F32>(
+      pool.get(), {record}, source.data(), base.data(), result.data(), size, size, batches,
+      &alpha, 1, &beta, 1, expression::Identity<scalar::F32>{}, expression::Identity<scalar::F32>{}), true);
+  for (uint64_t index = 0; index < result.size(); ++index) {
+    assert(result[index] == (index % size == 1 ? 4 : 3));
+  }
+  auto invalid = record;
+  invalid.shape = {UINT64_MAX, 2};
+  invalid.source_strides = invalid.destination_strides = {0, 0};
+  bool failed = false;
+  auto future = native::ExecuteCopy<scalar::F32, scalar::F32>(
+      pool.get(), {invalid}, nullptr, result.data(), 0, size, batches);
+  future.OnReady([&](const std::optional<ffi::Error>& error) { failed = error.has_value(); });
+  assert(failed && pool.tasks.empty() && result[0] == 3);
+  Complete(pool, native::ExecuteCopy<scalar::F32, scalar::F32>(
+      pool.get(), {}, nullptr, nullptr, 0, 0, batches), false);
+  Complete(pool, native::ExecuteUpdate<scalar::F32, scalar::F32, scalar::F32>(
+      pool.get(), {}, nullptr, nullptr, nullptr, 0, 0, batches,
+      &alpha, 1, &beta, 1, expression::Identity<scalar::F32>{}, expression::Identity<scalar::F32>{}), false);
+}
+
 int main() {
+  CheckPreparedLifetimeAndFailure();
   CheckWorkerLimit();
   CheckBatchInitialization();
   CheckCopyAndUpdate();

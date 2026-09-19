@@ -1,18 +1,27 @@
+#include <atomic>
 #include <cassert>
 #include <cmath>
 #include <complex>
 #include <cstring>
+#include <functional>
+#include <memory>
 #include <random>
 #include <type_traits>
+#include "xla/ffi/api/ffi.h"
+
+namespace ffi = xla::ffi;
 #include "numeric/scalar.inc"
 #include "numeric/expression.inc"
-#include "layout/types.inc"
-#include "layout/address.inc"
-#include "layout/construction.inc"
-#include "layout/planning.inc"
-#include "kernels/affine.inc"
-#include "kernels/reduction.inc"
+#include "layout/record.inc"
+#include "layout/traversal.inc"
+#include "layout/blocking.inc"
+#include "ffi/descriptor.inc"
+#include "kernels/generic.inc"
+#include "kernels/specialized.inc"
+#include "kernels/dispatch.inc"
+#include "execute/scheduling.inc"
 #include "execute/reduction.inc"
+#include "thread_pool_test_support.h"
 
 std::vector<std::pair<int64_t, int64_t>> Addresses(const layout::Record& record) {
   std::vector<std::pair<int64_t, int64_t>> result;
@@ -113,15 +122,20 @@ void CheckExecution() {
       for (int repeat = 0; repeat < 2; ++repeat) {
         std::vector<float> output(batches * 5 + 2, 7);
         uint64_t binds = 0;
-        ExecuteReduction<scalar::F32, scalar::F32>(planned, source.data(), output.data() + 1,
-            4, 5, batches, [&](std::size_t index, uint64_t batch, auto execute) {
-              assert(index == 7 || index == 9);
-              assert(index == (binds < batches ? 7 : 9));
-              ++binds;
-              if (index == 7) execute(expression::Identity<scalar::F32>{});
-              else execute(expression::Scale<scalar::S32, expression::Identity<scalar::F32>>{
-                  static_cast<int32_t>(batch + 2), {}});
-            });
+        {
+          testing::ThreadPool pool(1);
+          assert(!testing::CompletedError(ExecuteReduction<scalar::F32, scalar::F32>(
+              pool.get(), planned, source.data(), output.data() + 1, 4, 5, batches,
+              [&](std::size_t index, uint64_t batch, auto execute) {
+                assert(index == 7 || index == 9);
+                assert(index == (binds % 2 == 0 ? 7 : 9));
+                assert(batch == binds / 2);
+                ++binds;
+                if (index == 7) execute(expression::Identity<scalar::F32>{});
+                else execute(expression::Scale<scalar::S32, expression::Identity<scalar::F32>>{
+                    static_cast<int32_t>(batch + 2), {}});
+              })).failure());
+        }
         assert(binds == 2 * batches);
         assert(output == expected);
         assert(source == original);
@@ -129,15 +143,26 @@ void CheckExecution() {
     }
   }
   float output[] = {7, 7, 7};
-  ExecuteReduction<scalar::F32, scalar::F32>({}, nullptr, output, 0, 3, 1,
-      [](std::size_t, uint64_t, auto) { assert(false); });
+  {
+    const auto programs = layout::PrepareGeneratedRecords(
+        {}, sizeof(scalar::Value<scalar::F32>), sizeof(scalar::Value<scalar::F32>), false);
+    ExecuteReductionBatch<scalar::F32, scalar::F32>(
+        programs, nullptr, output, 3, [](std::size_t, auto) { assert(false); });
+  }
   assert(output[0] == 0 && output[1] == 0 && output[2] == 0);
-  ExecuteReduction<scalar::F32, scalar::F32>({}, nullptr, nullptr, 0, 0, 3,
-      [](std::size_t, uint64_t, auto) { assert(false); });
+  {
+    testing::ThreadPool pool(1);
+    assert(!testing::CompletedError(ExecuteReduction<scalar::F32, scalar::F32>(
+        pool.get(), {}, nullptr, nullptr, 0, 0, 3, [](std::size_t, uint64_t, auto) { assert(false); })).failure());
+  }
   const auto empty = layout::BuildLayout({0}, {INT64_MIN}, 0, {INT64_MAX}, 3, 0, 3, 0);
   std::fill_n(output, 3, 7);
-  ExecuteReduction<scalar::F32, scalar::F32>({empty}, nullptr, output, 0, 3, 1,
-      [](std::size_t, uint64_t, auto) { assert(false); });
+  {
+    const auto programs = layout::PrepareGeneratedRecords(
+        {empty}, sizeof(scalar::Value<scalar::F32>), sizeof(scalar::Value<scalar::F32>), false);
+    ExecuteReductionBatch<scalar::F32, scalar::F32>(
+        programs, nullptr, output, 3, [](std::size_t, auto) { assert(false); });
+  }
   assert(output[0] == 0 && output[1] == 0 && output[2] == 0);
 }
 
@@ -178,12 +203,15 @@ void CheckConstruction() {
   Rejects([] { layout::BuildLayout({1}, {0}, 0, {0}, 0, 0, 1, 0); });
   Rejects([] { layout::BuildLayout({1}, {0}, 0, {0}, 0, 1, 0, 0); });
   float output = 7;
-  Rejects([&] { ExecuteReduction<scalar::F32, scalar::F32>({}, nullptr, &output,
-      UINT64_MAX, 1, 2, [](std::size_t, uint64_t, auto) { assert(false); }); });
-  assert(output == 7);
-  Rejects([&] { ExecuteReduction<scalar::F32, scalar::F32>({}, nullptr, &output,
-      0, UINT64_MAX, 2, [](std::size_t, uint64_t, auto) { assert(false); }); });
-  assert(output == 7);
+  testing::ThreadPool pool(1);
+  for (const auto& sizes : std::array<std::array<uint64_t, 2>, 2>{{{UINT64_MAX, 1}, {0, UINT64_MAX}}}) {
+    const auto error = testing::CompletedError(ExecuteReduction<scalar::F32, scalar::F32>(
+        pool.get(), {}, nullptr, &output, sizes[0], sizes[1], 2,
+        [](std::size_t, uint64_t, auto) { assert(false); }));
+    assert(error.failure());
+    assert(error.message() == "tensor0-native: reduction batch storage exceeds address range");
+    assert(output == 7);
+  }
 }
 
 void CheckNumeric() {

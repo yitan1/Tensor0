@@ -28,8 +28,7 @@ def test_cpp_contract(tmp_path, source):
     executable = tmp_path / "contract"
     if source == "ffi_boundary_test.cc":
         unit = (native / "stride_ffi.cc").read_text()
-        bindings = (native / "ffi/bindings.inc").read_text().split("XLA_FFI_DEFINE_HANDLER_SYMBOL(", 1)[0]
-        (tmp_path / "ffi_under_test.inc").write_text(unit.replace('#include "ffi/bindings.inc"', bindings))
+        (tmp_path / "ffi_under_test.inc").write_text(unit.replace('#include "ffi/bindings.inc"', ""))
     subprocess.run([
         compiler, "-std=c++20", "-O0" if source == "ffi_boundary_test.cc" else "-O1",
         "-Wall", "-Wextra", "-Wpedantic", "-Werror",

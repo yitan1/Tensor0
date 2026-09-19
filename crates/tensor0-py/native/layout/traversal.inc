@@ -187,23 +187,4 @@ bool IsRank4TwoPairCandidate(const Record& record, std::array<std::size_t, 4>* a
   return matches;
 }
 
-Record SliceRecordRange(const Record& record, std::size_t axis,
-                            uint64_t unit_start, uint64_t unit_count) {
-  if (axis >= record.shape.size() || unit_start > record.shape[axis] ||
-      unit_count > record.shape[axis] - unit_start) {
-    throw std::invalid_argument("record range exceeds layout extent");
-  }
-  Record slice = record;
-  slice.shape[axis] = unit_count;
-  if (ElementCount(record) == 0 || unit_count == 0) {
-    return slice;
-  }
-  slice.source_offset +=
-      static_cast<int64_t>(unit_start) * record.source_strides[axis];
-  slice.destination_offset +=
-      static_cast<int64_t>(unit_start) * record.destination_strides[axis];
-  return slice;
-}
-
-
 }

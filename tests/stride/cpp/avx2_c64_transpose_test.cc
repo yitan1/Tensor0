@@ -2,16 +2,19 @@
 #include <cmath>
 #include <cstring>
 #include "kernels/avx2.inc"
+#include "xla/ffi/api/ffi.h"
+
+namespace ffi = xla::ffi;
 #include "numeric/scalar.inc"
 #include "numeric/expression.inc"
-#include "layout/types.inc"
-#include "layout/address.inc"
-#include "layout/construction.inc"
-#include "layout/planning.inc"
+#include "layout/record.inc"
+#include "layout/traversal.inc"
 #include "layout/blocking.inc"
-#include "kernels/affine.inc"
+#include "kernels/generic.inc"
+#include "kernels/specialized.inc"
+#include "kernels/dispatch.inc"
+#include "execute/scheduling.inc"
 #include "execute/map.inc"
-#include "execute/update.inc"
 
 void CheckComponent(float actual, float expected, bool exact) {
   if (exact) {
@@ -63,16 +66,24 @@ void CheckMapping(const layout::Record& record, const std::vector<std::complex<f
   }
 #endif
   if constexpr (identity) {
-    ExecuteCopy<scalar::C64>({record}, source.data(), result.data(), output_size);
+    {
+      const auto programs = layout::PrepareGeneratedRecords(
+          {record}, sizeof(scalar::Value<scalar::C64>), sizeof(scalar::Value<scalar::C64>));
+      ExecuteCopyBatch<scalar::C64>(programs, source.data(), result.data(), output_size);
+    }
     for (std::size_t element = 0; element < result.size(); ++element) {
       if (!selected[element]) expected[element] = {};
     }
     check();
   } else if constexpr (std::is_same_v<SourceOp, expression::Scale<scalar::C64>>) {
     const std::vector<std::complex<float>> base(output_size, sentinel);
-    ExecuteUpdate<scalar::C64, scalar::C64, scalar::C64>({record}, source.data(), base.data(),
-        result.data(), output_size, operation.factor, {}, expression::Identity<scalar::C64>{},
-        expression::Identity<scalar::C64>{});
+    {
+      const auto programs = layout::PrepareGeneratedRecords(
+          {record}, sizeof(*source.data()), sizeof(scalar::Value<scalar::C64>));
+      ExecuteUpdateBatch<scalar::C64, scalar::C64, scalar::C64>(
+          programs, source.data(), base.data(), result.data(), output_size, operation.factor, {},
+          expression::Identity<scalar::C64>{}, expression::Identity<scalar::C64>{});
+    }
     for (std::size_t element = 0; element < result.size(); ++element) {
       if (selected[element] && scalar::IsZero<scalar::C64>(operation.factor)) expected[element] = {};
     }

@@ -97,29 +97,3 @@ ffi::Future ExecuteBatchTasks(
   return ExecuteTasks(thread_pool, batch_count,
                       std::max<uint64_t>(1, elements / kMinimumWorkerElements), std::move(execute));
 }
-
-std::atomic<uint64_t> prepared_created_count{0};
-std::atomic<uint64_t> prepared_destroyed_count{0};
-
-struct PreparedState {
-  static ffi::TypeId id;
-
-  explicit PreparedState(descriptor::DecodedLayout value)
-      : records(std::move(value.records)), source_size(value.source_size), output_size(value.output_size) {
-    prepared_created_count.fetch_add(1, std::memory_order_relaxed);
-  }
-
-  PreparedState(const PreparedState&) = delete;
-  PreparedState& operator=(const PreparedState&) = delete;
-
-  ~PreparedState() {
-    prepared_destroyed_count.fetch_add(1, std::memory_order_relaxed);
-  }
-
-  const std::vector<layout::Record> records;
-  const uint64_t source_size;
-  const uint64_t output_size;
-};
-
-ffi::TypeId PreparedState::id = {};
-const ffi::TypeInfo kPreparedTypeInfo = ffi::MakeTypeInfo<PreparedState>();

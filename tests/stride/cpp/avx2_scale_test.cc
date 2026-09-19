@@ -3,15 +3,19 @@
 #include <complex>
 #include <cstring>
 #include "kernels/avx2.inc"
+#include "xla/ffi/api/ffi.h"
+
+namespace ffi = xla::ffi;
 #include "numeric/scalar.inc"
 #include "numeric/expression.inc"
-#include "layout/types.inc"
-#include "layout/address.inc"
-#include "layout/construction.inc"
-#include "layout/planning.inc"
+#include "layout/record.inc"
+#include "layout/traversal.inc"
 #include "layout/blocking.inc"
-#include "kernels/affine.inc"
-#include "execute/update.inc"
+#include "kernels/generic.inc"
+#include "kernels/specialized.inc"
+#include "kernels/dispatch.inc"
+#include "execute/scheduling.inc"
+#include "execute/map.inc"
 
 template <typename Dtype>
 void CheckValue(scalar::Value<Dtype> actual, scalar::Value<Dtype> expected) {
@@ -64,10 +68,14 @@ void CheckScale(scalar::Value<Coefficient> factor) {
     const auto record = layout::BuildLayout({17}, {stride}, stride < 0 ? 33 : 1,
                                            {1}, 2, input.size(), 21, 0);
     std::vector<scalar::Value<Result>> base(21, sentinel), result(21);
-    ExecuteUpdate<Result, Coefficient, Coefficient>(
-        {record}, input.data(), base.data(), result.data(), result.size(), factor,
-        scalar::Value<Coefficient>{}, expression::Identity<scalar::F16>{},
-        expression::Identity<Result>{});
+    {
+      const auto programs = layout::PrepareGeneratedRecords(
+          {record}, sizeof(*input.data()), sizeof(scalar::Value<Result>));
+      ExecuteUpdateBatch<Result, Coefficient, Coefficient>(
+          programs, input.data(), base.data(), result.data(), result.size(), factor,
+          scalar::Value<Coefficient>{}, expression::Identity<scalar::F16>{},
+          expression::Identity<Result>{});
+    }
     for (int64_t element = 0; element < 17; ++element) {
       const auto value = input[record.source_offset + element * stride];
       const auto expected = scalar::IsZero<Coefficient>(factor) ? scalar::Value<Result>{}
@@ -118,13 +126,21 @@ int main() {
   const auto record = layout::BuildLayout({17}, {1}, 0, {1}, 0, 17, 17, 0);
   auto expected = input;
   for (auto& value : expected) value = scalar::Multiply<scalar::F16>(0x3555, value);
-  ExecuteUpdate<scalar::F16, scalar::F16, scalar::F16>(
-      {record}, input.data(), input.data(), input.data(), input.size(), 0x3555, 0,
-      expression::Identity<scalar::F16>{}, expression::Identity<scalar::F16>{});
+  {
+    const auto programs = layout::PrepareGeneratedRecords(
+        {record}, sizeof(*input.data()), sizeof(scalar::Value<scalar::F16>));
+    ExecuteUpdateBatch<scalar::F16, scalar::F16, scalar::F16>(
+        programs, input.data(), input.data(), input.data(), input.size(), 0x3555, 0,
+        expression::Identity<scalar::F16>{}, expression::Identity<scalar::F16>{});
+  }
   assert(input == expected);
-  ExecuteUpdate<scalar::F16, scalar::F16, scalar::F16>(
-      {record}, nullptr, input.data(), input.data(), input.size(), 0, 0x3e00,
-      expression::Identity<scalar::F16>{}, expression::Identity<scalar::F16>{});
+  {
+    const auto programs = layout::PrepareGeneratedRecords(
+        {record}, sizeof(scalar::Value<scalar::F16>), sizeof(scalar::Value<scalar::F16>));
+    ExecuteUpdateBatch<scalar::F16, scalar::F16, scalar::F16>(
+        programs, nullptr, input.data(), input.data(), input.size(), 0, 0x3e00,
+        expression::Identity<scalar::F16>{}, expression::Identity<scalar::F16>{});
+  }
   for (std::size_t element = 0; element < input.size(); ++element) {
     CheckValue<scalar::F16>(input[element], scalar::Multiply<scalar::F16>(0x3e00, expected[element]));
   }

@@ -1,8 +1,6 @@
 #include <cassert>
 #include <random>
-#include "layout/types.inc"
-#include "layout/address.inc"
-#include "layout/construction.inc"
+#include "layout/record.inc"
 
 void SameRecord(const layout::Record& actual, const layout::Record& expected) {
   assert(actual.semantic_index == expected.semantic_index);

@@ -2,15 +2,19 @@
 #include <cmath>
 #include <cstring>
 #include "kernels/avx2.inc"
+#include "xla/ffi/api/ffi.h"
+
+namespace ffi = xla::ffi;
 #include "numeric/scalar.inc"
 #include "numeric/expression.inc"
-#include "layout/types.inc"
-#include "layout/address.inc"
-#include "layout/construction.inc"
-#include "layout/planning.inc"
+#include "layout/record.inc"
+#include "layout/traversal.inc"
 #include "layout/blocking.inc"
-#include "kernels/affine.inc"
-#include "execute/update.inc"
+#include "kernels/generic.inc"
+#include "kernels/specialized.inc"
+#include "kernels/dispatch.inc"
+#include "execute/scheduling.inc"
+#include "execute/map.inc"
 
 void CheckComponent(float actual, float expected) {
   if (std::isnan(expected)) {
@@ -78,10 +82,14 @@ int main() {
         source.size(), source.size(), 0);
     for (bool base_only : {false, true}) {
       auto result = source;
-      ExecuteUpdate<scalar::C64, scalar::C64, scalar::C64>(
-          {record}, base_only ? nullptr : result.data(), result.data(), result.data(), result.size(),
-          base_only ? std::complex<float>{} : factor, base_only ? factor : std::complex<float>{},
-          expression::Identity<scalar::C64>{}, expression::Identity<scalar::C64>{});
+      {
+        const auto programs = layout::PrepareGeneratedRecords(
+            {record}, sizeof(*(base_only ? nullptr : result.data())), sizeof(scalar::Value<scalar::C64>));
+        ExecuteUpdateBatch<scalar::C64, scalar::C64, scalar::C64>(
+            programs, base_only ? nullptr : result.data(), result.data(), result.data(), result.size(),
+            base_only ? std::complex<float>{} : factor, base_only ? factor : std::complex<float>{},
+            expression::Identity<scalar::C64>{}, expression::Identity<scalar::C64>{});
+      }
       for (std::size_t element = 0; element < result.size(); ++element) {
         CheckValue(result[element], scalar::IsZero<scalar::C64>(factor) ? std::complex<float>{}
             : scalar::IsOne<scalar::C64>(factor) ? source[element] : operation(source[element]));

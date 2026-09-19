@@ -8,28 +8,24 @@ use std::process::Command;
 const VENDORED_JAX_VERSION: &str = "0.10.1";
 const VENDORED_JAXLIB_VERSION: &str = "0.10.1";
 const FFI_HEADERS: [&str; 3] = ["api.h", "c_api.h", "ffi.h"];
-const STRIDE_NATIVE_SOURCES: [&str; 21] = [
+const STRIDE_NATIVE_SOURCES: [&str; 17] = [
     "native/stride_ffi.cc",
     "native/numeric/scalar.inc",
     "native/numeric/expression.inc",
-    "native/layout/types.inc",
-    "native/layout/address.inc",
-    "native/layout/construction.inc",
-    "native/layout/planning.inc",
+    "native/layout/record.inc",
+    "native/layout/traversal.inc",
     "native/layout/blocking.inc",
     "native/ffi/dtype.inc",
     "native/ffi/descriptor.inc",
-    "native/runtime/runtime.inc",
-    "native/kernels/affine.inc",
+    "native/execute/scheduling.inc",
+    "native/kernels/generic.inc",
+    "native/kernels/specialized.inc",
+    "native/kernels/dispatch.inc",
     "native/kernels/avx2.inc",
     "native/execute/map.inc",
-    "native/execute/update.inc",
-    "native/execute/map_tasks.inc",
+    "native/ffi/handlers.inc",
     "native/ffi/bindings.inc",
-    "native/kernels/reduction.inc",
     "native/execute/reduction.inc",
-    "native/execute/dot.inc",
-    "native/execute/reduction_tasks.inc",
 ];
 
 struct JaxBuildInfo {

@@ -2,16 +2,19 @@
 #include <cmath>
 #include <cstring>
 #include "kernels/avx2.inc"
+#include "xla/ffi/api/ffi.h"
+
+namespace ffi = xla::ffi;
 #include "numeric/scalar.inc"
 #include "numeric/expression.inc"
-#include "layout/types.inc"
-#include "layout/address.inc"
-#include "layout/construction.inc"
-#include "layout/planning.inc"
+#include "layout/record.inc"
+#include "layout/traversal.inc"
 #include "layout/blocking.inc"
-#include "kernels/affine.inc"
+#include "kernels/generic.inc"
+#include "kernels/specialized.inc"
+#include "kernels/dispatch.inc"
+#include "execute/scheduling.inc"
 #include "execute/map.inc"
-#include "execute/update.inc"
 
 void CheckValue(float actual, float expected) {
   if (std::isnan(expected)) {
@@ -90,8 +93,13 @@ int main() {
     kernels::ExecuteMapRecord(record, source.data(), expected.data(), operation);
     for (std::size_t element = 0; element < result.size(); ++element) CheckValue(result[element], expected[element]);
     std::fill(result.begin(), result.end(), 7);
-    ExecuteUpdate<scalar::F32, scalar::C64, scalar::F32>({record}, source.data(), result.data(),
-        result.data(), result.size(), factor, 0, expression::Identity<scalar::C64>{}, expression::Identity<scalar::F32>{});
+    {
+      const auto programs = layout::PrepareGeneratedRecords(
+          {record}, sizeof(*source.data()), sizeof(scalar::Value<scalar::F32>));
+      ExecuteUpdateBatch<scalar::F32, scalar::C64, scalar::F32>(
+          programs, source.data(), result.data(), result.data(), result.size(), factor, 0,
+          expression::Identity<scalar::C64>{}, expression::Identity<scalar::F32>{});
+    }
     for (int64_t row = 0; row < 3; ++row) {
       for (int64_t element = 0; element < 17; ++element) {
         const auto value = source[1 + row * 37 + element];
@@ -117,8 +125,13 @@ int main() {
     }
     for (std::size_t element = 0; element < result.size(); ++element) CheckValue(result[element], expected[element]);
     std::fill(result.begin(), result.end(), 7);
-    ExecuteUpdate<scalar::F32, scalar::F32, scalar::F32>({record}, source.data(), result.data(),
-        result.data(), result.size(), factor, 0, expression::Identity<scalar::C64>{}, expression::Identity<scalar::F32>{});
+    {
+      const auto programs = layout::PrepareGeneratedRecords(
+          {record}, sizeof(*source.data()), sizeof(scalar::Value<scalar::F32>));
+      ExecuteUpdateBatch<scalar::F32, scalar::F32, scalar::F32>(
+          programs, source.data(), result.data(), result.data(), result.size(), factor, 0,
+          expression::Identity<scalar::C64>{}, expression::Identity<scalar::F32>{});
+    }
     for (int64_t row = 0; row < 3; ++row) {
       for (int64_t element = 0; element < 17; ++element) {
         const auto value = source[1 + row * 37 + element];

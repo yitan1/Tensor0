@@ -3,16 +3,19 @@
 #include <complex>
 #include <cstring>
 #include "kernels/avx2.inc"
+#include "xla/ffi/api/ffi.h"
+
+namespace ffi = xla::ffi;
 #include "numeric/scalar.inc"
 #include "numeric/expression.inc"
-#include "layout/types.inc"
-#include "layout/address.inc"
-#include "layout/construction.inc"
-#include "layout/planning.inc"
+#include "layout/record.inc"
+#include "layout/traversal.inc"
 #include "layout/blocking.inc"
-#include "kernels/affine.inc"
+#include "kernels/generic.inc"
+#include "kernels/specialized.inc"
+#include "kernels/dispatch.inc"
+#include "execute/scheduling.inc"
 #include "execute/map.inc"
-#include "execute/update.inc"
 
 void CheckValues(const std::vector<uint16_t>& actual, const std::vector<uint16_t>& expected,
                  bool exact) {
@@ -60,15 +63,23 @@ void CheckMapping(const layout::Record& record, const std::vector<uint16_t>& sou
 #endif
   std::vector<uint16_t> base(size, 0xdead);
   if constexpr (identity) {
-    ExecuteCopy<scalar::F16>({record}, source.data(), result.data(), size);
+    {
+      const auto programs = layout::PrepareGeneratedRecords(
+          {record}, sizeof(scalar::Value<scalar::F16>), sizeof(scalar::Value<scalar::F16>));
+      ExecuteCopyBatch<scalar::F16>(programs, source.data(), result.data(), size);
+    }
     for (std::size_t element = 0; element < size; ++element) {
       if (!selected[element]) expected[element] = 0;
     }
     CheckValues(result, expected, true);
   } else if constexpr (std::is_same_v<SourceOp, expression::Scale<scalar::F16>>) {
-    ExecuteUpdate<scalar::F16, scalar::F16, scalar::F16>(
-        {record}, source.data(), base.data(), result.data(), size, operation.factor, 0,
-        expression::Identity<scalar::F16>{}, expression::Identity<scalar::F16>{});
+    {
+      const auto programs = layout::PrepareGeneratedRecords(
+          {record}, sizeof(*source.data()), sizeof(scalar::Value<scalar::F16>));
+      ExecuteUpdateBatch<scalar::F16, scalar::F16, scalar::F16>(
+          programs, source.data(), base.data(), result.data(), size, operation.factor, 0,
+          expression::Identity<scalar::F16>{}, expression::Identity<scalar::F16>{});
+    }
     if (scalar::IsZero<scalar::F16>(operation.factor)) {
       for (std::size_t element = 0; element < size; ++element) {
         if (selected[element]) expected[element] = 0;

@@ -2,16 +2,19 @@
 #include <cmath>
 #include <cstring>
 #include "kernels/avx2.inc"
+#include "xla/ffi/api/ffi.h"
+
+namespace ffi = xla::ffi;
 #include "numeric/scalar.inc"
 #include "numeric/expression.inc"
-#include "layout/types.inc"
-#include "layout/address.inc"
-#include "layout/construction.inc"
-#include "layout/planning.inc"
+#include "layout/record.inc"
+#include "layout/traversal.inc"
 #include "layout/blocking.inc"
-#include "kernels/affine.inc"
+#include "kernels/generic.inc"
+#include "kernels/specialized.inc"
+#include "kernels/dispatch.inc"
+#include "execute/scheduling.inc"
 #include "execute/map.inc"
-#include "execute/update.inc"
 
 void CheckValue(std::complex<float> actual, std::complex<float> expected) {
   const float actual_components[]{actual.real(), actual.imag()};
@@ -63,8 +66,13 @@ int main() {
       }
       kernels::ExecuteMapRecord(record, source.data(), result.data(), operation);
       for (std::size_t element = 0; element < result.size(); ++element) CheckValue(result[element], expected[element]);
-      ExecuteUpdate<scalar::C64, scalar::C64, scalar::C64>({record}, source.data(), base.data(),
-          base.data(), base.size(), factor, {}, expression::Identity<scalar::F32>{}, expression::Identity<scalar::C64>{});
+      {
+        const auto programs = layout::PrepareGeneratedRecords(
+            {record}, sizeof(*source.data()), sizeof(scalar::Value<scalar::C64>));
+        ExecuteUpdateBatch<scalar::C64, scalar::C64, scalar::C64>(
+            programs, source.data(), base.data(), base.data(), base.size(), factor, {},
+            expression::Identity<scalar::F32>{}, expression::Identity<scalar::C64>{});
+      }
       for (int64_t row = 0; row < 3; ++row) {
         for (int64_t element = 0; element < 17; ++element) {
           const auto value = source[record.source_offset + row * 23 + element * stride];
@@ -109,8 +117,13 @@ int main() {
       kernels::ExecuteMapRecord<RealProduct, scalar::C64>(record, source.data(), result.data(), RealProduct{factor, {}});
       for (std::size_t element = 0; element < result.size(); ++element) CheckValue(result[element], expected[element]);
       std::fill(result.begin(), result.end(), sentinel);
-      ExecuteUpdate<scalar::C64, scalar::F32, scalar::F32>({record}, source.data(), result.data(),
-          result.data(), result.size(), factor, 0, expression::Identity<scalar::F32>{}, expression::Identity<scalar::C64>{});
+      {
+        const auto programs = layout::PrepareGeneratedRecords(
+            {record}, sizeof(*source.data()), sizeof(scalar::Value<scalar::C64>));
+        ExecuteUpdateBatch<scalar::C64, scalar::F32, scalar::F32>(
+            programs, source.data(), result.data(), result.data(), result.size(), factor, 0,
+            expression::Identity<scalar::F32>{}, expression::Identity<scalar::C64>{});
+      }
       for (int64_t row = 0; row < 3; ++row) {
         for (int64_t element = 0; element < 17; ++element) {
           const auto value = source[record.source_offset + row * 37 + element * stride];

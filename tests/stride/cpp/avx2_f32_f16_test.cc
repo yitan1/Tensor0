@@ -2,15 +2,19 @@
 #include <cmath>
 #include <cstring>
 #include "kernels/avx2.inc"
+#include "xla/ffi/api/ffi.h"
+
+namespace ffi = xla::ffi;
 #include "numeric/scalar.inc"
 #include "numeric/expression.inc"
-#include "layout/types.inc"
-#include "layout/address.inc"
-#include "layout/construction.inc"
-#include "layout/planning.inc"
+#include "layout/record.inc"
+#include "layout/traversal.inc"
 #include "layout/blocking.inc"
-#include "kernels/affine.inc"
-#include "execute/update.inc"
+#include "kernels/generic.inc"
+#include "kernels/specialized.inc"
+#include "kernels/dispatch.inc"
+#include "execute/scheduling.inc"
+#include "execute/map.inc"
 
 void CheckValue(uint16_t actual, uint16_t expected) {
   if ((expected & 0x7c00) == 0x7c00 && (expected & 0x03ff) != 0) {
@@ -80,8 +84,13 @@ int main() {
       kernels::ExecuteMapRecord<Product, scalar::F16>(record, source.data(), result.data(), Product{factor, {}});
       for (std::size_t element = 0; element < result.size(); ++element) CheckValue(result[element], expected[element]);
       std::fill(result.begin(), result.end(), sentinel);
-      ExecuteUpdate<scalar::F16, scalar::F32, scalar::F32>({record}, source.data(), result.data(),
-          result.data(), result.size(), factor, 0, expression::Identity<scalar::F32>{}, expression::Identity<scalar::F16>{});
+      {
+        const auto programs = layout::PrepareGeneratedRecords(
+            {record}, sizeof(*source.data()), sizeof(scalar::Value<scalar::F16>));
+        ExecuteUpdateBatch<scalar::F16, scalar::F32, scalar::F32>(
+            programs, source.data(), result.data(), result.data(), result.size(), factor, 0,
+            expression::Identity<scalar::F32>{}, expression::Identity<scalar::F16>{});
+      }
       for (int64_t row = 0; row < 3; ++row) {
         for (int64_t element = 0; element < 17; ++element) {
           const auto value = source[record.source_offset + row * 37 + element * stride];

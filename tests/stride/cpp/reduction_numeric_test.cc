@@ -8,14 +8,18 @@
 #include <limits>
 #include <tuple>
 #include <type_traits>
+#include "xla/ffi/api/ffi.h"
+
+namespace ffi = xla::ffi;
 #include "numeric/scalar.inc"
 #include "numeric/expression.inc"
-#include "layout/types.inc"
-#include "layout/address.inc"
-#include "layout/construction.inc"
-#include "layout/planning.inc"
-#include "kernels/affine.inc"
-#include "kernels/reduction.inc"
+#include "layout/record.inc"
+#include "layout/traversal.inc"
+#include "layout/blocking.inc"
+#include "kernels/generic.inc"
+#include "kernels/specialized.inc"
+#include "kernels/dispatch.inc"
+#include "execute/scheduling.inc"
 #include "execute/reduction.inc"
 #include "reduction_input.inc"
 
@@ -30,12 +34,17 @@ scalar::Value<Accumulator> Reduce(
   }
   const auto sentinel = scalar::Convert<Accumulator, scalar::S32>(7);
   std::array<scalar::Value<Accumulator>, 5> result{sentinel, sentinel, sentinel, sentinel, sentinel};
-  ExecuteReduction<typename SourceOp::InputDtype, Accumulator>(
-      {record}, source.data(), result.data() + 1, Count, 3, 1,
-      [&](std::size_t index, uint64_t, auto execute) {
-        assert(index == 0);
-        execute(source_op);
-      });
+  {
+    const auto programs = layout::PrepareGeneratedRecords(
+        {record}, sizeof(scalar::Value<typename SourceOp::InputDtype>),
+        sizeof(scalar::Value<Accumulator>), false);
+    ExecuteReductionBatch<typename SourceOp::InputDtype, Accumulator>(
+        programs, source.data(), result.data() + 1, 3,
+        [&](std::size_t index, auto execute) {
+          assert(index == 0);
+          execute(source_op);
+        });
+  }
   assert(result.front() == sentinel && result.back() == sentinel);
   assert(result[1] == scalar::Value<Accumulator>{} && result[3] == scalar::Value<Accumulator>{});
   return result[2];

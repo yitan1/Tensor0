@@ -3,16 +3,19 @@
 #include <complex>
 #include <cstring>
 #include "kernels/avx2.inc"
+#include "xla/ffi/api/ffi.h"
+
+namespace ffi = xla::ffi;
 #include "numeric/scalar.inc"
 #include "numeric/expression.inc"
-#include "layout/types.inc"
-#include "layout/address.inc"
-#include "layout/construction.inc"
-#include "layout/planning.inc"
+#include "layout/record.inc"
+#include "layout/traversal.inc"
 #include "layout/blocking.inc"
-#include "kernels/affine.inc"
+#include "kernels/generic.inc"
+#include "kernels/specialized.inc"
+#include "kernels/dispatch.inc"
+#include "execute/scheduling.inc"
 #include "execute/map.inc"
-#include "execute/update.inc"
 
 using Conversion = expression::Cast<scalar::F32, expression::Identity<scalar::F16>>;
 
@@ -57,15 +60,23 @@ int main() {
     const auto record = layout::BuildLayout(
         {17}, {stride}, stride < 0 ? 33 : 1, {1}, 2, input.size(), 21, 0);
     std::vector<float> result(21, -3.0F);
-    ExecuteCopy<scalar::F16, scalar::F32>({record}, input.data(), result.data(), result.size());
+    {
+      const auto programs = layout::PrepareGeneratedRecords(
+          {record}, sizeof(scalar::Value<scalar::F16>), sizeof(scalar::Value<scalar::F32>));
+      ExecuteCopyBatch<scalar::F16, scalar::F32>(programs, input.data(), result.data(), result.size());
+    }
     for (int64_t element = 0; element < 17; ++element) {
       CheckValue(result[element + 2], input[record.source_offset + element * stride]);
     }
     assert(result.front() == 0.0F && result.back() == 0.0F);
     std::vector<float> base(21, -7.0F);
-    ExecuteUpdate<scalar::F32, scalar::F32, scalar::F32>(
-        {record}, input.data(), base.data(), result.data(), result.size(),
-        1.0F, 0.0F, Conversion{}, expression::Identity<scalar::F32>{});
+    {
+      const auto programs = layout::PrepareGeneratedRecords(
+          {record}, sizeof(*input.data()), sizeof(scalar::Value<scalar::F32>));
+      ExecuteUpdateBatch<scalar::F32, scalar::F32, scalar::F32>(
+          programs, input.data(), base.data(), result.data(), result.size(), 1.0F, 0.0F, Conversion{},
+          expression::Identity<scalar::F32>{});
+    }
     for (int64_t element = 0; element < 17; ++element) {
       CheckValue(result[element + 2], input[record.source_offset + element * stride]);
     }

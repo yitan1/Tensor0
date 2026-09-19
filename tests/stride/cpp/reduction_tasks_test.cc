@@ -16,18 +16,15 @@ namespace ffi = xla::ffi;
 namespace tensor0::stride {
 #include "numeric/scalar.inc"
 #include "numeric/expression.inc"
-#include "layout/types.inc"
-#include "layout/address.inc"
-#include "layout/construction.inc"
-#include "layout/planning.inc"
+#include "layout/record.inc"
+#include "layout/traversal.inc"
 #include "layout/blocking.inc"
 #include "ffi/descriptor.inc"
-#include "runtime/runtime.inc"
-#include "kernels/affine.inc"
-#include "kernels/reduction.inc"
+#include "kernels/generic.inc"
+#include "kernels/specialized.inc"
+#include "kernels/dispatch.inc"
+#include "execute/scheduling.inc"
 #include "execute/reduction.inc"
-#include "execute/dot.inc"
-#include "execute/reduction_tasks.inc"
 }
 #include "thread_pool_test_support.h"
 
@@ -58,15 +55,15 @@ void Complete(testing::ThreadPool& pool, ffi::Future future, bool parallel, bool
 
 void CheckSplits() {
   auto record = layout::BuildLayout({5, 3}, {-1, 5}, 4, {0, 0}, 2, 15, 3, 19);
-  std::vector<layout::Record> domains{record};
+  auto domains = layout::PrepareGeneratedRecords({record}, 4, 4, false);
   layout::SplitReductionDomains(&domains, 3, [](const auto& domain, auto axis) {
     return std::max<uint64_t>(1, layout::AbsoluteStride(domain.source_strides[axis]));
   });
   assert(domains.size() == 3);
   for (std::size_t index = 0; index < domains.size(); ++index) {
-    assert((domains[index].shape == std::vector<uint64_t>{5, 1}));
-    assert(domains[index].source_offset == 4 + static_cast<int64_t>(5 * index));
-    assert(domains[index].destination_offset == 2 && domains[index].semantic_index == 19);
+    assert((domains[index].record.shape == std::vector<uint64_t>{5, 1}));
+    assert(domains[index].record.source_offset == 4 + static_cast<int64_t>(5 * index));
+    assert(domains[index].record.destination_offset == 2 && domains[index].record.semantic_index == 19);
   }
 }
 
@@ -87,9 +84,14 @@ void CheckReduction() {
         if (factor == 1) apply(expression::Identity<scalar::F64>{});
         else apply(expression::Scale<scalar::F64, expression::Identity<scalar::F64>>{factor, {}});
       };
-      native::ExecuteReduction<scalar::F64, scalar::F32>(
-          records, source.data(), serial.data(), size, 5, 1, bind);
-      auto future = native::ExecuteReductionTasks<scalar::F64, scalar::F32>(
+      {
+        const auto programs = layout::PrepareGeneratedRecords(
+            records, sizeof(scalar::Value<scalar::F64>), sizeof(scalar::Value<scalar::F32>), false);
+        native::ExecuteReductionBatch<scalar::F64, scalar::F32>(
+            programs, source.data(), serial.data(), 5,
+            [&](std::size_t index, auto apply) { bind(index, 0, apply); });
+      }
+      auto future = native::ExecuteReduction<scalar::F64, scalar::F32>(
           pool.get(), records, source.data(), result.data(), size, 5, 1, bind);
       if (threads == 4) for (auto value : result) assert(value == 99);
       Complete(pool, std::move(future), threads == 4);
@@ -101,12 +103,12 @@ void CheckReduction() {
   auto cast = [](std::size_t, uint64_t, auto apply) {
     apply(expression::Cast<scalar::F32, expression::Identity<scalar::F64>>{});
   };
-  Complete(pool, native::ExecuteReductionTasks<scalar::F64, scalar::F32>(
+  Complete(pool, native::ExecuteReduction<scalar::F64, scalar::F32>(
       pool.get(), {record}, source.data(), result.data(), size, 5, 1, cast), true);
   double expected = 0;
   for (auto value : source) expected += static_cast<float>(value);
   assert(result[2] == expected);
-  Complete(pool, native::ExecuteReductionTasks<scalar::F64, scalar::F32>(
+  Complete(pool, native::ExecuteReduction<scalar::F64, scalar::F32>(
       pool.get(), {record}, nullptr, result.data(), size, 5, 1,
       [](std::size_t, uint64_t, auto) {}), true);
   assert((result == std::array<float, 5>{}));
@@ -114,38 +116,60 @@ void CheckReduction() {
   std::vector<layout::Record> overlap{
       layout::BuildLayout({2, size / 2}, {1, 2}, 0, {1, 1}, 0, size, size, 0)};
   std::vector<float> actual(size), reference(size);
-  native::ExecuteReduction<scalar::F64, scalar::F32>(
-      overlap, source.data(), reference.data(), size, size, 1, cast);
-  Complete(pool, native::ExecuteReductionTasks<scalar::F64, scalar::F32>(
+  {
+    const auto programs = layout::PrepareGeneratedRecords(
+        overlap, sizeof(scalar::Value<scalar::F64>), sizeof(scalar::Value<scalar::F32>), false);
+    native::ExecuteReductionBatch<scalar::F64, scalar::F32>(
+        programs, source.data(), reference.data(), size,
+        [&](std::size_t index, auto apply) { cast(index, 0, apply); });
+  }
+  Complete(pool, native::ExecuteReduction<scalar::F64, scalar::F32>(
       pool.get(), overlap, source.data(), actual.data(), size, size, 1, cast), false);
   assert(actual == reference);
 
   std::array<int32_t, 5> integer{}, integer_reference{};
-  native::ExecuteReduction<scalar::F64, scalar::S32>(records, source.data(), integer_reference.data(), size, 5, 1, cast);
-  Complete(pool, native::ExecuteReductionTasks<scalar::F64, scalar::S32>(
+  {
+    const auto programs = layout::PrepareGeneratedRecords(
+        records, sizeof(scalar::Value<scalar::F64>), sizeof(scalar::Value<scalar::S32>), false);
+    native::ExecuteReductionBatch<scalar::F64, scalar::S32>(
+        programs, source.data(), integer_reference.data(), 5,
+        [&](std::size_t index, auto apply) { cast(index, 0, apply); });
+  }
+  Complete(pool, native::ExecuteReduction<scalar::F64, scalar::S32>(
       pool.get(), records, source.data(), integer.data(), size, 5, 1, cast), false);
   assert(integer == integer_reference);
 
   auto other_destination = record;
   other_destination.destination_offset = 4;
   std::array<float, 5> different_outputs{};
-  native::ExecuteReduction<scalar::F64, scalar::F32>(
-      {record, other_destination}, source.data(), different_outputs.data(), size, 5, 1, cast);
-  Complete(pool, native::ExecuteReductionTasks<scalar::F64, scalar::F32>(
+  {
+    const auto programs = layout::PrepareGeneratedRecords(
+        {record, other_destination}, sizeof(scalar::Value<scalar::F64>),
+        sizeof(scalar::Value<scalar::F32>), false);
+    native::ExecuteReductionBatch<scalar::F64, scalar::F32>(
+        programs, source.data(), different_outputs.data(), 5,
+        [&](std::size_t index, auto apply) { cast(index, 0, apply); });
+  }
+  Complete(pool, native::ExecuteReduction<scalar::F64, scalar::F32>(
       pool.get(), {record, other_destination}, source.data(), result.data(), size, 5, 1, cast), true);
   assert(result == different_outputs);
 
   auto multidimensional = layout::BuildLayout({513, 257, 1}, {-1, 513, INT64_MAX}, 512,
       {0, 0, INT64_MIN}, 2, size, 5, 7);
   std::array<float, 5> multidimensional_reference{};
-  native::ExecuteReduction<scalar::F64, scalar::F32>(
-      {multidimensional}, source.data(), multidimensional_reference.data(), size, 5, 1, cast);
-  Complete(pool, native::ExecuteReductionTasks<scalar::F64, scalar::F32>(
+  {
+    const auto programs = layout::PrepareGeneratedRecords(
+        {multidimensional}, sizeof(scalar::Value<scalar::F64>), sizeof(scalar::Value<scalar::F32>), false);
+    native::ExecuteReductionBatch<scalar::F64, scalar::F32>(
+        programs, source.data(), multidimensional_reference.data(), 5,
+        [&](std::size_t index, auto apply) { cast(index, 0, apply); });
+  }
+  Complete(pool, native::ExecuteReduction<scalar::F64, scalar::F32>(
       pool.get(), {multidimensional}, source.data(), result.data(), size, 5, 1, cast), true);
   assert(result == multidimensional_reference);
 
   result.fill(99);
-  Complete(pool, native::ExecuteReductionTasks<scalar::F64, scalar::F32>(
+  Complete(pool, native::ExecuteReduction<scalar::F64, scalar::F32>(
       pool.get(), {}, nullptr, result.data(), 0, 5, 1, cast), false);
   assert((result == std::array<float, 5>{}));
 }
@@ -164,9 +188,14 @@ void CheckDot() {
   for (int64_t threads : {1, 4}) {
     testing::ThreadPool pool(threads);
     std::complex<float> result{99, 99}, expected{};
-    native::ExecuteDot<scalar::C64>(records, left.data(), right.data(), &expected, size, size, 1,
-        expression::Conjugate<scalar::C64>{}, expression::Identity<scalar::F32>{});
-    auto future = native::ExecuteDotTasks<scalar::C64>(pool.get(), records, left.data(), right.data(),
+    {
+      const auto programs = layout::PrepareGeneratedRecords(
+          records, sizeof(*left.data()), sizeof(*right.data()), false);
+      native::ExecuteDotBatch<scalar::C64>(
+          programs, left.data(), right.data(), &expected, expression::Conjugate<scalar::C64>{},
+          expression::Identity<scalar::F32>{});
+    }
+    auto future = native::ExecuteDot<scalar::C64>(pool.get(), records, left.data(), right.data(),
         &result, size, size, 1, expression::Conjugate<scalar::C64>{}, expression::Identity<scalar::F32>{});
     Complete(pool, std::move(future), threads == 4);
     assert(result == expected);
@@ -175,9 +204,14 @@ void CheckDot() {
       {257, 0, INT64_MIN}, 0, size, size, 9);
   testing::ThreadPool pool(4);
   std::complex<float> result{}, expected{};
-  native::ExecuteDot<scalar::C64>({multidimensional}, left.data(), right.data(), &expected,
-      size, size, 1, expression::Identity<scalar::C64>{}, expression::Identity<scalar::F32>{});
-  Complete(pool, native::ExecuteDotTasks<scalar::C64>(pool.get(), {multidimensional}, left.data(),
+  {
+    const auto programs = layout::PrepareGeneratedRecords(
+        {multidimensional}, sizeof(*left.data()), sizeof(*right.data()), false);
+    native::ExecuteDotBatch<scalar::C64>(
+        programs, left.data(), right.data(), &expected, expression::Identity<scalar::C64>{},
+        expression::Identity<scalar::F32>{});
+  }
+  Complete(pool, native::ExecuteDot<scalar::C64>(pool.get(), {multidimensional}, left.data(),
       right.data(), &result, size, size, 1,
       expression::Identity<scalar::C64>{}, expression::Identity<scalar::F32>{}), true);
   assert(result == expected);
@@ -194,8 +228,9 @@ void CheckCompletion() {
     float result = 99;
     auto lifetime = std::make_shared<int>(7);
     std::weak_ptr<int> weak = lifetime;
-    auto future = native::ExecuteReductionPartials<scalar::F32>(pool.get(), domains, 4, &result, 1, 0,
-        [lifetime, fail](const auto& record, float* partial) {
+    auto future = native::ExecuteReductionPartials<scalar::F32>(pool.get(), layout::PrepareGeneratedRecords(domains, 4, 4, false), 4, &result, 1, 0,
+        [lifetime, fail](const auto& program, float* partial) {
+          const auto& record = program.record;
           assert(*lifetime == 7);
           if (fail && record.semantic_index == 1) throw std::runtime_error("injected failure");
           const std::array<float, 4> contributions{16777216, 1, -16777216, 3};
@@ -243,11 +278,17 @@ void CheckOutputTypes() {
     assert((semantic_index == 11 || semantic_index == 7) && batch == 0);
     apply(expression::Identity<Dtype>{});
   };
-  native::ExecuteReduction<Dtype, Dtype>(records, source.get(), expected.get(), size, output_size, 1, bind);
+  {
+    const auto programs = layout::PrepareGeneratedRecords(
+        records, sizeof(scalar::Value<Dtype>), sizeof(scalar::Value<Dtype>), false);
+    native::ExecuteReductionBatch<Dtype, Dtype>(
+        programs, source.get(), expected.get(), output_size,
+        [&](std::size_t index, auto apply) { bind(index, 0, apply); });
+  }
   for (int64_t threads : {1, 4}) {
     testing::ThreadPool pool(threads);
     std::fill_n(result.get(), output_size, scalar::Convert<Dtype, scalar::S32>(9));
-    auto future = native::ExecuteReductionTasks<Dtype, Dtype>(
+    auto future = native::ExecuteReduction<Dtype, Dtype>(
         pool.get(), records, source.get(), result.get(), size, output_size, 1, bind);
     if (threads == 4) {
       for (uint64_t index = 0; index < output_size; ++index) assert(result[index] == Value{});
@@ -261,18 +302,19 @@ void CheckOutputPlanning() {
   auto first = layout::BuildLayout({5, 40000}, {40000, 1}, 0, {2, 0}, 2, 200000, 32, 9);
   auto second = layout::BuildLayout({40000, 5}, {1, 0}, 0, {0, 2}, 2, 200000, 32, 3);
   auto third = layout::BuildLayout({4, 40000}, {40000, 1}, 0, {-2, 0}, 30, 200000, 32, 4);
-  const auto tasks = layout::BuildReductionOutputTasks({first, third, second}, 4);
+  const auto tasks = layout::BuildReductionOutputTasks(layout::PrepareGeneratedRecords({first, third, second}, 4, 4, false), 4);
   assert(tasks.size() == 4);
   std::array<int, 32> owners;
   owners.fill(-1);
   for (std::size_t index = 0; index < tasks.size(); ++index) {
     const auto& task = tasks[index];
     if (task.size() == 2) {
-      assert(task[0].semantic_index == 9 && task[1].semantic_index == 3);
+      assert(task[0].record.semantic_index == 9 && task[1].record.semantic_index == 3);
     } else {
-      assert(task.size() == 1 && task[0].semantic_index == 4);
+      assert(task.size() == 1 && task[0].record.semantic_index == 4);
     }
-    for (const auto& record : task) {
+    for (const auto& program : task) {
+      const auto& record = program.record;
       std::size_t axis = record.destination_strides[0] == 0 ? 1 : 0;
       for (uint64_t position = 0; position < record.shape[axis]; ++position) {
         const auto address = record.destination_offset + static_cast<int64_t>(position) * record.destination_strides[axis];
@@ -284,10 +326,10 @@ void CheckOutputPlanning() {
   for (int64_t address : {2, 4, 6, 8, 10, 24, 26, 28, 30}) assert(owners[address] != -1);
   auto interleaved = first;
   interleaved.destination_offset = 3;
-  assert(layout::BuildReductionOutputTasks({first, interleaved}, 4).empty());
+  assert(layout::BuildReductionOutputTasks(layout::PrepareGeneratedRecords({first, interleaved}, 4, 4, false), 4).empty());
   auto overlap = layout::BuildLayout({2, 2, 40000}, {0, 0, 1}, 0,
                                     {1, 1, 0}, 0, 40000, 4, 1);
-  assert(layout::BuildReductionOutputTasks({overlap}, 4).empty());
+  assert(layout::BuildReductionOutputTasks(layout::PrepareGeneratedRecords({overlap}, 4, 4, false), 4).empty());
 }
 
 void CheckOutputRecordOrder() {
@@ -299,7 +341,7 @@ void CheckOutputRecordOrder() {
   }
   testing::ThreadPool pool(4);
   std::vector<float> result(size, 99);
-  Complete(pool, native::ExecuteReductionTasks<scalar::F32, scalar::F32>(
+  Complete(pool, native::ExecuteReduction<scalar::F32, scalar::F32>(
       pool.get(), records, source.data(), result.data(), source.size(), size, 1,
       [](std::size_t, uint64_t, auto apply) { apply(expression::Identity<scalar::F32>{}); }), true);
   for (auto value : result) assert(value == 0);
@@ -312,15 +354,20 @@ void CheckMultipleOutputAxes() {
                           {2, 8, 0}, 3, size, 20, 0),
       layout::BuildLayout({50000, 2, 2}, {1, 0, 0}, 0,
                           {0, 2, 8}, 3, size, 20, 1)};
-  assert(layout::BuildReductionOutputTasks(records, 4).size() == 4);
+  assert(layout::BuildReductionOutputTasks(layout::PrepareGeneratedRecords(records, 4, 4, false), 4).size() == 4);
   std::vector<float> source(size);
   for (uint64_t index = 0; index < size; ++index) source[index] = index % 7;
   std::array<float, 20> result{}, expected{};
   const auto bind = [](std::size_t, uint64_t, auto apply) { apply(expression::Identity<scalar::F32>{}); };
-  native::ExecuteReduction<scalar::F32, scalar::F32>(
-      records, source.data(), expected.data(), size, result.size(), 1, bind);
+  {
+    const auto programs = layout::PrepareGeneratedRecords(
+        records, sizeof(scalar::Value<scalar::F32>), sizeof(scalar::Value<scalar::F32>), false);
+    native::ExecuteReductionBatch<scalar::F32, scalar::F32>(
+        programs, source.data(), expected.data(), result.size(),
+        [&](std::size_t index, auto apply) { bind(index, 0, apply); });
+  }
   testing::ThreadPool pool(4);
-  Complete(pool, native::ExecuteReductionTasks<scalar::F32, scalar::F32>(pool.get(), records,
+  Complete(pool, native::ExecuteReduction<scalar::F32, scalar::F32>(pool.get(), records,
       source.data(), result.data(), size, result.size(), 1, bind), true);
   assert(result == expected);
 }
@@ -337,14 +384,14 @@ void CheckWorkerLimit() {
     assert(native::ReductionWorkerCount(pool.get(), {reduction}) == workers);
     float result = -1;
     const std::vector<layout::Record> records{reduction};
-    auto future = native::ExecuteReductionTasks<scalar::F32, scalar::F32>(pool.get(), records,
+    auto future = native::ExecuteReduction<scalar::F32, scalar::F32>(pool.get(), records,
         source.data(), &result, size, 1, 1,
         [](std::size_t, uint64_t, auto apply) { apply(expression::Identity<scalar::F32>{}); });
     assert(pool.tasks.size() == (workers == 1 ? 0 : workers));
     Complete(pool, std::move(future), workers > 1);
     assert(result == size);
     const std::vector<layout::Record> dot_records{dot};
-    auto product = native::ExecuteDotTasks<scalar::F32>(pool.get(), dot_records,
+    auto product = native::ExecuteDot<scalar::F32>(pool.get(), dot_records,
         source.data(), source.data(), &result, size, size, 1,
         expression::Identity<scalar::F32>{}, expression::Identity<scalar::F32>{});
     assert(pool.tasks.size() == (workers == 1 ? 0 : workers));
@@ -354,7 +401,44 @@ void CheckWorkerLimit() {
   native::worker_limit.store(UINT64_MAX);
 }
 
+void CheckBatchesAndStorage() {
+  constexpr uint64_t size = 65536, batches = 7;
+  testing::ThreadPool pool(4);
+  std::vector<float> source(size * batches, 1), result(3 * batches, 99);
+  const std::vector<layout::Record> records{
+      layout::BuildLayout({3}, {1}, 0, {0}, 1, size, 3, 7),
+      layout::BuildLayout({2}, {1}, 3, {0}, 1, size, 3, 9)};
+  auto owner = std::make_shared<int>(7);
+  std::weak_ptr<int> lifetime = owner;
+  auto bind = [owner](std::size_t index, uint64_t batch, auto apply) {
+    assert(*owner == 7);
+    apply(expression::Scale<scalar::F32>{index == 7 ? 2.0f : static_cast<float>(batch)});
+  };
+  auto future = native::ExecuteReduction<scalar::F32, scalar::F32>(
+      pool.get(), records, source.data(), result.data(), size, 3, batches, std::move(bind));
+  owner.reset();
+  assert(!lifetime.expired());
+  Complete(pool, std::move(future), true);
+  assert(lifetime.expired());
+  for (uint64_t batch = 0; batch < batches; ++batch) {
+    assert(result[3 * batch] == 0 && result[3 * batch + 1] == 6 + 2 * batch && result[3 * batch + 2] == 0);
+  }
+  const std::vector<layout::Record> empty;
+  Complete(pool, native::ExecuteDot<scalar::F32>(pool.get(), empty, nullptr, nullptr,
+      result.data(), 0, 0, batches, expression::Identity<scalar::F32>{}, expression::Identity<scalar::F32>{}), false);
+  for (uint64_t batch = 0; batch < batches; ++batch) assert(result[batch] == 0);
+  result[0] = 99;
+  Complete(pool, native::ExecuteReduction<scalar::F32, scalar::F32>(
+      pool.get(), records, nullptr, result.data(), UINT64_MAX / 2, 3, batches,
+      [](std::size_t, uint64_t, auto apply) { apply(expression::Identity<scalar::F32>{}); }), false, true);
+  Complete(pool, native::ExecuteDot<scalar::F32>(pool.get(), empty, nullptr, nullptr,
+      result.data(), UINT64_MAX / 2, 0, batches,
+      expression::Identity<scalar::F32>{}, expression::Identity<scalar::F32>{}), false, true);
+  assert(result[0] == 99);
+}
+
 int main() {
+  CheckBatchesAndStorage();
   CheckWorkerLimit();
   CheckSplits();
   CheckReduction();

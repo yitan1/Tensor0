@@ -11,11 +11,11 @@
 #include <type_traits>
 #include "numeric/scalar.inc"
 #include "numeric/expression.inc"
-#include "layout/types.inc"
-#include "layout/address.inc"
-#include "layout/construction.inc"
-#include "layout/planning.inc"
-#include "kernels/affine.inc"
+#include "layout/record.inc"
+#include "layout/traversal.inc"
+#include "kernels/generic.inc"
+#include "kernels/specialized.inc"
+#include "kernels/dispatch.inc"
 #include "reduction_input.inc"
 
 template <typename Dtype>

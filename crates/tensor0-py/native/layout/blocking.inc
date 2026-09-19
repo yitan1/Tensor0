@@ -127,10 +127,21 @@ GeneratedRecordProgram CompileGeneratedRecord(const Record& source,
                                                bool reorder_axes,
                                                bool blocking,
                                                uint64_t source_item_size,
-                                               uint64_t result_item_size) {
+                                               uint64_t destination_item_size) {
   GeneratedRecordProgram program;
   program.record = source;
   const std::size_t rank = source.shape.size();
+  // With no competing axis, the common-fastest-axis rule keeps the whole domain.
+  if (rank <= 1) {
+    program.blocks = source.shape;
+    if (rank == 1) {
+      const auto stride = std::min(AbsoluteStride(source.source_strides[0]),
+                                   AbsoluteStride(source.destination_strides[0]));
+      program.split_costs = {stride == 0 ? 1 :
+          std::min<uint64_t>(stride, std::numeric_limits<uint64_t>::max() / 2) * 2};
+    }
+    return program;
+  }
   std::vector<int64_t> destination_strides(
       source.destination_strides.begin(),
       source.destination_strides.begin() + rank);
@@ -175,7 +186,7 @@ GeneratedRecordProgram CompileGeneratedRecord(const Record& source,
                                  std::numeric_limits<uint64_t>::max() / 2) *
                   2;
     byte_strides[0][position] =
-        byte_stride(destination_stride, result_item_size);
+        byte_stride(destination_stride, destination_item_size);
     byte_strides[1][position] =
         byte_stride(source_stride, source_item_size);
     stride_orders[0][position] = destination_order[axis];
@@ -187,6 +198,17 @@ GeneratedRecordProgram CompileGeneratedRecord(const Record& source,
           : dims;
   program.split_costs = std::move(costs);
   return program;
+}
+
+std::vector<GeneratedRecordProgram> PrepareGeneratedRecords(
+    const std::vector<Record>& records, uint64_t source_item_size, uint64_t destination_item_size,
+    bool reorder_axes = true) {
+  std::vector<GeneratedRecordProgram> programs;
+  for (const auto& record : records) {
+    if (ElementCount(record) == 0) continue;
+    programs.push_back(CompileGeneratedRecord(record, reorder_axes, true, source_item_size, destination_item_size));
+  }
+  return programs;
 }
 
 void AppendGeneratedSubdomains(const GeneratedRecordProgram& program,
@@ -233,14 +255,14 @@ void AppendGeneratedSubdomains(const GeneratedRecordProgram& program,
 }
 
 template <typename LocalityCost>
-void SplitReductionDomains(std::vector<Record>* domains, uint64_t desired_tasks,
+void SplitReductionDomains(std::vector<GeneratedRecordProgram>* domains, uint64_t desired_tasks,
                            LocalityCost locality_cost) {
   while (domains->size() < desired_tasks) {
     std::size_t split_domain = domains->size();
     std::size_t split_axis = 0;
     uint64_t best_cost = 0;
     for (std::size_t index = 0; index < domains->size(); ++index) {
-      const auto& record = (*domains)[index];
+      const auto& record = (*domains)[index].record;
       for (std::size_t axis = 0; axis < record.shape.size(); ++axis) {
         if (record.shape[axis] <= 1) continue;
         uint64_t cost = 0;
@@ -255,26 +277,31 @@ void SplitReductionDomains(std::vector<Record>* domains, uint64_t desired_tasks,
       }
     }
     if (split_domain == domains->size()) return;
-    const auto record = (*domains)[split_domain];
+    auto right = (*domains)[split_domain];
+    const auto& record = right.record;
     const auto left_extent = record.shape[split_axis] / 2;
-    (*domains)[split_domain] = SliceRecordRange(record, split_axis, 0, left_extent);
-    domains->insert(domains->begin() + static_cast<std::ptrdiff_t>(split_domain + 1),
-        SliceRecordRange(record, split_axis, left_extent, record.shape[split_axis] - left_extent));
+    auto& left = (*domains)[split_domain];
+    left.record = SliceRecordRange(record, split_axis, 0, left_extent);
+    left.blocks[split_axis] = std::min(left.blocks[split_axis], left_extent);
+    right.record = SliceRecordRange(record, split_axis, left_extent, record.shape[split_axis] - left_extent);
+    right.blocks[split_axis] = std::min(right.blocks[split_axis], right.record.shape[split_axis]);
+    domains->insert(domains->begin() + static_cast<std::ptrdiff_t>(split_domain + 1), std::move(right));
   }
 }
 
-std::vector<std::vector<Record>> BuildReductionOutputTasks(
-    const std::vector<Record>& records, uint64_t desired_tasks) {
+std::vector<std::vector<GeneratedRecordProgram>> BuildReductionOutputTasks(
+    const std::vector<GeneratedRecordProgram>& programs, uint64_t desired_tasks) {
   struct Candidate {
-    const Record* record;
+    const GeneratedRecordProgram* program;
     std::vector<std::pair<int64_t, uint64_t>> output_axes;
     int64_t minimum;
     int64_t maximum;
   };
   std::vector<Candidate> candidates;
-  for (const auto& record : records) {
+  for (const auto& program : programs) {
+    const auto& record = program.record;
     if (ElementCount(record) == 0) continue;
-    Candidate candidate{&record, {}, 0, 0};
+    Candidate candidate{&program, {}, 0, 0};
     std::vector<std::size_t> axes;
     for (std::size_t axis = 0; axis < record.shape.size(); ++axis) {
       if (record.shape[axis] > 1 && record.destination_strides[axis] != 0) {
@@ -292,22 +319,22 @@ std::vector<std::vector<Record>> BuildReductionOutputTasks(
     candidates.push_back(std::move(candidate));
   }
   std::stable_sort(candidates.begin(), candidates.end(), [](const auto& left, const auto& right) {
-    if (left.record->destination_offset != right.record->destination_offset) {
-      return left.record->destination_offset < right.record->destination_offset;
+    if (left.program->record.destination_offset != right.program->record.destination_offset) {
+      return left.program->record.destination_offset < right.program->record.destination_offset;
     }
     return left.output_axes < right.output_axes;
   });
-  std::vector<std::vector<Record>> tasks;
+  std::vector<std::vector<GeneratedRecordProgram>> tasks;
   std::vector<std::pair<int64_t, int64_t>> intervals;
   for (std::size_t index = 0; index < candidates.size(); ++index) {
     const auto& candidate = candidates[index];
     if (index == 0 ||
-        candidate.record->destination_offset != candidates[index - 1].record->destination_offset ||
+        candidate.program->record.destination_offset != candidates[index - 1].program->record.destination_offset ||
         candidate.output_axes != candidates[index - 1].output_axes) {
       tasks.emplace_back();
       intervals.emplace_back(candidate.minimum, candidate.maximum);
     }
-    tasks.back().push_back(*candidate.record);
+    tasks.back().push_back(*candidate.program);
   }
   std::sort(intervals.begin(), intervals.end());
   for (std::size_t index = 1; index < intervals.size(); ++index) {
@@ -318,7 +345,7 @@ std::vector<std::vector<Record>> BuildReductionOutputTasks(
     std::size_t split_axis = 0;
     uint64_t best_cost = 0;
     for (std::size_t index = 0; index < tasks.size(); ++index) {
-      const auto& record = tasks[index].front();
+      const auto& record = tasks[index].front().record;
       for (std::size_t axis = 0; axis < record.shape.size(); ++axis) {
         if (record.shape[axis] <= 1 || record.destination_strides[axis] == 0) continue;
         uint64_t cost = 0;
@@ -333,15 +360,19 @@ std::vector<std::vector<Record>> BuildReductionOutputTasks(
       }
     }
     if (split_task == tasks.size()) break;
-    const auto extent = tasks[split_task].front().shape[split_axis];
-    const auto stride = tasks[split_task].front().destination_strides[split_axis];
+    const auto extent = tasks[split_task].front().record.shape[split_axis];
+    const auto stride = tasks[split_task].front().record.destination_strides[split_axis];
     const auto left_extent = extent / 2;
-    std::vector<Record> right;
-    for (auto& record : tasks[split_task]) {
+    std::vector<GeneratedRecordProgram> right;
+    for (auto& program : tasks[split_task]) {
+      auto& record = program.record;
       for (std::size_t axis = 0; axis < record.shape.size(); ++axis) {
         if (record.shape[axis] != extent || record.destination_strides[axis] != stride) continue;
-        right.push_back(SliceRecordRange(record, axis, left_extent, extent - left_extent));
+        right.push_back(program);
+        right.back().record = SliceRecordRange(record, axis, left_extent, extent - left_extent);
+        right.back().blocks[axis] = std::min(program.blocks[axis], extent - left_extent);
         record = SliceRecordRange(record, axis, 0, left_extent);
+        program.blocks[axis] = std::min(program.blocks[axis], left_extent);
         break;
       }
     }

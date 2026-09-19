@@ -4,16 +4,19 @@
 #include <cstring>
 #include <map>
 #include <type_traits>
+#include "xla/ffi/api/ffi.h"
+
+namespace ffi = xla::ffi;
 #include "numeric/scalar.inc"
 #include "numeric/expression.inc"
-#include "layout/types.inc"
-#include "layout/address.inc"
-#include "layout/construction.inc"
-#include "layout/planning.inc"
+#include "layout/record.inc"
+#include "layout/traversal.inc"
 #include "layout/blocking.inc"
-#include "kernels/affine.inc"
+#include "kernels/generic.inc"
+#include "kernels/specialized.inc"
+#include "kernels/dispatch.inc"
+#include "execute/scheduling.inc"
 #include "execute/map.inc"
-#include "execute/update.inc"
 
 template <typename Function>
 void VisitAddresses(const layout::Record& record, Function function) {
@@ -46,7 +49,45 @@ void CheckBlocks(const layout::Record& record, bool require_multiple = false) {
   if (require_multiple) assert(count > 1);
 }
 
+void CheckSingleAxisPrograms() {
+  layout::Record scalar;
+  scalar.semantic_index = 7;
+  scalar.source_offset = 3;
+  scalar.destination_offset = 5;
+  const auto scalar_program = layout::CompileGeneratedRecord(scalar, true, true, 4, 8);
+  assert(scalar_program.blocks.empty() && scalar_program.split_costs.empty());
+  assert(scalar_program.record.semantic_index == 7);
+  assert(scalar_program.record.source_offset == 3 && scalar_program.record.destination_offset == 5);
+
+  // Planning-only strides include saturation limits; no storage is dereferenced.
+  const std::array<int64_t, 7> strides{INT64_MIN, -65537, -1, 0, 1, 65537, INT64_MAX};
+  for (const auto source_stride : strides) {
+    for (const auto destination_stride : strides) {
+      for (const uint64_t extent : {UINT64_C(0), UINT64_C(1), UINT64_C(13), UINT64_C(200003)}) {
+        const layout::Record record{11, 17, 23, {extent}, {source_stride}, {destination_stride}};
+        const auto minimum = std::min(layout::AbsoluteStride(source_stride),
+                                      layout::AbsoluteStride(destination_stride));
+        const auto cost = minimum == 0 ? 1 :
+            std::min<uint64_t>(minimum, UINT64_MAX / 2) * 2;
+        for (const bool reorder : {false, true}) {
+          for (const bool blocking : {false, true}) {
+            const auto program = layout::CompileGeneratedRecord(record, reorder, blocking, 1, 16);
+            assert(program.blocks == record.shape);
+            assert(program.split_costs == std::vector<uint64_t>{cost});
+            assert(program.record.shape == record.shape);
+            assert(program.record.source_strides == record.source_strides);
+            assert(program.record.destination_strides == record.destination_strides);
+            assert(program.record.source_offset == 17 && program.record.destination_offset == 23);
+            assert(program.record.semantic_index == 11);
+          }
+        }
+      }
+    }
+  }
+}
+
 int main() {
+  CheckSingleAxisPrograms();
   const auto line = layout::BuildLayout({200003}, {-2}, 400004, {3}, 1, 400005, 600010, 11);
   const auto line_program = layout::CompileGeneratedRecord(line, true, true, 4, 4);
   std::vector<layout::GeneratedRecordProgram> subdomains;
@@ -107,7 +148,11 @@ int main() {
   const auto scalar_record = layout::BuildLayout({}, {}, 0, {}, 0, source_size, output_size, 8);
   const std::vector<layout::Record> records{reverse, scalar_record};
   std::vector<double> copied(output_size), expected_copy(output_size);
-  ExecuteCopy<scalar::F32, scalar::F64>(records, source.data(), copied.data(), output_size);
+  {
+    const auto programs = layout::PrepareGeneratedRecords(
+        records, sizeof(scalar::Value<scalar::F32>), sizeof(scalar::Value<scalar::F64>));
+    ExecuteCopyBatch<scalar::F32, scalar::F64>(programs, source.data(), copied.data(), output_size);
+  }
   for (const auto& selected : records) {
     VisitAddresses(selected, [&](auto input, auto output) { expected_copy[output] = source[input]; });
   }
@@ -121,14 +166,22 @@ int main() {
         });
       }
       const auto* input = alpha == 0 ? nullptr : source.data();
-      ExecuteUpdate<scalar::F32, scalar::F32, scalar::F32>(
-          records, input, base.data(), result.data(), output_size, alpha, beta,
-          expression::Identity<scalar::F32>{}, expression::Identity<scalar::F32>{});
+      {
+        const auto programs = layout::PrepareGeneratedRecords(
+            records, sizeof(*input), sizeof(scalar::Value<scalar::F32>));
+        ExecuteUpdateBatch<scalar::F32, scalar::F32, scalar::F32>(
+            programs, input, base.data(), result.data(), output_size, alpha, beta,
+            expression::Identity<scalar::F32>{}, expression::Identity<scalar::F32>{});
+      }
       assert(result == expected);
       auto inplace = base;
-      ExecuteUpdate<scalar::F32, scalar::F32, scalar::F32>(
-          records, input, inplace.data(), inplace.data(), output_size, alpha, beta,
-          expression::Identity<scalar::F32>{}, expression::Identity<scalar::F32>{});
+      {
+        const auto programs = layout::PrepareGeneratedRecords(
+            records, sizeof(*input), sizeof(scalar::Value<scalar::F32>));
+        ExecuteUpdateBatch<scalar::F32, scalar::F32, scalar::F32>(
+            programs, input, inplace.data(), inplace.data(), output_size, alpha, beta,
+            expression::Identity<scalar::F32>{}, expression::Identity<scalar::F32>{});
+      }
       assert(inplace == expected);
     }
   }
@@ -138,8 +191,12 @@ int main() {
   auto inplace = base;
   auto expected = base;
   VisitAddresses(same_address, [&](auto, auto output) { expected[output] *= 2; });
-  ExecuteUpdate<scalar::F32, scalar::F32, scalar::F32>(
-      {same_address}, inplace.data(), inplace.data(), inplace.data(), output_size, 2, 0,
-      expression::Identity<scalar::F32>{}, expression::Identity<scalar::F32>{});
+  {
+    const auto programs = layout::PrepareGeneratedRecords(
+        {same_address}, sizeof(*inplace.data()), sizeof(scalar::Value<scalar::F32>));
+    ExecuteUpdateBatch<scalar::F32, scalar::F32, scalar::F32>(
+        programs, inplace.data(), inplace.data(), inplace.data(), output_size, 2, 0,
+        expression::Identity<scalar::F32>{}, expression::Identity<scalar::F32>{});
+  }
   assert(inplace == expected);
 }
