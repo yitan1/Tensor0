@@ -18,8 +18,32 @@ SOURCES = Path(__file__).with_name("cpp")
 pytestmark = pytest.mark.skipif(sys.platform != "linux", reason="native CPU contracts require Linux")
 
 
+@pytest.fixture(scope="session")
+def native_objects(tmp_path_factory):
+    compiler = shutil.which(os.environ.get("CXX", "c++"))
+    if compiler is None:
+        pytest.skip("a C++20 compiler is required")
+    root = Path(__file__).resolve().parents[2]
+    native = root / "crates/tensor0-py/native"
+    output = tmp_path_factory.mktemp("native-infrastructure")
+    objects = []
+    for source in sorted(native.rglob("*.cc")):
+        if source.parent.name == "ffi" and source.stem in {"copy", "update", "reduction", "dot"}:
+            continue
+        obj = output / (str(source.relative_to(native)).replace("/", "_") + ".o")
+        subprocess.run([
+            compiler, "-std=c++20", "-O1", "-Wall", "-Wextra", "-Wpedantic", "-Werror",
+            "-fsanitize=undefined", "-fno-sanitize-recover=undefined", "-pthread",
+            "-I", str(native), "-isystem",
+            str(root / "crates/tensor0-py/vendor/jaxlib-0.10.1/include"),
+            "-c", str(source), "-o", str(obj),
+        ], check=True, capture_output=True, text=True, timeout=60)
+        objects.append(str(obj))
+    return objects
+
+
 @pytest.mark.parametrize("source", sorted(path.name for path in SOURCES.glob("*_test.cc")))
-def test_cpp_contract(tmp_path, source):
+def test_cpp_contract(tmp_path, source, native_objects):
     compiler = shutil.which(os.environ.get("CXX", "c++"))
     if compiler is None:
         pytest.skip("a C++20 compiler is required")
@@ -27,15 +51,17 @@ def test_cpp_contract(tmp_path, source):
     native = root / "crates/tensor0-py/native"
     executable = tmp_path / "contract"
     if source == "ffi_boundary_test.cc":
-        unit = (native / "stride_ffi.cc").read_text()
-        (tmp_path / "ffi_under_test.inc").write_text(unit.replace('#include "ffi/bindings.inc"', ""))
+        units = [(native / "ffi" / f"{name}.cc").read_text()
+                 for name in ("copy", "update", "reduction", "dot")]
+        (tmp_path / "ffi_under_test.h").write_text("\n".join(
+            unit.split("\n#define TENSOR0_STRIDE_DEFINE_", 1)[0] for unit in units))
     subprocess.run([
         compiler, "-std=c++20", "-O0" if source == "ffi_boundary_test.cc" else "-O1",
         "-Wall", "-Wextra", "-Wpedantic", "-Werror",
         "-fsanitize=undefined", "-fno-sanitize-recover=undefined", "-pthread",
-        "-include", str(native / "kernels/avx2.inc"), "-I", str(native), "-I", str(tmp_path),
+        "-I", str(native), "-I", str(tmp_path), "-iquote", str(native / "ffi"),
         "-isystem", str(root / "crates/tensor0-py/vendor/jaxlib-0.10.1/include"),
-        str(SOURCES / source), "-o", str(executable),
+        str(SOURCES / source), *native_objects, "-o", str(executable),
     ], check=True, capture_output=True, text=True, timeout=300)
     completed = subprocess.run([str(executable)], capture_output=True, text=True, timeout=120)
     assert completed.returncode == 0, completed.stdout + completed.stderr

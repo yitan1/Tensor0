@@ -1,4 +1,21 @@
 #include <algorithm>
+#include <numeric>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include "layout/record.h"
+#include "layout/traversal.h"
+#include "layout/blocking.h"
+#include "ffi/prepared.h"
+#include "execute/scheduling.h"
+#include "numeric/scalar.h"
+#include "numeric/expression.h"
+#include "kernels/generic.h"
+#include "kernels/specialized.h"
+#include "kernels/dispatch.h"
+#include "execute/copy.h"
+#include "execute/update.h"
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cassert>
@@ -12,19 +29,17 @@
 #include "xla/ffi/api/ffi.h"
 
 namespace ffi = xla::ffi;
-namespace tensor0::stride {
-#include "numeric/scalar.inc"
-#include "numeric/expression.inc"
-#include "layout/record.inc"
-#include "layout/traversal.inc"
-#include "layout/blocking.inc"
-#include "ffi/descriptor.inc"
-#include "kernels/generic.inc"
-#include "kernels/specialized.inc"
-#include "kernels/dispatch.inc"
-#include "execute/scheduling.inc"
-#include "execute/map.inc"
-}
+
+
+
+
+
+
+
+
+
+
+
 #include "thread_pool_test_support.h"
 
 namespace native = tensor0::stride;
@@ -208,6 +223,32 @@ void CheckBatchInitialization() {
   }
 }
 
+void CheckMixedCoefficientBatches() {
+  constexpr uint64_t size = 65536, batches = 7;
+  const auto record = layout::BuildLayout({3}, {1}, 1, {2}, 2, size, size, 0);
+  const std::array<double, batches> alpha{0, 1, 2, 3, 0, 1, 2};
+  const std::array<int32_t, batches> beta{1, 0, 2, 1, 3, 0, 2};
+  std::vector<float> source(size * batches, 2), base(size * batches, 3);
+  for (uint64_t alpha_count : {UINT64_C(1), batches}) {
+    for (uint64_t beta_count : {UINT64_C(1), batches}) {
+      testing::ThreadPool pool(4);
+      std::vector<float> result(size * batches, 99);
+      Complete(pool, native::ExecuteUpdate<scalar::F32, scalar::F64, scalar::S32>(
+          pool.get(), {record}, source.data(), base.data(), result.data(), size, size, batches,
+          alpha.data(), alpha_count, beta.data(), beta_count,
+          expression::Identity<scalar::F32>{}, expression::Identity<scalar::F32>{}), true);
+      for (uint64_t batch = 0; batch < batches; ++batch) {
+        const float expected = 2 * alpha[alpha_count == 1 ? 0 : batch] +
+                               3 * beta[beta_count == 1 ? 0 : batch];
+        for (uint64_t index = 0; index < size; ++index) {
+          const bool selected = index == 2 || index == 4 || index == 6;
+          assert(result[batch * size + index] == (selected ? expected : 3));
+        }
+      }
+    }
+  }
+}
+
 void CheckWorkerLimit() {
   constexpr uint64_t size = UINT64_C(1) << 20;
   const auto record = layout::BuildLayout({size}, {1}, 0, {1}, 0, size, size, 0);
@@ -262,6 +303,15 @@ void CheckPreparedLifetimeAndFailure() {
       pool.get(), {invalid}, nullptr, result.data(), 0, size, batches);
   future.OnReady([&](const std::optional<ffi::Error>& error) { failed = error.has_value(); });
   assert(failed && pool.tasks.empty() && result[0] == 3);
+  // Preparation must fail before binding (and reading) coefficients or initializing output.
+  for (uint64_t batch_count : {UINT64_C(1), batches}) {
+    failed = false;
+    auto update = native::ExecuteUpdate<scalar::F32, scalar::F32, scalar::F32>(
+        pool.get(), {invalid}, nullptr, base.data(), result.data(), 0, size, batch_count,
+        nullptr, 1, nullptr, 1, expression::Identity<scalar::F32>{}, expression::Identity<scalar::F32>{});
+    update.OnReady([&](const std::optional<ffi::Error>& error) { failed = error.has_value(); });
+    assert(failed && pool.tasks.empty() && result[0] == 3);
+  }
   Complete(pool, native::ExecuteCopy<scalar::F32, scalar::F32>(
       pool.get(), {}, nullptr, nullptr, 0, 0, batches), false);
   Complete(pool, native::ExecuteUpdate<scalar::F32, scalar::F32, scalar::F32>(
@@ -270,6 +320,7 @@ void CheckPreparedLifetimeAndFailure() {
 }
 
 int main() {
+  CheckMixedCoefficientBatches();
   CheckPreparedLifetimeAndFailure();
   CheckWorkerLimit();
   CheckBatchInitialization();

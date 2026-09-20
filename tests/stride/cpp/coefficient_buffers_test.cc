@@ -1,3 +1,12 @@
+#include <algorithm>
+#include <numeric>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include "numeric/scalar.h"
+#include "ffi/dtype.h"
+
+using namespace tensor0::stride;
 #include <array>
 #include <cassert>
 #include <cmath>
@@ -11,8 +20,8 @@
 
 namespace ffi = xla::ffi;
 
-#include "numeric/scalar.inc"
-#include "ffi/dtype.inc"
+
+
 
 template <ffi::DataType Dtype>
 void CheckBuffer() {

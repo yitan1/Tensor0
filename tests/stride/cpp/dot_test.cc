@@ -1,3 +1,22 @@
+#include <algorithm>
+#include <numeric>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include "layout/record.h"
+#include "layout/traversal.h"
+#include "layout/blocking.h"
+#include "ffi/prepared.h"
+#include "execute/scheduling.h"
+#include "numeric/scalar.h"
+#include "numeric/expression.h"
+#include "kernels/generic.h"
+#include "kernels/specialized.h"
+#include "kernels/dispatch.h"
+#include "execute/reduction.h"
+#include "execute/dot.h"
+
+using namespace tensor0::stride;
 #include <atomic>
 #include <cassert>
 #include <cmath>
@@ -11,17 +30,17 @@
 #include "xla/ffi/api/ffi.h"
 
 namespace ffi = xla::ffi;
-#include "numeric/scalar.inc"
-#include "numeric/expression.inc"
-#include "layout/record.inc"
-#include "layout/traversal.inc"
-#include "layout/blocking.inc"
-#include "ffi/descriptor.inc"
-#include "kernels/generic.inc"
-#include "kernels/specialized.inc"
-#include "kernels/dispatch.inc"
-#include "execute/scheduling.inc"
-#include "execute/reduction.inc"
+
+
+
+
+
+
+
+
+
+
+
 #include "thread_pool_test_support.h"
 
 template <typename Dtype>

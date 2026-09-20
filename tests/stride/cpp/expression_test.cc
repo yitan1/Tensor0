@@ -1,3 +1,12 @@
+#include <algorithm>
+#include <numeric>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include "numeric/scalar.h"
+#include "numeric/expression.h"
+
+using namespace tensor0::stride;
 #include <array>
 #include <cassert>
 #include <cmath>
@@ -8,8 +17,8 @@
 #include <tuple>
 #include <type_traits>
 
-#include "numeric/scalar.inc"
-#include "numeric/expression.inc"
+
+
 
 using namespace scalar;
 namespace expr = expression;

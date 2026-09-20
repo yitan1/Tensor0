@@ -1,4 +1,10 @@
-namespace layout {
+#include "traversal.h"
+
+#include <algorithm>
+#include <numeric>
+#include <utility>
+
+namespace tensor0::stride::layout {
 
 std::vector<uint64_t> GeneratedIndexOrder(
     const std::vector<int64_t>& strides) {

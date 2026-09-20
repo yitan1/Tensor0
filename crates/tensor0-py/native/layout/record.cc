@@ -1,24 +1,13 @@
+#include "record.h"
+
 #include <algorithm>
-#include <array>
-#include <cstddef>
-#include <cstdint>
 #include <limits>
 #include <numeric>
 #include <stdexcept>
 #include <string>
 #include <utility>
-#include <vector>
 
-namespace layout {
-
-struct Record {
-  std::size_t semantic_index = 0;
-  int64_t source_offset = 0;
-  int64_t destination_offset = 0;
-  std::vector<uint64_t> shape;
-  std::vector<int64_t> source_strides;
-  std::vector<int64_t> destination_strides;
-};
+namespace tensor0::stride::layout {
 
 bool CheckedAdd(uint64_t left, uint64_t right, uint64_t* result) {
   if (left > std::numeric_limits<uint64_t>::max() - right) {
@@ -81,18 +70,15 @@ bool CheckedMultiplyStride(int64_t stride, uint64_t extent,
   return true;
 }
 
-template <typename RecordType>
-const auto& Strides(const RecordType& record, bool source) {
+const std::vector<int64_t>& Strides(const Record& record, bool source) {
   return source ? record.source_strides : record.destination_strides;
 }
 
-template <typename RecordType>
-int64_t Offset(const RecordType& record, bool source) {
+int64_t Offset(const Record& record, bool source) {
   return source ? record.source_offset : record.destination_offset;
 }
 
-template <typename RecordType>
-void AddressBounds(const RecordType& record, bool source,
+void AddressBounds(const Record& record, bool source,
                    const std::vector<std::size_t>& axes,
                    int64_t* minimum, int64_t* maximum) {
   if (Offset(record, source) < 0) {
@@ -131,8 +117,7 @@ void AddressBounds(const RecordType& record, bool source,
   *maximum = high;
 }
 
-template <typename RecordType>
-void ValidateInjectiveView(const RecordType& record, bool source,
+void ValidateInjectiveView(const Record& record, bool source,
                            std::vector<std::size_t> axes) {
   const auto& strides = Strides(record, source);
   std::stable_sort(

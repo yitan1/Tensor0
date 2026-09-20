@@ -1,20 +1,38 @@
+#include <algorithm>
+#include <numeric>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include "layout/record.h"
+#include "layout/traversal.h"
+#include "layout/blocking.h"
+#include "execute/scheduling.h"
+#include "numeric/scalar.h"
+#include "numeric/expression.h"
+#include "kernels/generic.h"
+#include "kernels/specialized.h"
+#include "kernels/dispatch.h"
+#include "kernels/avx2.h"
+#include "execute/update.h"
+
+using namespace tensor0::stride;
 #include <cassert>
 #include <cmath>
 #include <cstring>
-#include "kernels/avx2.inc"
+
 #include "xla/ffi/api/ffi.h"
 
 namespace ffi = xla::ffi;
-#include "numeric/scalar.inc"
-#include "numeric/expression.inc"
-#include "layout/record.inc"
-#include "layout/traversal.inc"
-#include "layout/blocking.inc"
-#include "kernels/generic.inc"
-#include "kernels/specialized.inc"
-#include "kernels/dispatch.inc"
-#include "execute/scheduling.inc"
-#include "execute/map.inc"
+
+
+
+
+
+
+
+
+
+
 
 void CheckValue(float actual, float expected) {
   if (std::isnan(expected)) {

@@ -1,3 +1,11 @@
+#include <algorithm>
+#include <numeric>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include "numeric/scalar.h"
+
+using namespace tensor0::stride;
 #include <array>
 #include <cassert>
 #include <cmath>
@@ -9,7 +17,7 @@
 #include <tuple>
 #include <type_traits>
 
-#include "numeric/scalar.inc"
+
 
 using namespace scalar;
 using Dtypes = std::tuple<Pred, S8, S16, S32, S64, U8, U16, U32, U64,

@@ -1,4 +1,17 @@
-namespace kernels {
+#pragma once
+
+#include "generic.h"
+#include "specialized.h"
+#include "../layout/traversal.h"
+#include "../numeric/expression.h"
+#include <algorithm>
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <type_traits>
+
+namespace tensor0::stride::kernels {
 
 template <typename SourceOp>
 inline constexpr bool kIsIdentityMapping = false;

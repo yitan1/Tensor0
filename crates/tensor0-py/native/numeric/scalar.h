@@ -1,6 +1,13 @@
-#include <bit>
+#pragma once
 
-namespace scalar {
+#include <bit>
+#include <cmath>
+#include <complex>
+#include <cstdint>
+#include <limits>
+#include <type_traits>
+
+namespace tensor0::stride::scalar {
 
 struct Pred { using Type = bool; };
 struct S8 { using Type = int8_t; };
@@ -71,7 +78,7 @@ constexpr auto PromoteTypes() {
   }
 }
 
-float HalfToFloat(uint16_t value) {
+inline float HalfToFloat(uint16_t value) {
   const uint32_t sign = static_cast<uint32_t>(value & 0x8000U) << 16;
   uint32_t exponent = (value >> 10) & 0x1FU;
   uint32_t mantissa = value & 0x03FFU;
@@ -97,7 +104,7 @@ float HalfToFloat(uint16_t value) {
   return std::bit_cast<float>(bits);
 }
 
-uint16_t FloatToHalf(float value) {
+inline uint16_t FloatToHalf(float value) {
   const uint32_t bits = std::bit_cast<uint32_t>(value);
   const uint16_t sign = static_cast<uint16_t>((bits >> 16) & 0x8000U);
   const uint32_t exponent = (bits >> 23) & 0xFFU;
@@ -151,11 +158,11 @@ uint16_t FloatToHalf(float value) {
       static_cast<uint16_t>(rounded_mantissa));
 }
 
-float BFloat16ToFloat(uint16_t value) {
+inline float BFloat16ToFloat(uint16_t value) {
   return std::bit_cast<float>(static_cast<uint32_t>(value) << 16);
 }
 
-uint16_t FloatToBFloat16(float value) {
+inline uint16_t FloatToBFloat16(float value) {
   uint32_t bits = std::bit_cast<uint32_t>(value);
   if ((bits & 0x7F800000U) == 0x7F800000U &&
       (bits & 0x007FFFFFU) != 0) {

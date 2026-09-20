@@ -1,3 +1,14 @@
+#pragma once
+
+#include "../numeric/scalar.h"
+#include "xla/ffi/api/ffi.h"
+#include <stdexcept>
+#include <type_traits>
+
+namespace tensor0::stride {
+
+namespace ffi = xla::ffi;
+
 template <ffi::DataType Dtype>
 struct ScalarDtypeMapping;
 
@@ -54,3 +65,22 @@ void VisitCoefficient(ffi::AnyBuffer buffer, Function function) {
     }
   });
 }
+
+}
+
+#define TENSOR0_STRIDE_FOR_EACH_DTYPE(Define) \
+  Define(S32, S32) \
+  Define(F32, F32) \
+  Define(F16, F16) \
+  Define(BF16, BF16) \
+  Define(C64, C64) \
+  Define(F64, F64) \
+  Define(C128, C128) \
+  Define(S64, S64) \
+  Define(U64, U64) \
+  Define(S16, S16) \
+  Define(S8, S8) \
+  Define(U8, U8) \
+  Define(U16, U16) \
+  Define(U32, U32) \
+  Define(Pred, PRED)

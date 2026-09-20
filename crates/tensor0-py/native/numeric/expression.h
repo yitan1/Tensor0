@@ -1,4 +1,8 @@
-namespace expression {
+#pragma once
+
+#include "scalar.h"
+
+namespace tensor0::stride::expression {
 
 template <typename Dtype>
 struct Identity {

@@ -1,4 +1,21 @@
 #include <algorithm>
+#include <numeric>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include "layout/record.h"
+#include "layout/traversal.h"
+#include "layout/blocking.h"
+#include "ffi/prepared.h"
+#include "execute/scheduling.h"
+#include "numeric/scalar.h"
+#include "numeric/expression.h"
+#include "kernels/generic.h"
+#include "kernels/specialized.h"
+#include "kernels/dispatch.h"
+#include "execute/reduction.h"
+#include "execute/dot.h"
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cassert>
@@ -13,19 +30,17 @@
 #include "xla/ffi/api/ffi.h"
 
 namespace ffi = xla::ffi;
-namespace tensor0::stride {
-#include "numeric/scalar.inc"
-#include "numeric/expression.inc"
-#include "layout/record.inc"
-#include "layout/traversal.inc"
-#include "layout/blocking.inc"
-#include "ffi/descriptor.inc"
-#include "kernels/generic.inc"
-#include "kernels/specialized.inc"
-#include "kernels/dispatch.inc"
-#include "execute/scheduling.inc"
-#include "execute/reduction.inc"
-}
+
+
+
+
+
+
+
+
+
+
+
 #include "thread_pool_test_support.h"
 
 namespace native = tensor0::stride;
@@ -217,6 +232,43 @@ void CheckDot() {
   assert(result == expected);
 }
 
+struct OwnedDotMap {
+  using InputDtype = scalar::F32;
+  using OutputDtype = scalar::F32;
+  std::shared_ptr<int> owner;
+  bool fail;
+
+  float operator()(float value) const {
+    assert(*owner == 7);
+    if (fail) throw std::runtime_error("injected dot failure");
+    return value;
+  }
+};
+
+void CheckDotCallbackLifetime() {
+  constexpr uint64_t size = 65536;
+  const auto record = layout::BuildLayout({size}, {1}, 0, {1}, 0, size, size, 0);
+  for (uint64_t batches : {UINT64_C(1), UINT64_C(7)}) {
+    for (bool fail : {false, true}) {
+      testing::ThreadPool pool(4);
+      std::vector<float> source(size * batches, 2), result(batches, 99);
+      auto owner = std::make_shared<int>(7);
+      std::weak_ptr<int> lifetime = owner;
+      // Both the temporary record vector and the expression argument go out of scope.
+      auto future = native::ExecuteDot<scalar::F32>(pool.get(), {record}, source.data(),
+          source.data(), result.data(), size, size, batches,
+          OwnedDotMap{owner, fail}, expression::Identity<scalar::F32>{});
+      owner.reset();
+      assert(!lifetime.expired() && result == std::vector<float>(batches, 99));
+      Complete(pool, std::move(future), true, fail);
+      assert(lifetime.expired());
+      if (!fail) assert(result == std::vector<float>(batches, 4 * size));
+      // A failed parallel partial must not publish a partial sum.
+      if (fail && batches == 1) assert(result[0] == 99);
+    }
+  }
+}
+
 void CheckCompletion() {
   constexpr uint64_t count = 4;
   std::vector<layout::Record> domains;
@@ -401,6 +453,46 @@ void CheckWorkerLimit() {
   native::worker_limit.store(UINT64_MAX);
 }
 
+void CheckReductionCallbackLifetimeAndFailure() {
+  constexpr uint64_t size = 65536;
+  for (int mode : {0, 1, 2}) {
+    const uint64_t batches = mode == 2 ? 7 : 1;
+    const uint64_t output_size = mode == 1 ? size + 4 : 5;
+    const auto record = layout::BuildLayout({size}, {1}, 0, {mode == 1 ? 1 : 0}, 2,
+                                          size, output_size, 11);
+    for (int failure : {0, 1, 2}) {
+      testing::ThreadPool pool(4);
+      std::vector<float> source(size * batches, 2), result(output_size * batches, 99);
+      auto owner = std::make_shared<int>(7);
+      std::weak_ptr<int> lifetime = owner;
+      auto future = native::ExecuteReduction<scalar::F32, scalar::F32>(pool.get(), {record},
+          source.data(), result.data(), size, output_size, batches,
+          [owner, failure](std::size_t index, uint64_t batch, auto apply) {
+            assert(*owner == 7 && index == 11);
+            if (failure == 1) throw std::runtime_error("injected reduction binder failure");
+            if (failure == 2) throw 1;
+            apply(expression::Scale<scalar::F32>{3.0f * (batch + 1)});
+          });
+      owner.reset();
+      assert(!lifetime.expired());
+      Complete(pool, std::move(future), true, failure != 0);
+      assert(lifetime.expired());
+      if (failure != 0) {
+        if (mode == 0) assert(result == std::vector<float>(output_size, 99));
+        if (mode == 1) assert(result == std::vector<float>(output_size, 0));
+      } else {
+        for (uint64_t batch = 0; batch < batches; ++batch) {
+          for (uint64_t index = 0; index < output_size; ++index) {
+            const bool selected = mode == 1 ? index >= 2 && index < size + 2 : index == 2;
+            const float expected = selected ? 6 * (batch + 1) * (mode == 1 ? 1 : size) : 0;
+            assert(result[batch * output_size + index] == expected);
+          }
+        }
+      }
+    }
+  }
+}
+
 void CheckBatchesAndStorage() {
   constexpr uint64_t size = 65536, batches = 7;
   testing::ThreadPool pool(4);
@@ -438,6 +530,8 @@ void CheckBatchesAndStorage() {
 }
 
 int main() {
+  CheckReductionCallbackLifetimeAndFailure();
+  CheckDotCallbackLifetime();
   CheckBatchesAndStorage();
   CheckWorkerLimit();
   CheckSplits();

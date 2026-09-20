@@ -1,6 +1,16 @@
-#include "layout/record.inc"
-#include "layout/traversal.inc"
-#include "layout/blocking.inc"
+#include <algorithm>
+#include <numeric>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include "layout/record.h"
+#include "layout/traversal.h"
+#include "layout/blocking.h"
+
+using namespace tensor0::stride;
+
+
+
 
 #include <cassert>
 #include <random>

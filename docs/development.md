@@ -8,10 +8,32 @@ uses `/usr/bin/c++` by default; set `CXX` to select another compiler.
 C++ optimization follows Cargo's profile optimization level: ordinary
 `maturin develop` uses `-O0`, while `maturin develop --release` uses `-O3`
 with the default profiles. Size levels `s` and `z` both use `-Os`.
-The Native backend reuses its object file when its declared source contents,
-vendored FFI headers, compiler command/version, and build script are unchanged.
-After changing system headers or replacing a compiler in place, clean the
-extension build with `cargo clean -p tensor0-py` before rebuilding.
+Set `TENSOR0_CXX_OPT_LEVEL` to `0`, `1`, `2`, `3`, `s`, or `z` to override
+only the C++ optimization level, leaving Rust's profile unchanged. For example,
+to compare C++ O2 with the default O3 release build:
+
+```bash
+TENSOR0_CXX_OPT_LEVEL=2 uv run maturin develop --release
+```
+
+Changing or removing the override invalidates the native object cache when the
+compiler command changes. The build script does not read `CXXFLAGS`.
+Benchmark representative kernels before choosing a lower optimization level for
+production; O2 is not guaranteed to preserve O3 performance.
+The Native backend compiles ordinary layout, descriptor/prepared-state, validation,
+and scheduling implementations as separate objects. Numerical templates are
+instantiated in four operation-owned units: `native/ffi/copy.cc`,
+`update.cc`, `reduction.cc` (including Accumulation), and `dot.cc`.
+Their typed inner kernels remain visible through headers for inlining.
+Shared lifecycle state and ordinary support implementations have one definition.
+Builds are serial and reuse each object independently using compiler-generated
+dependency files, dependency contents,
+compiler identity/command and build-script inputs. Implementation-only edits to an
+ordinary `.cc` do not rebuild the numerical objects. Operation-specific `.cc` or
+execution-header edits rebuild only that operation; shared kernel headers can
+rebuild multiple operations.
+Missing objects/dependency files and failed compilations invalidate the affected
+cache entry. Compiler paths and discovered dependencies are watched by Cargo.
 Use a release build for performance measurements.
 
 ## Local Setup

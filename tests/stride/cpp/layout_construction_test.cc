@@ -1,6 +1,14 @@
+#include <algorithm>
+#include <numeric>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include "layout/record.h"
+
+using namespace tensor0::stride;
 #include <cassert>
 #include <random>
-#include "layout/record.inc"
+
 
 void SameRecord(const layout::Record& actual, const layout::Record& expected) {
   assert(actual.semantic_index == expected.semantic_index);

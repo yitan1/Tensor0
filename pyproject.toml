@@ -40,23 +40,8 @@ manifest-path = "crates/tensor0-py/Cargo.toml"
 python-source = "src"
 features = ["pyo3/extension-module"]
 include = [
-    { path = "crates/tensor0-py/native/stride_ffi.cc", format = "sdist" },
-    { path = "crates/tensor0-py/native/ffi/handlers.inc", format = "sdist" },
-    { path = "crates/tensor0-py/native/ffi/bindings.inc", format = "sdist" },
-    { path = "crates/tensor0-py/native/numeric/scalar.inc", format = "sdist" },
-    { path = "crates/tensor0-py/native/numeric/expression.inc", format = "sdist" },
-    { path = "crates/tensor0-py/native/ffi/descriptor.inc", format = "sdist" },
-    { path = "crates/tensor0-py/native/ffi/dtype.inc", format = "sdist" },
-    { path = "crates/tensor0-py/native/execute/scheduling.inc", format = "sdist" },
-    { path = "crates/tensor0-py/native/kernels/generic.inc", format = "sdist" },
-    { path = "crates/tensor0-py/native/kernels/specialized.inc", format = "sdist" },
-    { path = "crates/tensor0-py/native/kernels/dispatch.inc", format = "sdist" },
-    { path = "crates/tensor0-py/native/kernels/avx2.inc", format = "sdist" },
-    { path = "crates/tensor0-py/native/execute/map.inc", format = "sdist" },
-    { path = "crates/tensor0-py/native/execute/reduction.inc", format = "sdist" },
-    { path = "crates/tensor0-py/native/layout/record.inc", format = "sdist" },
-    { path = "crates/tensor0-py/native/layout/traversal.inc", format = "sdist" },
-    { path = "crates/tensor0-py/native/layout/blocking.inc", format = "sdist" },
+    { path = "crates/tensor0-py/native/**/*.cc", format = "sdist" },
+    { path = "crates/tensor0-py/native/**/*.h", format = "sdist" },
 ]
 
 [tool.pytest.ini_options]

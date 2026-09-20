@@ -1,4 +1,15 @@
-namespace kernels {
+#pragma once
+
+#include "avx2.h"
+#include "../layout/record.h"
+#include "../numeric/expression.h"
+#include <algorithm>
+#include <array>
+#include <complex>
+#include <cstdint>
+#include <type_traits>
+
+namespace tensor0::stride::kernels {
 
 #if defined(TENSOR0_STRIDE_HAS_AVX2_TARGET)
 template <typename SourceOp>

@@ -1,4 +1,14 @@
-namespace kernels {
+#pragma once
+
+#include "../layout/record.h"
+#include "../numeric/scalar.h"
+#include <algorithm>
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <vector>
+
+namespace tensor0::stride::kernels {
 
 template <std::size_t Count, typename RowOp>
 void ForEachAffineRow(

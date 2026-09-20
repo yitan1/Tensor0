@@ -1,4 +1,4 @@
-#include "ffi_under_test.inc"
+#include "ffi_under_test.h"
 #include "ffi_test_support.h"
 
 #include <cassert>
