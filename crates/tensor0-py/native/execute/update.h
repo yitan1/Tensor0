@@ -131,6 +131,57 @@ std::function<void(const layout::Record&)> BindUpdateRecord(
       source_map, base_map);
 }
 
+// Raw storage types end at this scalar load/conversion boundary. Buffers are borrowed.
+struct UpdateCoefficientReader {
+  const void* data;
+  uint64_t count;
+  void (*load)(const void*, uint64_t, void*);
+};
+
+template <typename Raw, typename Bound>
+void ReadUpdateCoefficient(const void* data, uint64_t index, void* destination) {
+  *static_cast<scalar::Value<Bound>*>(destination) = scalar::Convert<Bound, Raw>(
+      static_cast<const scalar::Value<Raw>*>(data)[index]);
+}
+
+template <typename Result, typename Alpha, typename Beta, typename SourceMap, typename BaseMap>
+ffi::Future ExecuteBoundUpdate(
+    ffi::ThreadPool thread_pool, const std::vector<layout::Record>& records,
+    const scalar::Value<typename SourceMap::InputDtype>* source,
+    const scalar::Value<Result>* base, scalar::Value<Result>* result,
+    uint64_t source_size, uint64_t output_size, uint64_t batch_count,
+    UpdateCoefficientReader alpha, UpdateCoefficientReader beta,
+    const SourceMap& source_map, const BaseMap& base_map) {
+  static_assert(std::is_same_v<typename BaseMap::InputDtype, Result>);
+  try {
+    const auto bind_batch = [=](uint64_t batch) -> std::function<void(const layout::Record&)> {
+      // Snapshot and convert once per batch, before initialization or scheduling.
+      scalar::Value<Alpha> alpha_value;
+      scalar::Value<Beta> beta_value;
+      alpha.load(alpha.data, alpha.count == 1 ? 0 : batch, &alpha_value);
+      beta.load(beta.data, beta.count == 1 ? 0 : batch, &beta_value);
+      return BindUpdateValues<Result, Alpha, Beta>(
+          source == nullptr ? nullptr : source + batch * source_size,
+          base + batch * output_size, result + batch * output_size,
+          alpha_value, beta_value,
+          source_map, base_map);
+    };
+    if (batch_count == 1 && output_size != 0) {
+      // The single-batch path binds synchronously; only the bound record callback escapes.
+      return ExecuteUpdateTasks(thread_pool, records, sizeof(*source), sizeof(*result),
+          output_size, batch_count, alpha.count, beta.count, base, result,
+          [&bind_batch](uint64_t batch) { return bind_batch(batch); });
+    }
+    return ExecuteUpdateTasks(thread_pool, records, sizeof(*source), sizeof(*result),
+        output_size, batch_count, alpha.count, beta.count, base, result, bind_batch);
+  } catch (const std::exception& error) {
+    return CompletedFuture(ffi::Error::Internal(std::string("tensor0-native: ") + error.what()));
+  } catch (...) {
+    return CompletedFuture(ffi::Error::Internal("tensor0-native: unknown map preparation exception"));
+  }
+}
+
+// Typed callers select independent readers; only bound types reach the executor.
 template <typename Result, typename Alpha, typename Beta, typename SourceMap, typename BaseMap>
 ffi::Future ExecuteUpdate(
     ffi::ThreadPool thread_pool, const std::vector<layout::Record>& records,
@@ -140,29 +191,13 @@ ffi::Future ExecuteUpdate(
     const scalar::Value<Alpha>* alpha, uint64_t alpha_count,
     const scalar::Value<Beta>* beta, uint64_t beta_count,
     SourceMap source_map, BaseMap base_map) {
-  static_assert(std::is_same_v<typename BaseMap::InputDtype, Result>);
-  try {
-    const auto bind_batch = [=](uint64_t batch) -> std::function<void(const layout::Record&)> {
-      // Snapshot and convert once per batch, before initialization or scheduling.
-      return BindUpdateRecord<Result, Alpha, Beta>(
-          source == nullptr ? nullptr : source + batch * source_size,
-          base + batch * output_size, result + batch * output_size,
-          alpha[alpha_count == 1 ? 0 : batch], beta[beta_count == 1 ? 0 : batch],
-          source_map, base_map);
-    };
-    if (batch_count == 1 && output_size != 0) {
-      // The single-batch path binds synchronously; only the bound record callback escapes.
-      return ExecuteUpdateTasks(thread_pool, records, sizeof(*source), sizeof(*result),
-          output_size, batch_count, alpha_count, beta_count, base, result,
-          [&bind_batch](uint64_t batch) { return bind_batch(batch); });
-    }
-    return ExecuteUpdateTasks(thread_pool, records, sizeof(*source), sizeof(*result),
-        output_size, batch_count, alpha_count, beta_count, base, result, bind_batch);
-  } catch (const std::exception& error) {
-    return CompletedFuture(ffi::Error::Internal(std::string("tensor0-native: ") + error.what()));
-  } catch (...) {
-    return CompletedFuture(ffi::Error::Internal("tensor0-native: unknown map preparation exception"));
-  }
+  using BoundAlpha = UpdateCoefficient<Alpha, typename SourceMap::OutputDtype>;
+  using BoundBeta = UpdateCoefficient<Beta, typename BaseMap::OutputDtype>;
+  return ExecuteBoundUpdate<Result, BoundAlpha, BoundBeta>(thread_pool, records,
+      source, base, result, source_size, output_size, batch_count,
+      {alpha, alpha_count, ReadUpdateCoefficient<Alpha, BoundAlpha>},
+      {beta, beta_count, ReadUpdateCoefficient<Beta, BoundBeta>},
+      source_map, base_map);
 }
 
 }

@@ -17,6 +17,70 @@ namespace ffi = xla::ffi;
 
 namespace tensor0::stride {
 
+struct SelectedUpdateCoefficient {
+  ffi::DataType bound_type;
+  UpdateCoefficientReader reader;
+};
+
+template <typename Scalar>
+constexpr ffi::DataType UpdateScalarType() {
+#define TENSOR0_UPDATE_SCALAR_TYPE(Suffix, Dtype) \
+  if constexpr (std::is_same_v<Scalar, ScalarDtype<ffi::Dtype>>) return ffi::Dtype;
+  TENSOR0_STRIDE_FOR_EACH_DTYPE(TENSOR0_UPDATE_SCALAR_TYPE)
+#undef TENSOR0_UPDATE_SCALAR_TYPE
+}
+
+template <typename Mapped>
+SelectedUpdateCoefficient SelectUpdateCoefficient(
+    ffi::AnyBuffer buffer, uint64_t count, const void* result, uint64_t output_bytes) {
+  SelectedUpdateCoefficient selected;
+  VisitCoefficient(buffer, [&](auto raw_type, const auto* data) {
+    using Raw = typename decltype(raw_type)::type;
+    using Bound = UpdateCoefficient<Raw, Mapped>;
+    ValidateDisjointBuffers(data, BufferBytes(count, sizeof(scalar::Value<Raw>)),
+                            result, output_bytes);
+    selected = {UpdateScalarType<Bound>(), {data, count, ReadUpdateCoefficient<Raw, Bound>}};
+  });
+  return selected;
+}
+
+// Only the image of the existing coefficient policy reaches the bound executor.
+template <typename Mapped, typename Function>
+void VisitBoundUpdateCoefficient(ffi::DataType type, Function function) {
+  VisitScalarDtype(type, [&](auto bound_type) {
+    using Bound = typename decltype(bound_type)::type;
+    if constexpr (std::is_same_v<Bound, UpdateCoefficient<Bound, Mapped>>) {
+      function(bound_type);
+    }
+  });
+}
+
+// Invocation borrows buffers and records only until the synchronous executor entry returns.
+struct UpdateInvocation {
+  ffi::ThreadPool thread_pool;
+  const PreparedState* prepared;
+  const void* source;
+  const void* base;
+  void* result;
+  uint64_t source_size;
+  uint64_t output_size;
+  uint64_t batch_count;
+  UpdateCoefficientReader alpha;
+  UpdateCoefficientReader beta;
+};
+
+template <typename Result, typename Source, typename Alpha, typename Beta>
+ffi::Future InvokeUpdate(const UpdateInvocation& request) {
+  return ExecuteBoundUpdate<Result, Alpha, Beta>(
+      request.thread_pool, request.prepared->records,
+      static_cast<const scalar::Value<Source>*>(request.source),
+      static_cast<const scalar::Value<Result>*>(request.base),
+      static_cast<scalar::Value<Result>*>(request.result),
+      request.source_size, request.output_size, request.batch_count,
+      request.alpha, request.beta,
+      expression::Identity<Source>{}, expression::Identity<Result>{});
+}
+
 template <ffi::DataType Dtype>
 ffi::Future Update(ffi::Span<const int64_t>, const PreparedState* prepared,
                          ffi::AnyBuffer source,
@@ -25,7 +89,9 @@ ffi::Future Update(ffi::Span<const int64_t>, const PreparedState* prepared,
                          ffi::AnyBuffer beta,
                          ffi::ResultBufferR2<Dtype> result, ffi::ThreadPool thread_pool) {
   using Scalar = ScalarDtype<Dtype>;
-  std::function<ffi::Future()> execute;
+  UpdateInvocation invocation{thread_pool, prepared, nullptr, base.typed_data(), result->typed_data(),
+      0, 0, 0, {}, {}};
+  ffi::Future (*execute)(const UpdateInvocation&) = nullptr;
   uint64_t batch_count = 0;
   uint64_t output_size = 0;
   const auto error = ContainErrors([&] {
@@ -99,21 +165,21 @@ ffi::Future Update(ffi::Span<const int64_t>, const PreparedState* prepared,
         } else {
           ValidateDisjointBuffers(source_data, source_bytes, result->typed_data(), output_bytes);
         }
-        VisitCoefficient(alpha, [&](auto alpha_type, const auto* alpha_data) {
+        const auto alpha_reader = SelectUpdateCoefficient<Source>(
+            alpha, alpha_count, result->typed_data(), output_bytes);
+        const auto beta_reader = SelectUpdateCoefficient<Scalar>(
+            beta, beta_count, result->typed_data(), output_bytes);
+        VisitBoundUpdateCoefficient<Source>(alpha_reader.bound_type, [&](auto alpha_type) {
           using Alpha = typename decltype(alpha_type)::type;
-          VisitCoefficient(beta, [&](auto beta_type, const auto* beta_data) {
+          VisitBoundUpdateCoefficient<Scalar>(beta_reader.bound_type, [&](auto beta_type) {
             using Beta = typename decltype(beta_type)::type;
-            ValidateDisjointBuffers(alpha_data, BufferBytes(alpha_count, sizeof(scalar::Value<Alpha>)),
-                                     result->typed_data(), output_bytes);
-            ValidateDisjointBuffers(beta_data, BufferBytes(beta_count, sizeof(scalar::Value<Beta>)),
-                                     result->typed_data(), output_bytes);
-            execute = [=, base_data = base.typed_data(), result_data = result->typed_data()] {
-              return ExecuteUpdate<Scalar, Alpha, Beta>(
-                  thread_pool, prepared->records, source_data, base_data, result_data,
-                  source_size, output_size, batch_count,
-                  alpha_data, alpha_count, beta_data, beta_count,
-                  expression::Identity<Source>{}, expression::Identity<Scalar>{});
-            };
+            invocation.source = source_data;
+            invocation.source_size = source_size;
+            invocation.output_size = output_size;
+            invocation.batch_count = batch_count;
+            invocation.alpha = alpha_reader.reader;
+            invocation.beta = beta_reader.reader;
+            execute = &InvokeUpdate<Scalar, Source, Alpha, Beta>;
           });
         });
       } else {
@@ -122,7 +188,7 @@ ffi::Future Update(ffi::Span<const int64_t>, const PreparedState* prepared,
     });
   });
   if (error.failure()) return CompletedFuture(error);
-  return execute();
+  return execute(invocation);
 }
 
 }
