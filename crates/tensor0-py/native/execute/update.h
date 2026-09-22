@@ -131,17 +131,56 @@ std::function<void(const layout::Record&)> BindUpdateRecord(
       source_map, base_map);
 }
 
-// Raw storage types end at this scalar load/conversion boundary. Buffers are borrowed.
-struct UpdateCoefficientReader {
-  const void* data;
-  uint64_t count;
-  void (*load)(const void*, uint64_t, void*);
-};
-
 template <typename Raw, typename Bound>
 void ReadUpdateCoefficient(const void* data, uint64_t index, void* destination) {
   *static_cast<scalar::Value<Bound>*>(destination) = scalar::Convert<Bound, Raw>(
       static_cast<const scalar::Value<Raw>*>(data)[index]);
+}
+
+template <typename Result>
+struct UpdateInit {
+  const scalar::Value<Result>* base;
+  scalar::Value<Result>* result;
+  uint64_t size;
+  void operator()(uint64_t batch) const {
+    InitializeUpdateOutput<Result>(base + batch * size, result + batch * size, size);
+  }
+};
+
+template <typename SourceMap, typename BaseMap>
+struct UpdateF {
+  const scalar::Value<typename SourceMap::InputDtype>* source;
+  uint64_t size;
+  UpdateCoefficientReader alpha, beta;
+  SourceMap source_map;
+  BaseMap base_map;
+  UpdateF(const scalar::Value<typename SourceMap::InputDtype>* input, uint64_t count,
+      UpdateCoefficientReader a, UpdateCoefficientReader b,
+      const SourceMap& sm, const BaseMap& bm)
+      : source(input), size(count), alpha(a), beta(b), source_map(sm), base_map(bm) {}
+};
+
+template <typename Result, typename SourceMap, typename BaseMap>
+using UpdateProgram = MapProgram<UpdateF<SourceMap, BaseMap>, UpdateInit<Result>>;
+
+template <typename Result, typename Alpha, typename Beta, typename SourceMap, typename BaseMap>
+const MapProgramEntry& UpdateProgramEntry() {
+  using Program = UpdateProgram<Result, SourceMap, BaseMap>;
+  static const MapProgramEntry entry{
+    [](const void* state, uint64_t batch) { static_cast<const Program*>(state)->init(batch); },
+    [](const void* state, uint64_t batch) -> std::function<void(const layout::Record&)> {
+      const auto& p = *static_cast<const Program*>(state);
+      scalar::Value<Alpha> alpha;
+      scalar::Value<Beta> beta;
+      p.f.alpha.load(p.f.alpha.data, p.f.alpha.count == 1 ? 0 : batch, &alpha);
+      p.f.beta.load(p.f.beta.data, p.f.beta.count == 1 ? 0 : batch, &beta);
+      return BindUpdateValues<Result, Alpha, Beta>(
+          p.f.source == nullptr ? nullptr : p.f.source + batch * p.f.size,
+          p.init.base + batch * p.init.size, p.init.result + batch * p.init.size,
+          alpha, beta, p.f.source_map, p.f.base_map);
+    }
+  };
+  return entry;
 }
 
 template <typename Result, typename Alpha, typename Beta, typename SourceMap, typename BaseMap>
@@ -154,26 +193,16 @@ ffi::Future ExecuteBoundUpdate(
     const SourceMap& source_map, const BaseMap& base_map) {
   static_assert(std::is_same_v<typename BaseMap::InputDtype, Result>);
   try {
-    const auto bind_batch = [=](uint64_t batch) -> std::function<void(const layout::Record&)> {
-      // Snapshot and convert once per batch, before initialization or scheduling.
-      scalar::Value<Alpha> alpha_value;
-      scalar::Value<Beta> beta_value;
-      alpha.load(alpha.data, alpha.count == 1 ? 0 : batch, &alpha_value);
-      beta.load(beta.data, beta.count == 1 ? 0 : batch, &beta_value);
-      return BindUpdateValues<Result, Alpha, Beta>(
-          source == nullptr ? nullptr : source + batch * source_size,
-          base + batch * output_size, result + batch * output_size,
-          alpha_value, beta_value,
-          source_map, base_map);
-    };
-    if (batch_count == 1 && output_size != 0) {
-      // The single-batch path binds synchronously; only the bound record callback escapes.
-      return ExecuteUpdateTasks(thread_pool, records, sizeof(*source), sizeof(*result),
-          output_size, batch_count, alpha.count, beta.count, base, result,
-          [&bind_batch](uint64_t batch) { return bind_batch(batch); });
+    auto state = MakeProgramState<UpdateProgram<Result, SourceMap, BaseMap>>(
+        UpdateInit<Result>{base, result, output_size}, source, source_size, alpha, beta,
+        source_map, base_map);
+    if ((alpha.count != 1 && alpha.count != batch_count) ||
+        (beta.count != 1 && beta.count != batch_count)) {
+      throw std::invalid_argument("update coefficients must be shared or one value per batch");
     }
-    return ExecuteUpdateTasks(thread_pool, records, sizeof(*source), sizeof(*result),
-        output_size, batch_count, alpha.count, beta.count, base, result, bind_batch);
+    return ExecuteOwnedMapProgram(thread_pool, records, sizeof(*source), sizeof(*result),
+        output_size, batch_count,
+        {std::move(state), &UpdateProgramEntry<Result, Alpha, Beta, SourceMap, BaseMap>()});
   } catch (const std::exception& error) {
     return CompletedFuture(ffi::Error::Internal(std::string("tensor0-native: ") + error.what()));
   } catch (...) {

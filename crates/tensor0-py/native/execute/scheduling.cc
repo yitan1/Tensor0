@@ -1,8 +1,8 @@
 #include "scheduling.h"
+#include "reduction_program.h"
 
 #include <algorithm>
 #include <cstddef>
-#include <cstring>
 #include <exception>
 #include <limits>
 #include <memory>
@@ -142,36 +142,23 @@ ffi::Future ExecuteMapTasks(
   }
 }
 
-ffi::Future ExecuteUpdateTasks(
+ffi::Future ExecuteOwnedMapProgram(
     ffi::ThreadPool thread_pool, const std::vector<layout::Record>& records,
-    uint64_t source_item_size, uint64_t result_item_size,
-    uint64_t output_size, uint64_t batch_count, uint64_t alpha_count, uint64_t beta_count,
-    const void* base, void* result,
-    std::function<std::function<void(const layout::Record&)>(uint64_t)> bind_batch) {
-  if ((alpha_count != 1 && alpha_count != batch_count) ||
-      (beta_count != 1 && beta_count != batch_count)) {
-    throw std::invalid_argument("update coefficients must be shared or one value per batch");
-  }
-  auto programs = layout::PrepareGeneratedRecords(records, source_item_size, result_item_size);
-  const uint64_t output_bytes = output_size * result_item_size;
-  const auto initialize = [=](uint64_t batch) {
-    if (output_bytes != 0 && result != base) {
-      std::memcpy(static_cast<std::byte*>(result) + batch * output_bytes,
-                  static_cast<const std::byte*>(base) + batch * output_bytes, output_bytes);
-    }
-  };
+    uint64_t source_item_size, uint64_t result_item_size, uint64_t output_size,
+    uint64_t batch_count, const OwnedMapProgram& program) {
+  auto prepared = layout::PrepareGeneratedRecords(records, source_item_size, result_item_size);
   if (batch_count == 1 && output_size != 0) {
-    return ExecuteMapTasks(thread_pool, programs,
-        [initialize] { initialize(0); }, bind_batch(0));
+    auto execute = program.entry->bind_record(program.state.get(), 0);
+    return ExecuteMapTasks(thread_pool, prepared,
+        [&program] { program.entry->initialize(program.state.get(), 0); }, std::move(execute));
   }
   return ExecuteBatchTasks(thread_pool, batch_count, output_size,
-      [programs = std::move(programs), initialize,
-       bind_batch = std::move(bind_batch)](uint64_t begin, uint64_t count) {
+      [program, prepared = std::move(prepared)](uint64_t begin, uint64_t count) {
         for (uint64_t batch = begin; batch < begin + count; ++batch) {
-          const auto execute = bind_batch(batch);
-          initialize(batch);
-          for (const auto& program : programs) {
-            layout::ForEachGeneratedBlock(program, std::cref(execute));
+          const auto execute = program.entry->bind_record(program.state.get(), batch);
+          program.entry->initialize(program.state.get(), batch);
+          for (const auto& record : prepared) {
+            layout::ForEachGeneratedBlock(record, std::cref(execute));
           }
         }
       });
@@ -224,4 +211,171 @@ extern "C" uint64_t Tensor0StrideGetWorkerLimit() {
 
 extern "C" void Tensor0StrideSetWorkerLimit(uint64_t limit) {
   tensor0::stride::worker_limit.store(limit, std::memory_order_relaxed);
+}
+
+namespace tensor0::stride {
+
+// Keep nested record/vector cleanup out of expression-specific entry points.
+ReductionPlan::~ReductionPlan() = default;
+
+ReductionPlan PrepareReductionPlan(
+    ffi::ThreadPool thread_pool, const std::vector<layout::Record>& records,
+    ReductionKind kind, bool parallel_accumulator, uint64_t source_size,
+    uint64_t right_size, uint64_t output_size, uint64_t batch_count,
+    uint64_t source_item_size, uint64_t right_item_size, uint64_t result_item_size) {
+  const bool dot = kind == ReductionKind::Dot;
+  if (dot) {
+    ValidateDotStorage(source_size, right_size, batch_count,
+                       source_item_size, right_item_size, result_item_size);
+  } else {
+    ValidateReductionStorage(source_size, output_size, batch_count,
+                             source_item_size, result_item_size);
+  }
+  ReductionPlan plan;
+  plan.programs = layout::PrepareGeneratedRecords(
+      records, source_item_size, dot ? right_item_size : result_item_size, false);
+  plan.work = dot ? std::max({source_size, right_size, UINT64_C(1)})
+                  : output_size == 0 ? 0 : std::max(source_size, output_size);
+  if (batch_count != 1 || output_size == 0 || (dot && !parallel_accumulator)) return plan;
+  plan.workers = ReductionWorkerCount(thread_pool, records);
+  if (plan.workers <= 1) return plan;
+  int64_t destination = dot ? 0 : -1;
+  bool single_destination = true;
+  if (parallel_accumulator) {
+    if (!dot) {
+      for (const auto& program : plan.programs) {
+        const auto& record = program.record;
+        if (destination == -1) destination = record.destination_offset;
+        single_destination &= destination == record.destination_offset;
+        for (std::size_t axis = 0; axis < record.shape.size(); ++axis) {
+          single_destination &= record.shape[axis] <= 1 || record.destination_strides[axis] == 0;
+        }
+      }
+    }
+    if (single_destination && destination != -1) {
+      if (!dot) {
+        for (auto& program : plan.programs) program.record.destination_offset = 0;
+      }
+      layout::SplitReductionDomains(&plan.programs, plan.workers,
+          [dot](const auto& record, auto axis) {
+            const auto source = std::max<uint64_t>(1, layout::AbsoluteStride(record.source_strides[axis]));
+            return dot ? std::min(source, std::max<uint64_t>(1,
+                layout::AbsoluteStride(record.destination_strides[axis]))) : source;
+          });
+      plan.mode = ReductionMode::Partials;
+      plan.output_index = destination;
+      return plan;
+    }
+  }
+  if (!dot) {
+    plan.tasks = layout::BuildReductionOutputTasks(plan.programs, plan.workers);
+    if (plan.tasks.size() > 1) plan.mode = ReductionMode::Outputs;
+  }
+  return plan;
+}
+
+}
+
+namespace tensor0::stride {
+
+void ExecuteGeneratedBlocks(
+    const layout::GeneratedRecordProgram& program, const void* context,
+    void (*execute)(const void*, const layout::Record&)) {
+  layout::ForEachGeneratedBlock(program, [=](const layout::Record& block) {
+    execute(context, block);
+  });
+}
+
+}
+
+namespace tensor0::stride {
+
+// Only accumulator storage specializes task management. F is restored at a record boundary.
+template <typename Accumulator>
+ffi::Future ExecuteOwnedReductionProgram(
+    ffi::ThreadPool thread_pool, ReductionPlan plan,
+    scalar::Value<Accumulator>* result, uint64_t output_size, uint64_t batch_count,
+    OwnedProgram<ReductionProgramEntry<Accumulator>> program) {
+  if constexpr (kParallelReductionAccumulator<Accumulator>) {
+    if (plan.mode == ReductionMode::Partials) {
+      // Local zero identities and final output writes belong to the partials executor.
+      return ExecuteReductionPartials<Accumulator>(thread_pool, std::move(plan.programs),
+          plan.workers, result, output_size, plan.output_index,
+          [program = std::move(program)](const auto& record, auto* partial) {
+            program.entry->execute(program.state.get(), record, 0, partial);
+          });
+    }
+  }
+  if (plan.mode == ReductionMode::Outputs) {
+    const auto count = plan.tasks.size();
+    program.entry->initialize(program.state.get(), result, output_size);
+    return ExecuteTasks(thread_pool, count, plan.workers,
+        [tasks = std::move(plan.tasks), program = std::move(program), result]
+        (uint64_t begin, uint64_t count) {
+          for (uint64_t index = begin; index < begin + count; ++index) {
+            for (const auto& record : tasks[index]) {
+              program.entry->execute(program.state.get(), record, 0, result);
+            }
+          }
+        });
+  }
+  return ExecuteBatchTasks(thread_pool, batch_count, plan.work,
+      [records = std::move(plan.programs), program = std::move(program), result, output_size]
+      (uint64_t begin, uint64_t count) {
+        for (uint64_t batch = begin; batch < begin + count; ++batch) {
+          auto* target = result + batch * output_size;
+          program.entry->initialize(program.state.get(), target, output_size);
+          for (const auto& record : records) {
+            program.entry->execute(program.state.get(), record, batch, target);
+          }
+        }
+      });
+}
+
+template ffi::Future ExecuteOwnedReductionProgram<scalar::Pred>(
+    ffi::ThreadPool, ReductionPlan, scalar::Value<scalar::Pred>*, uint64_t, uint64_t,
+    OwnedProgram<ReductionProgramEntry<scalar::Pred>>);
+template ffi::Future ExecuteOwnedReductionProgram<scalar::S8>(
+    ffi::ThreadPool, ReductionPlan, scalar::Value<scalar::S8>*, uint64_t, uint64_t,
+    OwnedProgram<ReductionProgramEntry<scalar::S8>>);
+template ffi::Future ExecuteOwnedReductionProgram<scalar::S16>(
+    ffi::ThreadPool, ReductionPlan, scalar::Value<scalar::S16>*, uint64_t, uint64_t,
+    OwnedProgram<ReductionProgramEntry<scalar::S16>>);
+template ffi::Future ExecuteOwnedReductionProgram<scalar::S32>(
+    ffi::ThreadPool, ReductionPlan, scalar::Value<scalar::S32>*, uint64_t, uint64_t,
+    OwnedProgram<ReductionProgramEntry<scalar::S32>>);
+template ffi::Future ExecuteOwnedReductionProgram<scalar::S64>(
+    ffi::ThreadPool, ReductionPlan, scalar::Value<scalar::S64>*, uint64_t, uint64_t,
+    OwnedProgram<ReductionProgramEntry<scalar::S64>>);
+template ffi::Future ExecuteOwnedReductionProgram<scalar::U8>(
+    ffi::ThreadPool, ReductionPlan, scalar::Value<scalar::U8>*, uint64_t, uint64_t,
+    OwnedProgram<ReductionProgramEntry<scalar::U8>>);
+template ffi::Future ExecuteOwnedReductionProgram<scalar::U16>(
+    ffi::ThreadPool, ReductionPlan, scalar::Value<scalar::U16>*, uint64_t, uint64_t,
+    OwnedProgram<ReductionProgramEntry<scalar::U16>>);
+template ffi::Future ExecuteOwnedReductionProgram<scalar::U32>(
+    ffi::ThreadPool, ReductionPlan, scalar::Value<scalar::U32>*, uint64_t, uint64_t,
+    OwnedProgram<ReductionProgramEntry<scalar::U32>>);
+template ffi::Future ExecuteOwnedReductionProgram<scalar::U64>(
+    ffi::ThreadPool, ReductionPlan, scalar::Value<scalar::U64>*, uint64_t, uint64_t,
+    OwnedProgram<ReductionProgramEntry<scalar::U64>>);
+template ffi::Future ExecuteOwnedReductionProgram<scalar::F16>(
+    ffi::ThreadPool, ReductionPlan, scalar::Value<scalar::F16>*, uint64_t, uint64_t,
+    OwnedProgram<ReductionProgramEntry<scalar::F16>>);
+template ffi::Future ExecuteOwnedReductionProgram<scalar::BF16>(
+    ffi::ThreadPool, ReductionPlan, scalar::Value<scalar::BF16>*, uint64_t, uint64_t,
+    OwnedProgram<ReductionProgramEntry<scalar::BF16>>);
+template ffi::Future ExecuteOwnedReductionProgram<scalar::F32>(
+    ffi::ThreadPool, ReductionPlan, scalar::Value<scalar::F32>*, uint64_t, uint64_t,
+    OwnedProgram<ReductionProgramEntry<scalar::F32>>);
+template ffi::Future ExecuteOwnedReductionProgram<scalar::F64>(
+    ffi::ThreadPool, ReductionPlan, scalar::Value<scalar::F64>*, uint64_t, uint64_t,
+    OwnedProgram<ReductionProgramEntry<scalar::F64>>);
+template ffi::Future ExecuteOwnedReductionProgram<scalar::C64>(
+    ffi::ThreadPool, ReductionPlan, scalar::Value<scalar::C64>*, uint64_t, uint64_t,
+    OwnedProgram<ReductionProgramEntry<scalar::C64>>);
+template ffi::Future ExecuteOwnedReductionProgram<scalar::C128>(
+    ffi::ThreadPool, ReductionPlan, scalar::Value<scalar::C128>*, uint64_t, uint64_t,
+    OwnedProgram<ReductionProgramEntry<scalar::C128>>);
+
 }
