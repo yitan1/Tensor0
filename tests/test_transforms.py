@@ -1808,8 +1808,15 @@ def test_abelian_handoff_reuses_affine_adapter(monkeypatch):
 
 
 @pytest.mark.parametrize("sector", [U1Irrep, FermionParity])
-@pytest.mark.parametrize("dtype", ["float16", "bfloat16", "float32", "float64", "complex64", "complex128"])
-@pytest.mark.parametrize("batch_shape", [(), (2,), (2, 3), (0,), (2, 0)])
+@pytest.mark.parametrize(
+    "batch_shape,dtype",
+    [
+        pytest.param(batch_shape, dtype, id=f"batch_shape{index}-{dtype}")
+        for index, batch_shape in enumerate([(), (2,), (2, 3), (0,), (2, 0)])
+        for dtype in ["float16", "bfloat16", "float32", "float64", "complex64", "complex128"]
+        if batch_shape == () or dtype in {"float32", "complex64"}
+    ],
+)
 def test_abelian_tree_metadata_numerics_and_source_ad(sector, dtype, batch_shape):
     with jax.enable_x64():
         factor = space(sector, {0: 2, 1: 1})

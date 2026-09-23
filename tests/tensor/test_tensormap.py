@@ -710,8 +710,9 @@ def test_dense_and_subblock_readers_match_gather_with_ad_and_batch(monkeypatch, 
 
     def read(data):
         tensor = TensorMap(case.space, data)
-        blocks = tuple(block for _, block in tensor.subblocks())
-        indexed = tuple(tensor.subblock(pair) for pair, _ in tensor.subblocks())
+        entries = tuple(tensor.subblocks())
+        blocks = tuple(block for _, block in entries)
+        indexed = tuple(tensor.subblock(pair) for pair, _ in entries)
         return to_dense(tensor), blocks, indexed
 
     with monkeypatch.context() as oracle_patch:
