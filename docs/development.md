@@ -53,16 +53,122 @@ uv run python examples/contractions.py
 ```
 
 Native regression tests live in `tests/stride`, including the standalone C++
-sources in `tests/stride/cpp`. On Linux, `test_cpp.py` compiles them with a C++20
+sources in `tests/stride/cpp`. On Linux, `native/test_cpp.py` compiles them with a C++20
 compiler and UndefinedBehaviorSanitizer; set `CXX` to select the compiler.
 The tests cover scalar promotion, expression stages, address planning, SIMD
 tails, skipped reads, asynchronous task ownership, and validation before writes.
 The FFI boundary unit compiles the current binding functions without expanding
 every exported dtype handler; registration is checked separately in Python.
 
+Standalone C++ objects and executables are cached in pytest's cache directory
+(`.pytest_cache/d/stride-cpp` by default). Every invocation still runs all selected
+executables, including UBSan checks and the JAX promotion oracle. Native sources,
+vendored headers, shared test headers, compiler identity, compile flags, and
+compiler search-path environment changes invalidate the cached builds. Individual
+C++ test source changes rebuild that contract. Failed builds are not cached.
+Use `uv run pytest tests/stride/native/test_cpp.py --cache-clear -q` for a clean build,
+including after changes to system headers or libraries outside the checkout.
+
+### Stride coverage policy
+
+Stride uses fixed, explicit representative combinations alongside broad type-rule
+checks and dedicated numerical regressions. It does not exhaustively cross every
+dtype, layout, batch shape, coefficient form and derivative order. The parameter
+tables in each test owner define the exact coverage; there is no random sampler
+or default fast/slow exclusion. `uv run pytest tests -q` remains the complete
+Python-suite command, including root TensorMap integration.
+
+| Layer | Coverage strategy |
+| --- | --- |
+| Metadata and C++ numeric rules | Broad dtype-resolution, promotion and conversion tables, with separate rounding, overflow and special-value checks |
+| Native coefficient execution | Representative source/coefficient/result triples; all mixed-storage zero/unit/general branch patterns unbatched, with selected nonempty and empty batches |
+| Reduction FFI | Every source/result pair without a coefficient; every coefficient dtype when source equals result or either storage dtype is float32 |
+| Public Dot and Materialize | Every same-type pair plus selected mixed pairs in both directions; separate default/explicit dtype, layout, conversion-boundary and lowering checks |
+| JAX and public API AD | Representative precision, real/complex, layout, coefficient-form and batch combinations, preserving each surviving case's derivative checks |
+| Packed trace adapters | Typed-coefficient and mixed-storage representatives, repeated-read and higher-derivative checks; separate real TensorMap integration tests |
+
+The Reduction FFI rule retains complete source/coefficient and result/coefficient
+pair coverage, but **not** every typed source/result pair or three-way interaction.
+Missing coefficients and typed coefficients are distinct ABI paths. The separate
+FFI batch matrix keeps float32 source/result storage while varying coefficient
+dtype, scalar/singleton/batched form and empty/nonempty batch shapes.
+
+Coefficient AD uses boolean, signed and unsigned representatives rather than a
+full integer-width cross product. Wider precisions and complex storage do not
+repeat every layout or empty-batch combination. Public discrete-result tests
+retain all result widths across their operations, but not every source/result
+width combination. Fixed integer coefficients in packed trace source AD do not
+constitute active-integer or float0 coverage.
+
+Dedicated low-precision, projection, rounding-order, overflow, zero/one,
+nonfinite, aliasing and concurrency regressions remain separate. Selected-argument
+AD checks are not replaced by joint checks; JVP, VJP, direct transpose, higher
+orders and symbolic-zero/float0 contracts are distinct. References, cotangents
+and tolerances also remain specific to their owning tests.
+
+Representative coverage deliberately leaves some precision-by-layout, batch,
+coefficient and higher-order interactions untested. Lower-level type tables do
+not prove omitted public-wrapper or adapter paths correct. When fixing a defect,
+add its specific regression rather than assuming a neighboring representative
+covers the same behavior.
+
+Two-device tests focus on sharding rather than repeating the single-device dtype
+and layout matrices. Both automatic and explicit mesh modes retain forward,
+JVP and VJP checks, local-shard values, inferred sharding, collective requirements,
+and packed-storage rejection. Dot covers both conjugation modes and four numeric
+directions with representative ranks/layouts. Public transforms retain real flat
+vmap and complex nested-vmap cases, higher derivatives and empty batches.
+Mapped coefficients retain every existing mapped/shared axis pattern with a real
+or complex representative, including both local and all-reduce gradients.
+
+Stride tests separate metadata (`tests/stride/metadata/`), native arithmetic and
+execution (`native/`), FFI boundaries (`ffi/`), JAX transformations (`jax/`), public view algebra (`api/`), packed tensor
+adapters (`tensor_ops/`) and build infrastructure (`build_checks/`). The latter
+paths are also relative to `tests/stride/`. JAX AD and partitioning checks have
+their own subdirectories; abstract evaluation, lowering, batching and donation
+checks are at the JAX test root. Root TensorMap integration tests remain separate
+from the packed-adapter fixtures. `build_checks` avoids pytest's default exclusion
+of directories named `build`. All these directories are part of the normal
+`pytest tests/stride` collection.
+
+Shared test helpers live under `tests/stride/support/`; test modules do not
+import one another. Dtype-only tables in `support/data.py` do not initialize JAX,
+while differentiable sample arrays and operation-specific references have separate
+modules. Isolated probes live under `support/workers/`; their launching tests set
+the subprocess environment before the child imports JAX.
+
+Shared coefficient AD checks compile JVP, joint VJP, and coefficient-only
+transpose together, with primal buffers, tangents derived from those buffers,
+and cotangents supplied dynamically. Cached operation factories reuse function
+identities for identical static layouts; distinct local factories remain separate.
+The shared checker's oracle remains eager and independent of native execution.
+Accumulation/Reduction references cast mapped contributions before scatter-add;
+Update references preserve their separate base/overwrite semantics. Rounding-order
+and nonfinite-value regressions retain their separate explicit expectations.
+A trace-reuse regression checks that changing input data and zero/one/general
+coefficients does not retrace or freeze the inputs into the compiled check.
+
+### Focused runs
+
+Use explicit paths or test names for local iteration, for example:
+
 ```bash
-uv run pytest tests/stride/test_cpp.py tests/stride/test_build.py -q
-uv run pytest tests/stride -q --ignore=tests/stride/test_cpp.py --ignore=tests/stride/test_build.py
+uv run pytest tests/stride/jax/ad/test_update.py -q
+uv run pytest tests/stride -q
+```
+
+A selected subset is not equivalent to the full suite. Run complete affected
+owners as needed, and run `uv run pytest tests -q` before merging. A faster subset
+shortens feedback by doing less work; it does not demonstrate a speedup at equal
+coverage. All selected C++ executables still execute, even with a warm build cache.
+
+To run native compilation checks separately from the rest of Stride, run both
+groups below. Neither group alone covers the entire Stride suite, and together
+they still omit external TensorMap and other project tests:
+
+```bash
+uv run pytest tests/stride/native/test_cpp.py tests/stride/build_checks/test_native_build.py -q
+uv run pytest tests/stride -q --ignore=tests/stride/native/test_cpp.py --ignore=tests/stride/build_checks/test_native_build.py
 ```
 
 ## Documentation Site
