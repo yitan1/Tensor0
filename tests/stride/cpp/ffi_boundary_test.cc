@@ -248,6 +248,80 @@ void CheckReductionBoundary() {
 }
 
 
+void CheckQueuedReductionInvocations() {
+  constexpr int64_t batches = 9, size = 16384;
+  const auto bytes = Bytes({1, size, size, 2,
+      1, 0, 0, size, 1, size, 1, 0,
+      1, 0, 0, size, 1, size, 1, 0});
+  const std::vector<int64_t> words{1, size, size, 2,
+      1, 0, 0, size, 1, 1, 1, 0, 0, size, 1, 1};
+  const ffi::Span<const uint8_t> reduction_layout(bytes.data(), bytes.size());
+  const ffi::Span<const int64_t> accumulation_layout(words.data(), words.size());
+  for (bool accumulation : {false, true}) {
+    auto state = accumulation
+        ? native::InstantiateAccumulation(accumulation_layout, {})
+        : native::InstantiateReduction(reduction_layout, {});
+    assert(state.has_value());
+    testing::ThreadPool pool(4);
+    std::vector<float> source(batches * size, 3), first_output(batches * size, 99);
+    std::vector<double> second_output(batches * size, 99);
+    float scalar = 2;
+    std::array<double, batches> factors{};
+    for (int64_t batch = 0; batch < batches; ++batch) factors[batch] = batch % 3;
+    const auto invoke = [&]<ffi::DataType Dtype>(void* output, bool batched) {
+      std::array<int64_t, 2> dims{batches, size};
+      int64_t count = batches, record = batched ? 1 : 0;
+      XLA_FFI_Buffer input{XLA_FFI_Buffer_STRUCT_SIZE, nullptr,
+          XLA_FFI_DataType_F32, source.data(), 2, dims.data()};
+      XLA_FFI_Buffer result{XLA_FFI_Buffer_STRUCT_SIZE, nullptr,
+          static_cast<XLA_FFI_DataType>(Dtype), output, 2, dims.data()};
+      XLA_FFI_Buffer coefficient{XLA_FFI_Buffer_STRUCT_SIZE, nullptr,
+          batched ? XLA_FFI_DataType_F64 : XLA_FFI_DataType_F32,
+          batched ? static_cast<void*>(factors.data()) : static_cast<void*>(&scalar),
+          batched ? 1 : 0, batched ? &count : nullptr};
+      XLA_FFI_ArgType kind = XLA_FFI_ArgType_BUFFER;
+      void* pointer = &coefficient;
+      XLA_FFI_Args args{XLA_FFI_Args_STRUCT_SIZE, nullptr, 1, &kind, &pointer};
+      if (accumulation) {
+        return native::Accumulation<Dtype>(accumulation_layout, {&record, 1}, state->get(),
+            ffi::AnyBuffer(&input), ffi::RemainingArgs(&args, 0),
+            ffi::BufferR2<Dtype>(&result), pool.get());
+      }
+      return native::Reduction<Dtype>(reduction_layout, {&record, 1}, state->get(),
+          ffi::AnyBuffer(&input), ffi::RemainingArgs(&args, 0),
+          ffi::BufferR2<Dtype>(&result), pool.get());
+    };
+    bool first_ready = false, second_ready = false;
+    auto first = invoke.template operator()<ffi::F32>(first_output.data(), false);
+    first.OnReady([&](const std::optional<ffi::Error>& error) {
+      assert(!error);
+      first_ready = true;
+    });
+    auto second = invoke.template operator()<ffi::F64>(second_output.data(), true);
+    second.OnReady([&](const std::optional<ffi::Error>& error) {
+      assert(!error);
+      second_ready = true;
+    });
+    // Request descriptors have expired; borrowed buffers and prepared state remain alive.
+    assert(!first_ready && !second_ready && !pool.tasks.empty());
+    for (float value : first_output) assert(value == 99);
+    for (double value : second_output) assert(value == 99);
+    pool.run_parallel();
+    assert(first_ready && second_ready);
+    for (int64_t batch = 0; batch < batches; ++batch) {
+      assert(factors[batch] == batch % 3);
+      for (int64_t index = 0; index < size; ++index) {
+        const auto offset = batch * size + index;
+        assert(first_output[offset] == 9);
+        assert(second_output[offset] == 3 * (factors[batch] + 1));
+        assert(source[offset] == 3);
+      }
+    }
+    assert(scalar == 2);
+  }
+}
+
+
 void CheckDotBoundary() {
   testing::ThreadPool pool;
   const std::vector<int64_t> words{1, 3, 5, 1, 1, 0, 1, 3, 1, 1};
@@ -388,6 +462,7 @@ void CheckQueuedDotInvocations() {
 
 
 int main() {
+  CheckQueuedReductionInvocations();
   CheckQueuedDotInvocations();
   CheckReductionBoundary();
   CheckDotBoundary();

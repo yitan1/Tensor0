@@ -11,16 +11,19 @@ use std::time::Instant;
 const VENDORED_JAX_VERSION: &str = "0.10.1";
 const VENDORED_JAXLIB_VERSION: &str = "0.10.1";
 const FFI_HEADERS: [&str; 3] = ["api.h", "c_api.h", "ffi.h"];
-const STRIDE_NATIVE_SOURCES: [&str; 9] = [
+const STRIDE_NATIVE_SOURCES: [&str; 12] = [
     "native/execute/scheduling.cc",
     "native/ffi/prepared.cc",
     "native/layout/blocking.cc",
     "native/layout/record.cc",
     "native/layout/traversal.cc",
     "native/ffi/copy.cc",
-    "native/ffi/update.cc",
-    "native/ffi/reduction.cc",
-    "native/ffi/dot.cc",
+    "native/ffi/update_a.cc",
+    "native/ffi/update_b.cc",
+    "native/ffi/reduction_a.cc",
+    "native/ffi/reduction_b.cc",
+    "native/ffi/dot_a.cc",
+    "native/ffi/dot_b.cc",
 ];
 
 struct JaxBuildInfo {

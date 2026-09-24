@@ -1,3 +1,5 @@
+#pragma once
+
 #include "../execute/reduction.h"
 #include "../numeric/expression.h"
 #include "dtype.h"
@@ -17,6 +19,12 @@ namespace ffi = xla::ffi;
 
 namespace tensor0::stride {
 
+struct ReductionCoefficientBuffer {
+  ffi::DataType dtype;
+  const void* data;
+  bool batched;
+};
+
 template <ffi::DataType Dtype>
 ffi::Future Reduce(
     ffi::Span<const int64_t> coefficient_records,
@@ -24,11 +32,6 @@ ffi::Future Reduce(
     ffi::RemainingArgs coefficients, ffi::ResultBufferR2<Dtype> result,
     ffi::ThreadPool thread_pool) {
   using Accumulator = ScalarDtype<Dtype>;
-  struct CoefficientBuffer {
-    ffi::DataType dtype;
-    const void* data;
-    bool batched;
-  };
   std::function<ffi::Future()> execute;
   uint64_t batch_count = 0;
   const uint64_t source_size = prepared->source_size;
@@ -59,7 +62,7 @@ ffi::Future Reduce(
       throw std::invalid_argument("reduction coefficient operand count does not match record indices");
     }
     std::vector<std::size_t> record_parameters(prepared->records.size(), coefficients.size());
-    std::vector<CoefficientBuffer> buffers;
+    std::vector<ReductionCoefficientBuffer> buffers;
     buffers.reserve(coefficients.size());
     int64_t previous_record = -1;
     for (std::size_t index = 0; index < coefficients.size(); ++index) {
@@ -165,9 +168,3 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL( \
 extern "C" void* Tensor0StrideAccumulation##Suffix##V1Handler() { \
   return reinterpret_cast<void*>(&Tensor0StrideAccumulation##Suffix##V1); \
 }
-
-TENSOR0_STRIDE_FOR_EACH_DTYPE(TENSOR0_STRIDE_DEFINE_REDUCTION)
-TENSOR0_STRIDE_FOR_EACH_DTYPE(TENSOR0_STRIDE_DEFINE_ACCUMULATION)
-
-#undef TENSOR0_STRIDE_DEFINE_REDUCTION
-#undef TENSOR0_STRIDE_DEFINE_ACCUMULATION
