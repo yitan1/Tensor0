@@ -25,6 +25,7 @@ def test_extension_exposes_only_native_stride_registration() -> None:
     assert _native._stride_ffi_build_versions() == (jax.__version__, version("jaxlib"))
     assert {name for name in dir(_native) if "stride" in name} == {
         "_stride_ffi_available", "_stride_ffi_build_versions",
+        "_stride_cuda_available", "_stride_cuda_registration",
         "_stride_native_registration", "_stride_native_prepared_stats",
         "_stride_native_worker_limit", "_set_stride_native_worker_limit",
     }

@@ -40,6 +40,8 @@ manifest-path = "crates/tensor0-py/Cargo.toml"
 python-source = "src"
 features = ["pyo3/extension-module"]
 include = [
+    { path = "crates/tensor0-py/native/**/*.cu", format = "sdist" },
+    { path = "crates/tensor0-py/native/**/*.cuh", format = "sdist" },
     { path = "crates/tensor0-py/native/**/*.cc", format = "sdist" },
     { path = "crates/tensor0-py/native/**/*.h", format = "sdist" },
 ]

@@ -33,8 +33,12 @@ with JAX and JAXLIB 0.10.1. Tensor0 pins those versions because its native strid
 handler is compiled against the matching XLA FFI headers and validates the
 runtime versions exactly.
 
-Other platforms and JAX/JAXLIB versions are not currently supported execution
-targets. Tensor0 does not silently replace unavailable native stride operations
+An [experimental optional CUDA build](docs/cuda.md) provides same-dtype
+stride Copy, Update, Accumulation, Dot and Reduction for F32/F64/C64/C128, with a limited
+coefficient matrix and selected AD paths; it does not yet support the complete
+tensor API or full reverse AD. CPU-only builds do not require CUDA. Other backends and JAX/JAXLIB
+versions are not currently supported execution targets.
+Tensor0 does not silently replace unavailable native stride operations
 with element-address gather/scatter implementations; affected operations fail
 with an explicit no-route diagnostic. Native FFI calls still appear as
 `stablehlo.custom_call` operations in JAX compiler IR, but Tensor0 does not ship

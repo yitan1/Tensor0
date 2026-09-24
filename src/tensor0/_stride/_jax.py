@@ -15,9 +15,9 @@ from ._ffi._descriptor import encode_layout, encode_reduction_layout
 from ._layout import AffineRecord
 
 
-def _copy(source, *, records, output_size, dtype):
+def _copy(source, *, records, output_size, dtype, platform="cpu"):
     layout = encode_layout(records, source_size=source.shape[-1], output_size=output_size)
-    return execute_copy(source, layout=layout, output_size=output_size, dtype=dtype)
+    return execute_copy(source, layout=layout, output_size=output_size, dtype=dtype, platform=platform)
 
 
 def _batch_storage_sharding(shape):
@@ -35,23 +35,23 @@ def _coefficient_shardings(mesh, storage_sharding, coefficient_shapes):
         else PartitionSpec(*storage_sharding.spec[:-1])) for value in coefficient_shapes)
 
 
-@partial(custom_partitioning, static_argnums=(1, 2, 3))
-def _partitioned_copy(source, records, output_size, dtype):
-    return _copy(source, records=records, output_size=output_size, dtype=dtype)
+@partial(custom_partitioning, static_argnums=(1, 2, 3, 4))
+def _partitioned_copy(source, records, output_size, dtype, platform):
+    return _copy(source, records=records, output_size=output_size, dtype=dtype, platform=platform)
 
 
-def _partition_copy(records, output_size, dtype, mesh, argument_shapes, result_shape):
+def _partition_copy(records, output_size, dtype, platform, mesh, argument_shapes, result_shape):
     source_sharding = _batch_storage_sharding(argument_shapes[0])
     _batch_storage_sharding(result_shape)
-    return (mesh, partial(_copy, records=records, output_size=output_size, dtype=dtype),
+    return (mesh, partial(_copy, records=records, output_size=output_size, dtype=dtype, platform=platform),
             source_sharding, (source_sharding,))
 
 
-def _infer_copy_sharding(records, output_size, dtype, mesh, argument_shapes, result_shape):
+def _infer_copy_sharding(records, output_size, dtype, platform, mesh, argument_shapes, result_shape):
     return _batch_storage_sharding(argument_shapes[0])
 
 
-def _propagate_copy_sharding(records, output_size, dtype, mesh, user_shape):
+def _propagate_copy_sharding(records, output_size, dtype, platform, mesh, user_shape):
     return _batch_storage_sharding(user_shape)
 
 
@@ -64,48 +64,48 @@ _partitioned_copy.def_partition(
 
 
 def _reduction(source, *coefficients, records, output_shapes, reduction_axes,
-               output_size, dtype, coefficient_records=()):
+               output_size, dtype, coefficient_records=(), platform="cpu"):
     layout = encode_reduction_layout(
         records, output_shapes=output_shapes, reduction_axes=reduction_axes,
         source_size=source.shape[-1], output_size=output_size,
     )
     return execute_reduction(
         source, coefficients, coefficient_records=coefficient_records,
-        layout=layout, output_size=output_size, dtype=dtype,
+        layout=layout, output_size=output_size, dtype=dtype, platform=platform,
     )
 
 
-@partial(custom_partitioning, static_argnums=(0, 1, 2, 3, 4, 5))
+@partial(custom_partitioning, static_argnums=(0, 1, 2, 3, 4, 5, 6))
 def _partitioned_reduction(records, output_shapes, reduction_axes, output_size, dtype,
-                           coefficient_records, source, *coefficients):
+                           coefficient_records, platform, source, *coefficients):
     return _reduction(source, *coefficients, records=records, output_shapes=output_shapes,
                       reduction_axes=reduction_axes, output_size=output_size, dtype=dtype,
-                      coefficient_records=coefficient_records)
+                      coefficient_records=coefficient_records, platform=platform)
 
 
 def _partition_reduction(records, output_shapes, reduction_axes, output_size, dtype,
-                         coefficient_records, mesh, argument_shapes, result_shape):
+                         coefficient_records, platform, mesh, argument_shapes, result_shape):
     source_sharding = _batch_storage_sharding(argument_shapes[0])
     _batch_storage_sharding(result_shape)
     coefficient_shardings = _coefficient_shardings(mesh, source_sharding, argument_shapes[1:])
     return (mesh, partial(_reduction, records=records, output_shapes=output_shapes,
                           reduction_axes=reduction_axes, output_size=output_size, dtype=dtype,
-                          coefficient_records=coefficient_records),
+                          coefficient_records=coefficient_records, platform=platform),
             source_sharding, (source_sharding, *coefficient_shardings))
 
 
 def _infer_reduction_sharding(records, output_shapes, reduction_axes, output_size, dtype,
-                              coefficient_records, mesh, argument_shapes, result_shape):
+                              coefficient_records, platform, mesh, argument_shapes, result_shape):
     return _batch_storage_sharding(argument_shapes[0])
 
 
 def _propagate_reduction_sharding(records, output_shapes, reduction_axes, output_size, dtype,
-                                  coefficient_records, mesh, user_shape):
+                                  coefficient_records, platform, mesh, user_shape):
     return _batch_storage_sharding(user_shape)
 
 
 def _reduction_sharding_rule(records, output_shapes, reduction_axes, output_size, dtype,
-                             coefficient_records, mesh, value_types, result_types):
+                             coefficient_records, platform, mesh, value_types, result_types):
     return _coefficient_sharding_rule(value_types)
 
 
@@ -122,38 +122,38 @@ def _storage_abstract(source, *coefficients, output_size, dtype, **parameters):
     return source.update(shape=(*source.shape[:-1], output_size), dtype=dtype, weak_type=False)
 
 
-def _accumulation(source, *coefficients, records, output_size, dtype, coefficient_records=()):
+def _accumulation(source, *coefficients, records, output_size, dtype, coefficient_records=(), platform="cpu"):
     layout = encode_layout(records, source_size=source.shape[-1], output_size=output_size)
     return execute_accumulation(
         source, coefficients, coefficient_records=coefficient_records,
-        layout=layout, output_size=output_size, dtype=dtype,
+        layout=layout, output_size=output_size, dtype=dtype, platform=platform,
     )
 
 
-@partial(custom_partitioning, static_argnums=(0, 1, 2, 3))
-def _partitioned_accumulation(records, output_size, dtype, coefficient_records, source, *coefficients):
+@partial(custom_partitioning, static_argnums=(0, 1, 2, 3, 4))
+def _partitioned_accumulation(records, output_size, dtype, coefficient_records, platform, source, *coefficients):
     return _accumulation(source, *coefficients, records=records, output_size=output_size,
-                         dtype=dtype, coefficient_records=coefficient_records)
+                         dtype=dtype, coefficient_records=coefficient_records, platform=platform)
 
 
-def _partition_accumulation(records, output_size, dtype, coefficient_records, mesh, argument_shapes, result_shape):
+def _partition_accumulation(records, output_size, dtype, coefficient_records, platform, mesh, argument_shapes, result_shape):
     source_sharding = _batch_storage_sharding(argument_shapes[0])
     _batch_storage_sharding(result_shape)
     coefficient_shardings = _coefficient_shardings(mesh, source_sharding, argument_shapes[1:])
     return (mesh, partial(_accumulation, records=records, output_size=output_size,
-                          dtype=dtype, coefficient_records=coefficient_records),
+                          dtype=dtype, coefficient_records=coefficient_records, platform=platform),
             source_sharding, (source_sharding, *coefficient_shardings))
 
 
-def _infer_accumulation_sharding(records, output_size, dtype, coefficient_records, mesh, argument_shapes, result_shape):
+def _infer_accumulation_sharding(records, output_size, dtype, coefficient_records, platform, mesh, argument_shapes, result_shape):
     return _batch_storage_sharding(argument_shapes[0])
 
 
-def _propagate_accumulation_sharding(records, output_size, dtype, coefficient_records, mesh, user_shape):
+def _propagate_accumulation_sharding(records, output_size, dtype, coefficient_records, platform, mesh, user_shape):
     return _batch_storage_sharding(user_shape)
 
 
-def _accumulation_sharding_rule(records, output_size, dtype, coefficient_records, mesh, value_types, result_types):
+def _accumulation_sharding_rule(records, output_size, dtype, coefficient_records, platform, mesh, value_types, result_types):
     return _coefficient_sharding_rule(value_types)
 
 
@@ -253,9 +253,9 @@ def _accumulation_transpose(cotangent, source, *coefficients, records, output_si
     return [source_gradient, *coefficient_gradients]
 
 
-def _update(source, base, alpha, beta, *, records):
+def _update(source, base, alpha, beta, *, records, platform="cpu"):
     layout = encode_layout(records, source_size=source.shape[-1], output_size=base.shape[-1])
-    return execute_update(source, base, alpha, beta, layout=layout)
+    return execute_update(source, base, alpha, beta, layout=layout, platform=platform)
 
 
 def _update_abstract(source, base, alpha, beta, *, records):
@@ -264,30 +264,30 @@ def _update_abstract(source, base, alpha, beta, *, records):
     return base.update(weak_type=False)
 
 
-@partial(custom_partitioning, static_argnums=(4,))
-def _partitioned_update(source, base, alpha, beta, records):
-    return _update(source, base, alpha, beta, records=records)
+@partial(custom_partitioning, static_argnums=(4, 5))
+def _partitioned_update(source, base, alpha, beta, records, platform):
+    return _update(source, base, alpha, beta, records=records, platform=platform)
 
 
-def _partition_update(records, mesh, argument_shapes, result_shape):
+def _partition_update(records, platform, mesh, argument_shapes, result_shape):
     _batch_storage_sharding(argument_shapes[0])
     storage_sharding = _batch_storage_sharding(argument_shapes[1])
     _batch_storage_sharding(result_shape)
     coefficient_shardings = _coefficient_shardings(mesh, storage_sharding, argument_shapes[2:])
-    return (mesh, partial(_update, records=records), storage_sharding,
+    return (mesh, partial(_update, records=records, platform=platform), storage_sharding,
             (storage_sharding, storage_sharding, *coefficient_shardings))
 
 
-def _infer_update_sharding(records, mesh, argument_shapes, result_shape):
+def _infer_update_sharding(records, platform, mesh, argument_shapes, result_shape):
     _batch_storage_sharding(argument_shapes[0])
     return _batch_storage_sharding(argument_shapes[1])
 
 
-def _propagate_update_sharding(records, mesh, user_shape):
+def _propagate_update_sharding(records, platform, mesh, user_shape):
     return _batch_storage_sharding(user_shape)
 
 
-def _update_sharding_rule(records, mesh, value_types, result_types):
+def _update_sharding_rule(records, platform, mesh, value_types, result_types):
     from jaxlib.mlir import ir
 
     shapes = tuple(tuple(ir.RankedTensorType(value).shape) for value in value_types)
@@ -306,9 +306,9 @@ _partitioned_update.def_partition(
 )
 
 
-def _dot(left, right, *, records, conjugate_left, dtype=None):
+def _dot(left, right, *, records, conjugate_left, dtype=None, platform="cpu"):
     layout = encode_layout(records, source_size=left.shape[-1], output_size=right.shape[-1])
-    return execute_dot(left, right, layout=layout, conjugate_left=conjugate_left, dtype=dtype)
+    return execute_dot(left, right, layout=layout, conjugate_left=conjugate_left, dtype=dtype, platform=platform)
 
 
 def _dot_batch_sharding(shape):
@@ -316,20 +316,20 @@ def _dot_batch_sharding(shape):
     return NamedSharding(storage_sharding.mesh, PartitionSpec(*storage_sharding.spec[:-1]))
 
 
-@partial(custom_partitioning, static_argnums=(2, 3, 4))
-def _partitioned_dot(left, right, records, conjugate_left, dtype=None):
-    return _dot(left, right, records=records, conjugate_left=conjugate_left, dtype=dtype)
+@partial(custom_partitioning, static_argnums=(2, 3, 4, 5))
+def _partitioned_dot(left, right, records, conjugate_left, dtype=None, platform="cpu"):
+    return _dot(left, right, records=records, conjugate_left=conjugate_left, dtype=dtype, platform=platform)
 
 
-def _partition_dot(records, conjugate_left, dtype, mesh, argument_shapes, result_shape):
+def _partition_dot(records, conjugate_left, dtype, platform, mesh, argument_shapes, result_shape):
     result_sharding = _dot_batch_sharding(argument_shapes[0])
     _batch_storage_sharding(argument_shapes[1])
     storage_sharding = NamedSharding(mesh, PartitionSpec(*result_sharding.spec, None))
-    return (mesh, partial(_dot, records=records, conjugate_left=conjugate_left, dtype=dtype),
+    return (mesh, partial(_dot, records=records, conjugate_left=conjugate_left, dtype=dtype, platform=platform),
             result_sharding, (storage_sharding, storage_sharding))
 
 
-def _infer_dot_sharding(records, conjugate_left, dtype, mesh, argument_shapes, result_shape):
+def _infer_dot_sharding(records, conjugate_left, dtype, platform, mesh, argument_shapes, result_shape):
     return _dot_batch_sharding(argument_shapes[0])
 
 
@@ -659,30 +659,30 @@ def _lower(function, context, *arguments, storage_index=0):
     return mlir.lower_fun(function, multiple_results=False)(context, *arguments)
 
 
-def _lower_copy(context, source, **parameters):
-    function = partial(_partitioned_copy, **parameters)
+def _lower_copy(context, source, *, platform="cpu", **parameters):
+    function = partial(_partitioned_copy, platform=platform, **parameters)
     return _lower(function, context, source)
 
 
-def _lower_accumulation(context, *arguments, records, output_size, dtype, coefficient_records=()):
-    function = partial(_partitioned_accumulation, records, output_size, dtype, coefficient_records)
+def _lower_accumulation(context, *arguments, records, output_size, dtype, coefficient_records=(), platform="cpu"):
+    function = partial(_partitioned_accumulation, records, output_size, dtype, coefficient_records, platform)
     return _lower(function, context, *arguments)
 
 
-def _lower_dot(context, left, right, **parameters):
-    function = partial(_partitioned_dot, **parameters)
+def _lower_dot(context, left, right, platform="cpu", **parameters):
+    function = partial(_partitioned_dot, platform=platform, **parameters)
     return _lower(function, context, left, right)
 
 
 def _lower_reduction(context, *arguments, records, output_shapes, reduction_axes,
-                      output_size, dtype, coefficient_records=()):
+                      output_size, dtype, coefficient_records=(), platform="cpu"):
     function = partial(_partitioned_reduction, records, output_shapes, reduction_axes,
-                       output_size, dtype, coefficient_records)
+                       output_size, dtype, coefficient_records, platform)
     return _lower(function, context, *arguments)
 
 
-def _lower_update(context, *arguments, records):
-    function = partial(_partitioned_update, records=records)
+def _lower_update(context, *arguments, records, platform="cpu"):
+    function = partial(_partitioned_update, records=records, platform=platform)
     return _lower(function, context, *arguments, storage_index=1)
 
 
@@ -718,3 +718,15 @@ accumulation_p.def_abstract_eval(_storage_abstract)
 ad.primitive_jvps[accumulation_p] = _accumulation_jvp
 ad.primitive_transposes[accumulation_p] = _accumulation_transpose
 batching.primitive_batchers[accumulation_p] = partial(_batch, accumulation_p)
+
+
+mlir.register_lowering(copy_p, partial(_lower_copy, platform="cuda"), platform="cuda")
+
+
+mlir.register_lowering(reduction_p, partial(_lower_reduction, platform="cuda"), platform="cuda")
+
+mlir.register_lowering(update_p, partial(_lower_update, platform="cuda"), platform="cuda")
+
+mlir.register_lowering(accumulation_p, partial(_lower_accumulation, platform="cuda"), platform="cuda")
+
+mlir.register_lowering(dot_p, partial(_lower_dot, platform="cuda"), platform="cuda")

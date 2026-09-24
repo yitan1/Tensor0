@@ -105,7 +105,8 @@ sys.exit(int(os.environ.get("MOCK_FAIL", "0")) or
     environment = dict(os.environ, CARGO_MANIFEST_DIR=str(manifest), OUT_DIR=str(output),
                        CARGO_CFG_TARGET_OS="linux", CXX=str(compiler), OPT_LEVEL="0",
                        MOCK_LOG=str(log), NUM_JOBS="1")
-    for name in ("TENSOR0_CXX_OPT_LEVEL", "CARGO_MAKEFLAGS", "MAKEFLAGS", "MFLAGS"):
+    for name in ("TENSOR0_CXX_OPT_LEVEL", "TENSOR0_CUDA", "NVCC", "CUDA_HOME",
+                 "TENSOR0_CUDA_ARCH", "CARGO_MAKEFLAGS", "MAKEFLAGS", "MFLAGS"):
         environment.pop(name, None)
 
     def run(*, slots="auto", **overrides):
@@ -139,7 +140,7 @@ sys.exit(int(os.environ.get("MOCK_FAIL", "0")) or
         commands = [json.loads(line) for line in log.read_text().splitlines()]
         return result, commands
 
-    run.unit_count = len(sources)
+    run.unit_count = sum(source.endswith(".cc") for source in sources)
     return run, manifest, output
 
 
@@ -402,3 +403,190 @@ def test_job_count_and_source_count_bound_token_demand(build, jobs, slots, expec
     assert result.returncode == 0, result.stderr
     assert len(commands) == run.unit_count
     assert json.loads(state.read_text()) == [0, expected]
+
+
+def test_cuda_is_explicitly_opt_in(build):
+    run, _, _ = build
+    result, commands = run(NVCC="/missing/nvcc")
+    assert result.returncode == 0, result.stderr
+    assert len(commands) == run.unit_count
+    assert "cudart" not in result.stdout
+    assert "cargo:rustc-cfg=tensor0_stride_cuda" not in result.stdout
+    for name in ("TENSOR0_CUDA", "NVCC", "CUDA_HOME", "TENSOR0_CUDA_ARCH"):
+        assert f"cargo:rerun-if-env-changed={name}" in result.stdout
+    result, _ = run(TENSOR0_CUDA="1", NVCC="/missing/nvcc")
+    assert result.returncode != 0
+
+
+def test_cuda_compile_cache_and_linkage(build):
+    run, manifest, output = build
+    toolkit = output.parent / "cuda"
+    (toolkit / "lib").mkdir(parents=True)
+    (toolkit / "lib/libcudart_static.a").touch()
+    options = dict(TENSOR0_CUDA="1", NVCC=str(output.parent / "compiler"), CUDA_HOME=str(toolkit))
+    result, commands = run(**options)
+    assert result.returncode == 0, result.stderr
+    assert len(commands) == run.unit_count + 5
+    assert "native/cuda/copy.cu" in commands[-5]
+    assert "native/cuda/update.cu" in commands[-4]
+    assert "native/cuda/accumulation.cu" in commands[-3]
+    assert "native/cuda/dot.cu" in commands[-2]
+    assert "native/cuda/reduction.cu" in commands[-1]
+    assert "-arch=sm_80" in commands[-1]
+    assert "-Xcompiler" in commands[-1] and "-fPIC" in commands[-1]
+    assert "cargo:rustc-link-lib=static=cudart_static" in result.stdout
+    assert f"cargo:rustc-link-search=native={toolkit / 'lib'}" in result.stdout
+    assert "cargo:rustc-cfg=tensor0_stride_cuda" in result.stdout
+    assert run(**options)[1] == []
+    result, commands = run(**options, TENSOR0_CUDA_ARCH="sm_90")
+    assert result.returncode == 0, result.stderr
+    assert len(commands) == 5
+    assert all("-arch=sm_90" in command for command in commands)
+    assert run(**options, TENSOR0_CUDA_ARCH="sm_90")[1] == []
+    for name in ("copy", "update", "accumulation", "dot", "reduction"):
+        source = manifest / f"native/cuda/{name}.cu"
+        source.write_text(source.read_text() + " changed")
+        result, commands = run(**options, TENSOR0_CUDA_ARCH="sm_90")
+        assert result.returncode == 0, result.stderr
+        assert len(commands) == 1 and f"native/cuda/{name}.cu" in commands[0]
+        (output / f"native_cuda_{name}.o").unlink()
+        result, commands = run(**options, TENSOR0_CUDA_ARCH="sm_90",
+                               MOCK_FAIL_SOURCE=f"native/cuda/{name}.cu")
+        assert result.returncode != 0
+        assert (output / f"native_cuda_{name}.fingerprint").read_text() == ""
+        assert "cargo:rustc-cfg=tensor0_stride_cuda" not in result.stdout
+        assert len(run(**options, TENSOR0_CUDA_ARCH="sm_90")[1]) == 1
+        assert run(**options, TENSOR0_CUDA_ARCH="sm_90")[1] == []
+    result, commands = run()
+    assert result.returncode == 0, result.stderr
+    assert commands == []
+    assert "native_cuda_copy.o" not in result.stdout
+    assert "native_cuda_update.o" not in result.stdout
+    assert "cudart" not in result.stdout
+
+
+def test_cuda_compile_uses_implicit_job_slot_after_cpu_workers(build):
+    run, _, output = build
+    state = output / "cuda-concurrency.json"
+    (output.parent / "lib").mkdir()
+    (output.parent / "lib/libcudart_static.a").touch()
+    result, commands = run(slots=0, NUM_JOBS="9", TENSOR0_CUDA="1",
+                           NVCC=str(output.parent / "compiler"), CUDA_HOME=str(output.parent),
+                           MOCK_CONCURRENCY=str(state), MOCK_EXPECTED_JOBS="1")
+    assert result.returncode == 0, result.stderr
+    assert len(commands) == run.unit_count + 5
+    assert "native/cuda/copy.cu" in commands[-5]
+    assert "native/cuda/update.cu" in commands[-4]
+    assert "native/cuda/accumulation.cu" in commands[-3]
+    assert "native/cuda/dot.cu" in commands[-2]
+    assert "native/cuda/reduction.cu" in commands[-1]
+    assert json.loads(state.read_text()) == [0, 1]
+
+
+def test_invalid_cuda_opt_in_fails(build):
+    run, _, _ = build
+    result, commands = run(TENSOR0_CUDA="yes")
+    assert result.returncode != 0
+    assert "TENSOR0_CUDA must be 0 or 1" in result.stderr
+    assert commands == []
+
+
+def test_cuda_cache_tracks_same_path_host_compiler_change(build):
+    run, _, output = build
+    host_compiler = output.parent / "compiler"
+    nvcc = output.parent / "nvcc"
+    shutil.copy2(host_compiler, nvcc)
+    toolkit = output.parent / "cuda"
+    (toolkit / "lib").mkdir(parents=True)
+    (toolkit / "lib/libcudart_static.a").touch()
+    options = dict(TENSOR0_CUDA="1", NVCC=str(nvcc), CUDA_HOME=str(toolkit),
+                   NVCC_CCBIN="/not/the/selected/compiler")
+    result, commands = run(**options)
+    assert result.returncode == 0, result.stderr
+    assert len(commands) == run.unit_count + 5
+    for cuda_command, source in zip(commands[-5:], ("copy", "update", "accumulation", "dot", "reduction")):
+        assert f"native/cuda/{source}.cu" in cuda_command
+        assert cuda_command[cuda_command.index("-ccbin") + 1] == str(host_compiler)
+    assert f"cargo:rerun-if-changed={host_compiler}" in result.stdout
+    assert run(**options)[1] == []
+    # Keep NVCC, the host path and --version output unchanged: only host bytes change.
+    host_compiler.write_text(host_compiler.read_text() + "\n# Replaced host compiler.\n")
+    result, commands = run(**options)
+    assert result.returncode == 0, result.stderr
+    assert len(commands) == run.unit_count + 5
+    assert "native/cuda/copy.cu" in commands[-5]
+    assert "native/cuda/update.cu" in commands[-4]
+    assert "native/cuda/accumulation.cu" in commands[-3]
+    assert "native/cuda/dot.cu" in commands[-2]
+    assert "native/cuda/reduction.cu" in commands[-1]
+    assert run(**options)[1] == []
+
+
+def test_real_cargo_relinks_changed_cuda_runtime_without_recompiling_objects(build):
+    compiler, archiver = shutil.which("c++"), shutil.which("ar")
+    if compiler is None or archiver is None:
+        pytest.skip("C++ compiler and ar are required")
+    _, manifest, _ = build
+    package = REPO_ROOT / "crates/tensor0-py"
+    dependency = tomllib.loads((package / "Cargo.toml").read_text())["build-dependencies"]["jobserver"]
+    (manifest / "Cargo.toml").write_text(
+        '[package]\nname = "cuda-runtime-test"\nversion = "0.0.0"\nedition = "2021"\n'
+        'build = ' + json.dumps(str(package / "build.rs")) + '\n'
+        '[build-dependencies]\njobserver = ' + json.dumps(dependency) + '\n'
+        '[[bin]]\nname = "runtime-test"\npath = "main.rs"\n'
+    )
+    (manifest / "main.rs").write_text(
+        'extern "C" { fn tensor0_test_runtime_value() -> i32; }\n'
+        'fn main() { println!("{}", unsafe { tensor0_test_runtime_value() }); }\n'
+    )
+    for index, source in enumerate(sorted((manifest / "native").rglob("*.cc"))):
+        source.write_text(f'int native_unit_{index}() {{ return {index}; }}\n')
+    for index, source in enumerate(sorted((manifest / "native/cuda").glob("*.cu"))):
+        source.write_text(f'int cuda_unit_{index}() {{ return {index}; }}\n')
+    toolkit = manifest.parent / "cuda"
+    (toolkit / "lib").mkdir(parents=True)
+    runtime_source, runtime_object = toolkit / "runtime.cc", toolkit / "runtime.o"
+    archive = toolkit / "lib/libcudart_static.a"
+
+    def replace_runtime(value):
+        runtime_source.write_text(f'extern "C" int tensor0_test_runtime_value() {{ return {value}; }}\n')
+        subprocess.run([compiler, "-c", str(runtime_source), "-o", str(runtime_object)],
+                       check=True, timeout=30)
+        subprocess.run([archiver, "crs", str(archive), str(runtime_object)], check=True, timeout=30)
+
+    # Compile C++ stubs as the CUDA units; this exercises real Cargo and linking
+    # without requiring a toolkit in the build-test environment.
+    nvcc = toolkit / "nvcc"
+    nvcc.write_text(f"#!{sys.executable}\n" + '''import subprocess, sys
+if sys.argv[1:] == ["--version"]:
+    print("test NVCC")
+else:
+    def value(flag):
+        return sys.argv[sys.argv.index(flag) + 1]
+    subprocess.run([value("-ccbin"), "-x", "c++", "-fPIC", "-MD", "-MT", "tensor0-object",
+                    "-MF", value("-MF"), "-c", value("-c"), "-o", value("-o")], check=True)
+''')
+    nvcc.chmod(0o755)
+    env = dict(os.environ, CXX=compiler, TENSOR0_CUDA="1", CUDA_HOME=str(toolkit), NVCC=str(nvcc),
+               CARGO_TARGET_DIR=str(manifest / "target"))
+    env.pop("TENSOR0_CXX_OPT_LEVEL", None)
+    command = ["cargo", "build", "--offline", "-vv", "-j", "2",
+               "--manifest-path", str(manifest / "Cargo.toml")]
+    executable = manifest / "target/debug/runtime-test"
+    replace_runtime(1)
+    result = subprocess.run(command, env=env, capture_output=True, text=True, timeout=90)
+    assert result.returncode == 0, result.stderr
+    assert subprocess.check_output([str(executable)], text=True).strip() == "1"
+    objects = list((manifest / "target").rglob("native_*.o"))
+    assert len(objects) == 14
+    before = {path: path.stat().st_mtime_ns for path in objects}
+    result = subprocess.run(command, env=env, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert "Fresh cuda-runtime-test" in result.stderr
+    replace_runtime(2)
+    result = subprocess.run(command, env=env, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert "tensor0-native: cached native/cuda/copy.cu" in result.stderr
+    assert "tensor0-native: cached native/cuda/update.cu" in result.stderr
+    assert {path: path.stat().st_mtime_ns for path in objects} == before
+    assert subprocess.check_output([str(executable)], text=True).strip() == "2"

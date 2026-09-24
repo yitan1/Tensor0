@@ -110,6 +110,68 @@ fn pointer_capsule(py: Python<'_>, pointer: *mut c_void) -> PyResult<Py<PyAny>> 
     Ok(unsafe { Bound::<PyAny>::from_owned_ptr(py, capsule) }.unbind())
 }
 
+#[cfg(tensor0_stride_cuda)]
+unsafe extern "C" {
+    fn Tensor0StrideCudaCopyF32V1Handler() -> *mut c_void;
+    fn Tensor0StrideCudaCopyF64V1Handler() -> *mut c_void;
+    fn Tensor0StrideCudaCopyC64V1Handler() -> *mut c_void;
+    fn Tensor0StrideCudaCopyC128V1Handler() -> *mut c_void;
+    fn Tensor0StrideCudaUpdateF32V1Handler() -> *mut c_void;
+    fn Tensor0StrideCudaUpdateF64V1Handler() -> *mut c_void;
+    fn Tensor0StrideCudaUpdateC64V1Handler() -> *mut c_void;
+    fn Tensor0StrideCudaUpdateC128V1Handler() -> *mut c_void;
+    fn Tensor0StrideCudaDotF32V1Handler() -> *mut c_void;
+    fn Tensor0StrideCudaDotF64V1Handler() -> *mut c_void;
+    fn Tensor0StrideCudaDotC64V1Handler() -> *mut c_void;
+    fn Tensor0StrideCudaDotC128V1Handler() -> *mut c_void;
+    fn Tensor0StrideCudaAccumulationF32V1Handler() -> *mut c_void;
+    fn Tensor0StrideCudaReductionF32V1Handler() -> *mut c_void;
+    fn Tensor0StrideCudaAccumulationF64V1Handler() -> *mut c_void;
+    fn Tensor0StrideCudaReductionF64V1Handler() -> *mut c_void;
+    fn Tensor0StrideCudaAccumulationC64V1Handler() -> *mut c_void;
+    fn Tensor0StrideCudaReductionC64V1Handler() -> *mut c_void;
+    fn Tensor0StrideCudaAccumulationC128V1Handler() -> *mut c_void;
+    fn Tensor0StrideCudaReductionC128V1Handler() -> *mut c_void;
+
+}
+
+#[pyfunction]
+pub fn _stride_cuda_available() -> bool {
+    cfg!(tensor0_stride_cuda)
+}
+
+#[pyfunction]
+pub fn _stride_cuda_registration(py: Python<'_>) -> PyResult<Py<PyAny>> {
+    let registration = PyDict::new(py);
+    #[cfg(tensor0_stride_cuda)]
+    for (name, handler) in [
+        ("copy_f32", unsafe { Tensor0StrideCudaCopyF32V1Handler() }),
+        ("copy_f64", unsafe { Tensor0StrideCudaCopyF64V1Handler() }),
+        ("copy_c64", unsafe { Tensor0StrideCudaCopyC64V1Handler() }),
+        ("copy_c128", unsafe { Tensor0StrideCudaCopyC128V1Handler() }),
+        ("update_f32", unsafe { Tensor0StrideCudaUpdateF32V1Handler() }),
+        ("update_f64", unsafe { Tensor0StrideCudaUpdateF64V1Handler() }),
+        ("update_c64", unsafe { Tensor0StrideCudaUpdateC64V1Handler() }),
+        ("update_c128", unsafe { Tensor0StrideCudaUpdateC128V1Handler() }),
+        ("dot_f32", unsafe { Tensor0StrideCudaDotF32V1Handler() }),
+        ("dot_f64", unsafe { Tensor0StrideCudaDotF64V1Handler() }),
+        ("dot_c64", unsafe { Tensor0StrideCudaDotC64V1Handler() }),
+        ("dot_c128", unsafe { Tensor0StrideCudaDotC128V1Handler() }),
+        ("accumulation_f32", unsafe { Tensor0StrideCudaAccumulationF32V1Handler() }),
+        ("reduction_f32", unsafe { Tensor0StrideCudaReductionF32V1Handler() }),
+        ("accumulation_f64", unsafe { Tensor0StrideCudaAccumulationF64V1Handler() }),
+        ("reduction_f64", unsafe { Tensor0StrideCudaReductionF64V1Handler() }),
+        ("accumulation_c64", unsafe { Tensor0StrideCudaAccumulationC64V1Handler() }),
+        ("reduction_c64", unsafe { Tensor0StrideCudaReductionC64V1Handler() }),
+        ("accumulation_c128", unsafe { Tensor0StrideCudaAccumulationC128V1Handler() }),
+        ("reduction_c128", unsafe { Tensor0StrideCudaReductionC128V1Handler() }),
+
+    ] {
+        registration.set_item(name, pointer_capsule(py, handler)?)?;
+    }
+    Ok(registration.into_any().unbind())
+}
+
 #[pyfunction]
 pub fn _stride_ffi_available() -> bool {
     cfg!(tensor0_stride_ffi)
@@ -279,6 +341,8 @@ pub fn _stride_ffi_build_versions() -> Option<(String, String)> {
 }
 
 pub fn add_stride_functions(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    module.add_function(wrap_pyfunction!(_stride_cuda_available, module)?)?;
+    module.add_function(wrap_pyfunction!(_stride_cuda_registration, module)?)?;
     module.add_function(wrap_pyfunction!(_stride_native_worker_limit, module)?)?;
     module.add_function(wrap_pyfunction!(_set_stride_native_worker_limit, module)?)?;
     module.add_function(wrap_pyfunction!(_stride_native_registration, module)?)?;

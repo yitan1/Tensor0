@@ -56,6 +56,56 @@ cache entry. Build-script tests compile a small Cargo harness offline; run
 `cargo fetch` first if the build dependencies are not already cached. Compiler paths and discovered dependencies are watched by Cargo.
 Use a release build for performance measurements.
 
+## Optional CUDA stride build
+
+Linux builds are CPU-only by default and do not discover or link CUDA. To enable
+CUDA affine Copy, Update, Accumulation, Dot and Reduction for F32, F64, C64 and C128, use an existing CUDA toolkit
+with a C++20-capable `nvcc`:
+
+```bash
+TENSOR0_CUDA=1 CUDA_HOME=/usr/local/cuda TENSOR0_CUDA_ARCH=sm_80 \
+    uv run maturin develop --release
+```
+
+`TENSOR0_CUDA` accepts `0` (also the unset default) or `1`. An explicitly requested
+CUDA build fails rather than silently producing a CPU-only extension when the
+compiler or required headers are unavailable. `NVCC` selects the compiler;
+otherwise it is `$CUDA_HOME/bin/nvcc`, or `nvcc` from `PATH` when `CUDA_HOME` is
+unset. `CUDA_HOME` selects the toolkit root for runtime-library lookup (`lib64`
+or `lib`); by default it is inferred from the resolved NVCC path. The toolkit must
+provide `libcudart_static.a`. Opted-in builds link this static CUDA runtime plus
+`dl`, `rt` and `pthread`, avoiding a runtime search path for `libcudart.so`.
+Running CUDA operations still requires a compatible NVIDIA driver. CPU-only
+builds do not link the CUDA runtime.
+
+`CXX` selects both the CPU compiler and NVCC's host compiler (passed explicitly as
+`-ccbin`); it defaults to `/usr/bin/c++`. `NVCC_CCBIN` is cleared for the NVCC
+invocation. The selected host compiler path, resolved executable contents and
+version are included in the CUDA fingerprint, with the same Cargo file watches
+used for CPU compilation. Replacing the host compiler at the same path therefore
+invalidates both CPU and CUDA objects.
+
+`TENSOR0_CUDA_ARCH` is passed as NVCC's single `-arch` argument and defaults to
+`sm_80`; select an architecture supported by both your toolkit and target GPU.
+Changing the compiler, architecture, CUDA environment inputs, source or discovered
+headers invalidates the CUDA object cache. The selected `libcudart_static.a` is
+watched separately: replacing it triggers relinking without recompiling unchanged
+native objects. Other toolkit internals, such as an independently replaced
+`ptxas`, are not individually fingerprinted; perform a clean rebuild after such
+updates. CUDA optimization follows the selected C++ optimization level, except
+size levels `s` and `z` map to NVCC `-O2`.
+CUDA compiles Copy, Update, Accumulation, Dot and Reduction serially after all CPU workers have finished and
+returned their jobserver tokens, using the build script's implicit Cargo slot.
+It does not start a separate worker pool.
+
+The private `_stride_cuda_available()` export reports build-time support, not
+whether a usable GPU is present. `_stride_cuda_registration()` returns only the
+twenty execution-handler capsules, or an empty dictionary in CPU-only builds;
+CUDA has no instantiate/state registration. This initial backend supports
+same-type Copy, Update, Accumulation, Dot and Reduction, not dtype
+conversion or complete reverse-mode differentiation. See [CUDA support](cuda.md)
+for the supported coefficient types and limited AD paths.
+
 ## Local Setup
 
 ```bash
@@ -209,8 +259,10 @@ are not part of the public navigation.
 ## Production Stride Routing
 
 TensorMap readers, dense projection writes, index transforms and tensor traces
-use `tensor0._stride` and the native CPU handlers. Only native is compiled
-and linked. The previous backend and operation adapters have been removed.
+use `tensor0._stride` and, by default, the native CPU handlers. The optional
+[CUDA backend](cuda.md) is selected by compilation platform for supported
+Copy, Update, Accumulation, Dot and Reduction; unsupported dtype combinations fail explicitly. Only native is
+compiled and linked. The previous backend and operation adapters have been removed.
 
 Native uses the migrated AVX2/F16C kernels for contiguous F16-to-F32
 conversion and F16 input scaling (F16 coefficients/results or F32
