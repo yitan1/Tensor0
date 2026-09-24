@@ -25,7 +25,7 @@ def build_script(tmp_path_factory):
     package = REPO_ROOT / "crates/tensor0-py"
     dependency = tomllib.loads((package / "Cargo.toml").read_text())["build-dependencies"]["jobserver"]
     (directory / "Cargo.toml").write_text(
-        '[package]\nname = "native-build-test"\nversion = "0.0.0"\nedition = "2021"\n'
+        '[workspace]\n[package]\nname = "native-build-test"\nversion = "0.0.0"\nedition = "2021"\n'
         '[dependencies]\njobserver = ' + json.dumps(dependency) + '\n'
         '[[bin]]\nname = "build-script"\npath = ' + json.dumps(str(package / "build.rs")) + '\n'
     )
@@ -155,7 +155,7 @@ def test_backend_invalidation_and_failed_compile(build):
     assert result.returncode == 0
     assert commands == []
     assert result.stdout.count("cargo:rustc-link-arg=") == run.unit_count
-    for operation in ("copy", "update", "reduction", "dot"):
+    for operation in ("copy", "update_a", "update_b", "reduction_a", "reduction_b", "dot_a", "dot_b"):
         source = manifest / "native/ffi" / f"{operation}.cc"
         source.write_text(source.read_text() + " changed")
         result, commands = run()
@@ -169,7 +169,7 @@ def test_backend_invalidation_and_failed_compile(build):
         result, commands = run()
         assert result.returncode == 0
         assert len(commands) == run.unit_count
-        assert any("native/ffi/update.cc" in command for command in commands)
+        assert any("native/ffi/update_a.cc" in command for command in commands)
     header = manifest / "vendor/jaxlib-0.10.1/include/xla/ffi/api/ffi.h"
     header.write_text("changed header")
     assert len(run()[1]) == run.unit_count
@@ -178,9 +178,9 @@ def test_backend_invalidation_and_failed_compile(build):
     assert len(run(CPATH=str(manifest))[1]) == run.unit_count
     assert len(run(CPATH=str(manifest))[1]) == 0
     assert len(run()[1]) == run.unit_count
-    (output / "native_ffi_update.o").unlink()
+    (output / "native_ffi_update_a.o").unlink()
     assert len(run()[1]) == 1
-    source = manifest / "native/ffi/update.cc"
+    source = manifest / "native/ffi/update_a.cc"
     original = source.read_text()
     source.write_text(original + " invalid")
     result, commands = run(MOCK_FAIL="1")
@@ -190,7 +190,7 @@ def test_backend_invalidation_and_failed_compile(build):
     result, commands = run()
     assert result.returncode == 0
     assert len(commands) == 1
-    assert commands[0][-4:] == ["-c", "native/ffi/update.cc", "-o", str(output / "native_ffi_update.o")]
+    assert commands[0][-4:] == ["-c", "native/ffi/update_a.cc", "-o", str(output / "native_ffi_update_a.o")]
     assert run()[1] == []
     compiler = output.parent / "another-compiler"
     shutil.copy2(output.parent / "compiler", compiler)
@@ -302,7 +302,8 @@ def test_invalid_job_count(build, jobs):
     assert commands == []
 
 
-def test_parallel_real_compiler_objects_link_and_cache(build):
+@pytest.mark.parametrize("operation", ["update", "dot", "reduction"])
+def test_parallel_real_compiler_objects_link_and_cache(build, operation):
     compiler = shutil.which("c++")
     if compiler is None:
         pytest.skip("C++ compiler is required")
@@ -310,6 +311,13 @@ def test_parallel_real_compiler_objects_link_and_cache(build):
     sources = sorted((manifest / "native").rglob("*.cc"))
     for index, source in enumerate(sources):
         source.write_text(f'int native_unit_{index}() {{ return {index}; }}\n')
+    header = manifest / f"native/ffi/{operation}_impl.h"
+    header.write_text("#pragma once\ninline int update_value() { return 1; }\n")
+    for name in (f"{operation}_a", f"{operation}_b"):
+        (manifest / f"native/ffi/{name}.cc").write_text(
+            f'#include "{operation}_impl.h"\n'
+            f'int {name}_unit() {{ return update_value(); }}\n'
+        )
     result, _ = run(NUM_JOBS="3", CXX=compiler)
     assert result.returncode == 0, result.stderr
     objects = sorted(output.glob("*.o"))
@@ -319,19 +327,26 @@ def test_parallel_real_compiler_objects_link_and_cache(build):
                     "-o", str(output / "native.so")], check=True, timeout=30)
     assert run(NUM_JOBS="1", CXX=compiler)[0].returncode == 0
     assert {path: path.stat().st_mtime_ns for path in objects} == before
-    source = manifest / "native/ffi/update.cc"
+    header.write_text(header.read_text().replace("return 1", "return 2"))
+    result, _ = run(NUM_JOBS="3", CXX=compiler)
+    assert result.returncode == 0, result.stderr
+    changed = [path.name for path in objects
+               if path.stat().st_mtime_ns != before[path]]
+    assert changed == [f"native_ffi_{operation}_a.o", f"native_ffi_{operation}_b.o"]
+    before = {path: path.stat().st_mtime_ns for path in objects}
+    source = manifest / f"native/ffi/{operation}_a.cc"
     source.write_text(source.read_text() + "// Changed implementation.\n")
     assert run(NUM_JOBS="3", CXX=compiler)[0].returncode == 0
     changed = [path.name for path in objects
                if path.stat().st_mtime_ns != before[path]]
-    assert changed == ["native_ffi_update.o"]
+    assert changed == [f"native_ffi_{operation}_a.o"]
 
 
 @pytest.mark.parametrize("slots", [0, 1, 2])
 def test_jobserver_limits_workers_and_cancels_unfulfilled_requests(build, slots):
     run, _, output = build
     state = output / "limited-concurrency.json"
-    result, commands = run(slots=slots, NUM_JOBS="9", MOCK_CONCURRENCY=str(state),
+    result, commands = run(slots=slots, NUM_JOBS="11", MOCK_CONCURRENCY=str(state),
                            MOCK_EXPECTED_JOBS=str(slots + 1))
     assert result.returncode == 0, result.stderr
     assert len(commands) == run.unit_count
@@ -341,7 +356,7 @@ def test_jobserver_limits_workers_and_cancels_unfulfilled_requests(build, slots)
 def test_missing_jobserver_defaults_to_serial(build):
     run, _, output = build
     state = output / "serial-concurrency.json"
-    result, commands = run(slots=None, NUM_JOBS="9", MOCK_CONCURRENCY=str(state),
+    result, commands = run(slots=None, NUM_JOBS="11", MOCK_CONCURRENCY=str(state),
                            MOCK_EXPECTED_JOBS="1")
     assert result.returncode == 0, result.stderr
     assert len(commands) == run.unit_count
@@ -351,12 +366,12 @@ def test_missing_jobserver_defaults_to_serial(build):
 
 def test_failure_cancels_blocked_jobserver_requests(build):
     run, _, _ = build
-    result, commands = run(slots=0, NUM_JOBS="9", MOCK_FAIL_SOURCE="native/execute/scheduling.cc")
+    result, commands = run(slots=0, NUM_JOBS="11", MOCK_FAIL_SOURCE="native/execute/scheduling.cc")
     assert result.returncode != 0
     assert len(commands) == 1
     assert "failed native/execute/scheduling.cc" in result.stderr
     assert "cargo:rustc-link-arg=" not in result.stdout
-    assert run(slots=0, NUM_JOBS="9")[0].returncode == 0
+    assert run(slots=0, NUM_JOBS="11")[0].returncode == 0
 
 
 def test_real_cargo_jobserver_and_noop(build):
@@ -367,7 +382,7 @@ def test_real_cargo_jobserver_and_noop(build):
     package = REPO_ROOT / "crates/tensor0-py"
     dependency = tomllib.loads((package / "Cargo.toml").read_text())["build-dependencies"]["jobserver"]
     (manifest / "Cargo.toml").write_text(
-        '[package]\nname = "native-cargo-test"\nversion = "0.0.0"\nedition = "2021"\n'
+        '[workspace]\n[package]\nname = "native-cargo-test"\nversion = "0.0.0"\nedition = "2021"\n'
         'build = ' + json.dumps(str(package / "build.rs")) + '\n'
         '[build-dependencies]\njobserver = ' + json.dumps(dependency) + '\n'
         '[lib]\npath = "lib.rs"\n'
@@ -387,7 +402,7 @@ def test_real_cargo_jobserver_and_noop(build):
     assert "with up to 3 workers" in result.stderr
     assert json.loads(state.read_text()) == [0, 3]
     objects = list((manifest / "target").rglob("native_*.o"))
-    assert len(objects) == 10
+    assert len(objects) == 13
     before = {path: path.stat().st_mtime_ns for path in objects}
     result = subprocess.run(command, env=env, capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stderr
@@ -395,7 +410,7 @@ def test_real_cargo_jobserver_and_noop(build):
     assert {path: path.stat().st_mtime_ns for path in objects} == before
 
 
-@pytest.mark.parametrize("jobs,slots,expected", [(3, 8, 3), (20, 19, 10)])
+@pytest.mark.parametrize("jobs,slots,expected", [(3, 8, 3), (20, 19, 13)])
 def test_job_count_and_source_count_bound_token_demand(build, jobs, slots, expected):
     run, _, output = build
     state = output / "bounded-concurrency.json"
@@ -602,7 +617,7 @@ else:
     assert result.returncode == 0, result.stderr
     assert subprocess.check_output([str(executable)], text=True).strip() == "1"
     objects = list((manifest / "target").rglob("native_*.o"))
-    assert len(objects) == 15
+    assert len(objects) == 18
     before = {path: path.stat().st_mtime_ns for path in objects}
     result = subprocess.run(command, env=env, capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stderr
@@ -614,3 +629,39 @@ else:
     assert "tensor0-native: cached native/cuda/update.cu" in result.stderr
     assert {path: path.stat().st_mtime_ns for path in objects} == before
     assert subprocess.check_output([str(executable)], text=True).strip() == "2"
+
+
+@pytest.mark.parametrize("operation", ["update", "dot", "reduction"])
+def test_operation_groups_cover_dtypes_and_sdist(operation):
+    package = REPO_ROOT / "crates/tensor0-py"
+    ffi = package / "native/ffi"
+    groups = {
+        f"{operation}_a.cc": ["S32", "F16", "C64", "C128", "U64", "S8", "U16", "Pred"],
+        f"{operation}_b.cc": ["F32", "BF16", "F64", "S64", "S16", "U8", "U32"],
+    }
+    pairs = []
+    for name, suffixes in groups.items():
+        text = (ffi / name).read_text()
+        entries = re.findall(rf"^TENSOR0_STRIDE_DEFINE_{operation.upper()}\((\w+), (\w+)\)$",
+                             text, re.MULTILINE)
+        assert entries == [(suffix, suffix.upper()) for suffix in suffixes]
+        assert text.startswith(f'#include "{operation}_impl.h"\n')
+        macros = [operation.upper()]
+        if operation == "reduction":
+            macros.append("ACCUMULATION")
+            accumulation = re.findall(r"^TENSOR0_STRIDE_DEFINE_ACCUMULATION\((\w+), (\w+)\)$",
+                                      text, re.MULTILINE)
+            assert accumulation == entries
+        assert text.endswith("".join(f"#undef TENSOR0_STRIDE_DEFINE_{macro}\n" for macro in macros))
+        pairs.extend(entries)
+    expected = re.findall(r"Define\((\w+), (\w+)\)", (ffi / "dtype.h").read_text())
+    assert len(pairs) == len(set(pairs)) == len(expected) == 15
+    assert set(pairs) == set(expected)
+    sources = re.findall(r'"(native/[^"\n]+\.cc)"', (package / "build.rs").read_text())
+    assert len(sources) == len(set(sources)) == 13
+    start = sources.index(f"native/ffi/{operation}_a.cc")
+    assert sources[start:start + 2] == [f"native/ffi/{operation}_a.cc", f"native/ffi/{operation}_b.cc"]
+    config = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())
+    included = {path for entry in config["tool"]["maturin"]["include"]
+                if entry["format"] == "sdist" for path in REPO_ROOT.glob(entry["path"])}
+    assert {ffi / name for name in (*groups, f"{operation}_impl.h")} <= included

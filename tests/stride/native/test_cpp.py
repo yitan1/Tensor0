@@ -51,7 +51,7 @@ def native_build(pytestconfig):
              "-I", str(native), "-isystem", str(vendor)]
     objects = []
     for source in sorted(native.rglob("*.cc")):
-        if source.parent.name == "ffi" and source.stem in {"copy", "update", "reduction", "dot"}:
+        if source.parent.name == "ffi" and source.stem in {"copy", "update_a", "update_b", "reduction_a", "reduction_b", "dot_a", "dot_b"}:
             continue
         obj = output / (str(source.relative_to(native)).replace("/", "_") + ".o")
         compile_cached([compiler, "-O1", *flags, "-c", str(source)], obj,
@@ -86,8 +86,8 @@ def test_cpp_contract(source, native_build):
     if source == "ffi_boundary_test.cc":
         import fcntl
 
-        units = [(native / "ffi" / f"{name}.cc").read_text()
-                 for name in ("copy", "update", "reduction", "dot")]
+        units = [(native / "ffi" / name).read_text()
+                 for name in ("copy.cc", "update_impl.h", "reduction_impl.h", "dot_impl.h")]
         header = "\n".join(unit.split("\n#define TENSOR0_STRIDE_DEFINE_", 1)[0] for unit in units)
         # Serialize header generation with this contract's compilation.
         with (output / "ffi-header.lock").open("w") as lock:

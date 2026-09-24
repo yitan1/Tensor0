@@ -22,8 +22,12 @@ Benchmark representative kernels before choosing a lower optimization level for
 production; O2 is not guaranteed to preserve O3 performance.
 The Native backend compiles ordinary layout, descriptor/prepared-state, validation,
 and scheduling implementations as separate objects. Numerical templates are
-instantiated in four operation-owned units: `native/ffi/copy.cc`,
-`update.cc`, `reduction.cc` (including Accumulation), and `dot.cc`.
+instantiated in seven operation-owned units: `native/ffi/copy.cc`,
+`update_a.cc`, `update_b.cc`, `reduction_a.cc`, `reduction_b.cc`, `dot_a.cc`, and `dot_b.cc`.
+Update, Reduction/Accumulation, and Dot each use two fixed output-dtype groups
+sharing `native/ffi/update_impl.h`, `native/ffi/reduction_impl.h`, and
+`native/ffi/dot_impl.h`, respectively; the implementation is not duplicated.
+Reduction and Accumulation for the same output dtype remain in the same unit.
 Their typed inner kernels remain visible through headers for inlining.
 Shared lifecycle state and ordinary support implementations have one definition.
 Native translation units compile in parallel, bounded by Cargo's `NUM_JOBS`
@@ -32,11 +36,35 @@ slot for one task and acquires shared jobserver tokens for additional tasks, so
 C++ and Rust compilation share Cargo's concurrency budget. Tokens are returned
 when no longer needed; pending token requests are cancelled on completion or
 failure without waiting for other Cargo jobs to finish.
-Use `maturin build --release -j 2` to limit concurrency or `-j 1` for serial
-compilation. Heavy numerical units can each use several GiB of memory; choose the
-job count for available RAM, not just CPU count. Without an inherited jobserver,
-or without `NUM_JOBS`, the script uses one worker. After observing a failure it
-stops assigning new units; assigned units finish before the build exits. Successful
+Without an explicit job setting, builds follow Cargo's default concurrency budget,
+which is based on available logical CPUs. Tensor0 does not impose a fixed job count
+or independently probe the machine to create another concurrency budget. Use `-j N`
+or Cargo's `CARGO_BUILD_JOBS` environment variable to override the budget:
+
+```bash
+# Follow Cargo's default concurrency budget.
+uv run maturin build --release
+
+# Limit concurrency explicitly; use -j 1 for serial compilation.
+uv run maturin build --release -j 4
+
+# Alternatively, configure Cargo through the environment.
+CARGO_BUILD_JOBS=4 uv run maturin build --release
+```
+
+The values above are examples, not recommended defaults for every machine. Heavy
+numerical units can each use several GiB of memory; choose the job count for the
+memory available to the build, not just CPU count. CPU-based defaults do not
+guarantee sufficient memory, especially on high-core-count machines or in
+memory-limited containers. The jobserver shares available slots dynamically; it
+does not adjust the overall budget in response to free memory. Configure the budget
+through Cargo rather than setting the build-script input `NUM_JOBS` directly.
+Build concurrency is separate from runtime execution: `tensor0._stride.set_num_threads`
+controls native operation workers, not compiler jobs.
+
+Without an inherited jobserver, or without `NUM_JOBS`, the script uses one worker.
+After observing a failure it stops assigning new units; assigned units finish
+before the build exits. Successful
 objects remain cached for a retry. All workers finish before linking, and linker
 input order remains fixed. Changing only the job count does not invalidate
 object fingerprints. Use `maturin build --release -j 2 -vv` to display build-script
@@ -50,7 +78,9 @@ dependency files, dependency contents,
 compiler identity/command and build-script inputs. Implementation-only edits to an
 ordinary `.cc` do not rebuild the numerical objects. Operation-specific `.cc` or
 execution-header edits rebuild only that operation; shared kernel headers can
-rebuild multiple operations.
+rebuild multiple operations. Editing `update_impl.h`, `reduction_impl.h`, or
+`dot_impl.h` rebuilds both units of that operation; editing an entry `.cc`
+rebuilds only that unit.
 Missing objects/dependency files and failed compilations invalidate the affected
 cache entry. Build-script tests compile a small Cargo harness offline; run
 `cargo fetch` first if the build dependencies are not already cached. Compiler paths and discovered dependencies are watched by Cargo.

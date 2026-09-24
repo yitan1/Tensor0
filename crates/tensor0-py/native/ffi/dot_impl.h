@@ -1,3 +1,5 @@
+#pragma once
+
 #include "../execute/dot.h"
 #include "../numeric/expression.h"
 #include "dtype.h"
@@ -117,7 +119,3 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL( \
 extern "C" void* Tensor0StrideDot##Suffix##V1Handler() { \
   return reinterpret_cast<void*>(&Tensor0StrideDot##Suffix##V1); \
 }
-
-TENSOR0_STRIDE_FOR_EACH_DTYPE(TENSOR0_STRIDE_DEFINE_DOT)
-
-#undef TENSOR0_STRIDE_DEFINE_DOT
