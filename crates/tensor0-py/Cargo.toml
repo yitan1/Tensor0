@@ -10,6 +10,9 @@ description.workspace = true
 name = "tensor0_py"
 crate-type = ["cdylib"]
 
+[build-dependencies]
+jobserver = "0.1.34"
+
 [dependencies]
 numpy = { workspace = true }
 pyo3 = { version = "0.28", features = ["extension-module"] }

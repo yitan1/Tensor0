@@ -6,21 +6,38 @@ import re
 import shutil
 import subprocess
 import sys
+import tomllib
 
 import pytest
 
 from tests.stride.support.paths import REPO_ROOT
 
 
+pytestmark = pytest.mark.skipif(sys.platform != "linux", reason="native build requires Linux")
+
+
+@pytest.fixture(scope="session")
+def build_script(tmp_path_factory):
+    cargo = shutil.which("cargo")
+    if cargo is None:
+        pytest.skip("cargo is required")
+    directory = tmp_path_factory.mktemp("native-build-script")
+    package = REPO_ROOT / "crates/tensor0-py"
+    dependency = tomllib.loads((package / "Cargo.toml").read_text())["build-dependencies"]["jobserver"]
+    (directory / "Cargo.toml").write_text(
+        '[package]\nname = "native-build-test"\nversion = "0.0.0"\nedition = "2021"\n'
+        '[dependencies]\njobserver = ' + json.dumps(dependency) + '\n'
+        '[[bin]]\nname = "build-script"\npath = ' + json.dumps(str(package / "build.rs")) + '\n'
+    )
+    subprocess.run([cargo, "build", "--offline", "--manifest-path", str(directory / "Cargo.toml")],
+                   check=True, capture_output=True, text=True, timeout=90)
+    return directory / "target/debug/build-script"
+
+
 @pytest.fixture
-def build(tmp_path):
-    rustc = shutil.which("rustc")
-    if rustc is None:
-        pytest.skip("rustc is required")
-    root = REPO_ROOT
-    script = root / "crates/tensor0-py/build.rs"
-    executable = tmp_path / "build-script"
-    subprocess.run([rustc, "--edition=2021", str(script), "-o", str(executable)], check=True)
+def build(tmp_path, build_script):
+    script = REPO_ROOT / "crates/tensor0-py/build.rs"
+    executable = build_script
     manifest = tmp_path / "crate"
     sources = re.findall(r'"(native/[^"\n]+)"', script.read_text())
     for source in sources:
@@ -48,6 +65,29 @@ with open(os.environ["MOCK_LOG"], "a") as log:
 pathlib.Path(sys.argv[sys.argv.index("-o") + 1]).write_text("object")
 source = sys.argv[sys.argv.index("-c") + 1]
 root = pathlib.Path.cwd()
+if os.environ.get("MOCK_CONCURRENCY"):
+    import fcntl, time
+    state = pathlib.Path(os.environ["MOCK_CONCURRENCY"])
+    def update(delta):
+        with state.open("a+") as stream:
+            fcntl.flock(stream, fcntl.LOCK_EX)
+            stream.seek(0)
+            active, peak = json.loads(stream.read() or "[0, 0]")
+            active += delta
+            peak = max(active, peak)
+            stream.seek(0)
+            stream.truncate()
+            json.dump([active, peak], stream)
+            return peak
+    update(1)
+    deadline = time.monotonic() + 10
+    while update(0) < int(os.environ.get("MOCK_EXPECTED_JOBS", os.environ["NUM_JOBS"])):
+        if time.monotonic() > deadline:
+            update(-1)
+            sys.exit(2)
+        time.sleep(0.01)
+    time.sleep(0.05)
+    update(-1)
 # This mock conservatively shares headers across objects; real depfiles are
 # exercised separately with actual compiler invocations.
 deps = [source] + [str(p) for p in root.rglob("*") if p.suffix in (".h",)]
@@ -55,18 +95,47 @@ def escape(path):
     return path.replace("$", "$$").replace(" ", "\\ ").replace("#", "\\#")
 pathlib.Path(sys.argv[sys.argv.index("-MF") + 1]).write_text(
     "tensor0-object: " + " ".join(escape(p) for p in deps) + "\\n")
-sys.exit(int(os.environ.get("MOCK_FAIL", "0")))
+if os.environ.get("MOCK_REAL_COMPILER"):
+    import subprocess
+    subprocess.run([os.environ["MOCK_REAL_COMPILER"], *sys.argv[1:]], check=True)
+sys.exit(int(os.environ.get("MOCK_FAIL", "0")) or
+         int(source == os.environ.get("MOCK_FAIL_SOURCE")))
 ''')
     compiler.chmod(0o755)
     environment = dict(os.environ, CARGO_MANIFEST_DIR=str(manifest), OUT_DIR=str(output),
                        CARGO_CFG_TARGET_OS="linux", CXX=str(compiler), OPT_LEVEL="0",
-                       MOCK_LOG=str(log))
-    environment.pop("TENSOR0_CXX_OPT_LEVEL", None)
+                       MOCK_LOG=str(log), NUM_JOBS="1")
+    for name in ("TENSOR0_CXX_OPT_LEVEL", "CARGO_MAKEFLAGS", "MAKEFLAGS", "MFLAGS"):
+        environment.pop(name, None)
 
-    def run(**overrides):
+    def run(*, slots="auto", **overrides):
         log.write_text("")
-        result = subprocess.run([str(executable)], env=environment | overrides,
-                                capture_output=True, text=True)
+        env = environment | overrides
+        if slots == "auto":
+            try:
+                slots = max(0, int(env["NUM_JOBS"]) - 1)
+            except ValueError:
+                slots = 0
+        if slots is None:
+            result = subprocess.run([str(executable)], env=env,
+                                    capture_output=True, text=True, timeout=30)
+        else:
+            read_fd, write_fd = os.pipe()
+            try:
+                os.write(write_fd, b"+" * slots)
+                env["CARGO_MAKEFLAGS"] = f"--jobserver-auth={read_fd},{write_fd} -j"
+                result = subprocess.run([str(executable)], env=env, pass_fds=(read_fd, write_fd),
+                                        capture_output=True, text=True, timeout=30)
+                # Every borrowed slot must be returned on success and failure.
+                os.set_blocking(read_fd, False)
+                try:
+                    returned = os.read(read_fd, 1024)
+                except BlockingIOError:
+                    returned = b""
+                assert len(returned) == slots
+            finally:
+                os.close(read_fd)
+                os.close(write_fd)
         commands = [json.loads(line) for line in log.read_text().splitlines()]
         return result, commands
 
@@ -162,3 +231,174 @@ def test_invalid_cpp_optimization_override(build, level):
     assert result.returncode != 0
     assert "C++ optimization level must be" in result.stderr
     assert commands == []
+
+
+@pytest.mark.parametrize("jobs", [1, 2, 3])
+def test_parallel_compilation_is_bounded_and_preserves_link_order(build, jobs):
+    run, _, output = build
+    state = output / "concurrency.json"
+    result, commands = run(NUM_JOBS=str(jobs), MOCK_CONCURRENCY=str(state))
+    assert result.returncode == 0, result.stderr
+    assert len(commands) == run.unit_count
+    assert json.loads(state.read_text()) == [0, jobs]
+    assert f"checking {run.unit_count} units with up to {jobs} workers" in result.stderr
+    assert result.stderr.count("tensor0-native: compiling ") == run.unit_count
+    assert len(re.findall(r"tensor0-native: compiled native/\S+ in \d+\.\d{2}s", result.stderr)) == run.unit_count
+    assert "tensor0-native: native objects ready in " in result.stderr
+    links = [line for line in result.stdout.splitlines()
+             if line.startswith("cargo:rustc-link-arg=")]
+    cached, commands = run(NUM_JOBS="1")
+    assert cached.returncode == 0
+    assert commands == []
+    assert cached.stderr.count("tensor0-native: cached ") == run.unit_count
+    assert "tensor0-native: compiling " not in cached.stderr
+    assert links == [line for line in cached.stdout.splitlines()
+                     if line.startswith("cargo:rustc-link-arg=")]
+
+
+def test_parallel_failure_waits_for_workers_and_retries_failed_object(build):
+    run, _, output = build
+    state = output / "concurrency.json"
+    # Start every unit before failure, so this checks joining in-flight workers
+    # independently of which worker observes cancellation first.
+    result, commands = run(NUM_JOBS=str(run.unit_count), MOCK_CONCURRENCY=str(state),
+                           MOCK_FAIL_SOURCE="native/ffi/copy.cc")
+    assert result.returncode != 0
+    assert len(commands) == run.unit_count
+    assert json.loads(state.read_text()) == [0, run.unit_count]
+    assert "tensor0-native: failed native/ffi/copy.cc in " in result.stderr
+    assert "tensor0-native: compiled native/ffi/copy.cc" not in result.stderr
+    assert "tensor0-native: native objects ready" not in result.stderr
+    assert "cargo:rustc-link-arg=" not in result.stdout
+    result, commands = run(NUM_JOBS="3")
+    assert result.returncode == 0, result.stderr
+    assert len(commands) == 1
+    assert "native/ffi/copy.cc" in commands[0]
+    assert run(NUM_JOBS="3")[1] == []
+
+
+def test_failure_stops_pending_units(build):
+    run, _, output = build
+    result, commands = run(NUM_JOBS="1", MOCK_FAIL_SOURCE="native/execute/scheduling.cc")
+    assert result.returncode != 0
+    assert len(commands) == 1
+    assert "native/execute/scheduling.cc" in commands[0]
+    assert "cargo:rustc-link-arg=" not in result.stdout
+    assert (output / "native_execute_scheduling.fingerprint").read_text() == ""
+    result, commands = run(NUM_JOBS="3")
+    assert result.returncode == 0, result.stderr
+    assert len(commands) == run.unit_count
+    assert run(NUM_JOBS="3")[1] == []
+
+
+@pytest.mark.parametrize("jobs", ["0", "invalid", "-1"])
+def test_invalid_job_count(build, jobs):
+    run, _, _ = build
+    result, commands = run(NUM_JOBS=jobs)
+    assert result.returncode != 0
+    assert "NUM_JOBS must be a positive integer" in result.stderr
+    assert commands == []
+
+
+def test_parallel_real_compiler_objects_link_and_cache(build):
+    compiler = shutil.which("c++")
+    if compiler is None:
+        pytest.skip("C++ compiler is required")
+    run, manifest, output = build
+    sources = sorted((manifest / "native").rglob("*.cc"))
+    for index, source in enumerate(sources):
+        source.write_text(f'int native_unit_{index}() {{ return {index}; }}\n')
+    result, _ = run(NUM_JOBS="3", CXX=compiler)
+    assert result.returncode == 0, result.stderr
+    objects = sorted(output.glob("*.o"))
+    assert len(objects) == run.unit_count
+    before = {path: path.stat().st_mtime_ns for path in objects}
+    subprocess.run([compiler, "-shared", *(str(path) for path in objects),
+                    "-o", str(output / "native.so")], check=True, timeout=30)
+    assert run(NUM_JOBS="1", CXX=compiler)[0].returncode == 0
+    assert {path: path.stat().st_mtime_ns for path in objects} == before
+    source = manifest / "native/ffi/update.cc"
+    source.write_text(source.read_text() + "// Changed implementation.\n")
+    assert run(NUM_JOBS="3", CXX=compiler)[0].returncode == 0
+    changed = [path.name for path in objects
+               if path.stat().st_mtime_ns != before[path]]
+    assert changed == ["native_ffi_update.o"]
+
+
+@pytest.mark.parametrize("slots", [0, 1, 2])
+def test_jobserver_limits_workers_and_cancels_unfulfilled_requests(build, slots):
+    run, _, output = build
+    state = output / "limited-concurrency.json"
+    result, commands = run(slots=slots, NUM_JOBS="9", MOCK_CONCURRENCY=str(state),
+                           MOCK_EXPECTED_JOBS=str(slots + 1))
+    assert result.returncode == 0, result.stderr
+    assert len(commands) == run.unit_count
+    assert json.loads(state.read_text()) == [0, slots + 1]
+
+
+def test_missing_jobserver_defaults_to_serial(build):
+    run, _, output = build
+    state = output / "serial-concurrency.json"
+    result, commands = run(slots=None, NUM_JOBS="9", MOCK_CONCURRENCY=str(state),
+                           MOCK_EXPECTED_JOBS="1")
+    assert result.returncode == 0, result.stderr
+    assert len(commands) == run.unit_count
+    assert json.loads(state.read_text()) == [0, 1]
+    assert "with up to 1 workers" in result.stderr
+
+
+def test_failure_cancels_blocked_jobserver_requests(build):
+    run, _, _ = build
+    result, commands = run(slots=0, NUM_JOBS="9", MOCK_FAIL_SOURCE="native/execute/scheduling.cc")
+    assert result.returncode != 0
+    assert len(commands) == 1
+    assert "failed native/execute/scheduling.cc" in result.stderr
+    assert "cargo:rustc-link-arg=" not in result.stdout
+    assert run(slots=0, NUM_JOBS="9")[0].returncode == 0
+
+
+def test_real_cargo_jobserver_and_noop(build):
+    compiler = shutil.which("c++")
+    if compiler is None:
+        pytest.skip("C++ compiler is required")
+    _, manifest, _ = build
+    package = REPO_ROOT / "crates/tensor0-py"
+    dependency = tomllib.loads((package / "Cargo.toml").read_text())["build-dependencies"]["jobserver"]
+    (manifest / "Cargo.toml").write_text(
+        '[package]\nname = "native-cargo-test"\nversion = "0.0.0"\nedition = "2021"\n'
+        'build = ' + json.dumps(str(package / "build.rs")) + '\n'
+        '[build-dependencies]\njobserver = ' + json.dumps(dependency) + '\n'
+        '[lib]\npath = "lib.rs"\n'
+    )
+    (manifest / "lib.rs").write_text("pub fn value() -> u32 { 42 }\n")
+    for index, source in enumerate(sorted((manifest / "native").rglob("*.cc"))):
+        source.write_text(f'int native_unit_{index}() {{ return {index}; }}\n')
+    state = manifest.parent / "cargo-concurrency.json"
+    env = dict(os.environ, CXX=str(manifest.parent / "compiler"),
+               MOCK_REAL_COMPILER=compiler, MOCK_LOG=str(manifest.parent / "cargo-commands.jsonl"),
+               MOCK_CONCURRENCY=str(state), MOCK_EXPECTED_JOBS="3", NUM_JOBS="3")
+    env.pop("TENSOR0_CXX_OPT_LEVEL", None)
+    command = ["cargo", "build", "--offline", "-vv", "-j", "3",
+               "--manifest-path", str(manifest / "Cargo.toml")]
+    result = subprocess.run(command, env=env, capture_output=True, text=True, timeout=90)
+    assert result.returncode == 0, result.stderr
+    assert "with up to 3 workers" in result.stderr
+    assert json.loads(state.read_text()) == [0, 3]
+    objects = list((manifest / "target").rglob("native_*.o"))
+    assert len(objects) == 9
+    before = {path: path.stat().st_mtime_ns for path in objects}
+    result = subprocess.run(command, env=env, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert "Fresh native-cargo-test" in result.stderr
+    assert {path: path.stat().st_mtime_ns for path in objects} == before
+
+
+@pytest.mark.parametrize("jobs,slots,expected", [(3, 8, 3), (20, 19, 9)])
+def test_job_count_and_source_count_bound_token_demand(build, jobs, slots, expected):
+    run, _, output = build
+    state = output / "bounded-concurrency.json"
+    result, commands = run(slots=slots, NUM_JOBS=str(jobs), MOCK_CONCURRENCY=str(state),
+                           MOCK_EXPECTED_JOBS=str(expected))
+    assert result.returncode == 0, result.stderr
+    assert len(commands) == run.unit_count
+    assert json.loads(state.read_text()) == [0, expected]

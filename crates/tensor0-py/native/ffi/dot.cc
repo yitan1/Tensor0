@@ -6,7 +6,6 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <functional>
 #include <memory>
 #include <stdexcept>
 #include <type_traits>
@@ -17,13 +16,44 @@ namespace ffi = xla::ffi;
 
 namespace tensor0::stride {
 
+// Borrowed only until the synchronous executor entry returns; tasks own their state.
+struct DotInvocation {
+  ffi::ThreadPool thread_pool;
+  const PreparedState* prepared;
+  const void* left;
+  const void* right;
+  void* result;
+  uint64_t batch_count;
+  bool conjugate_left;
+};
+
+template <typename Result, typename Left, typename Right>
+ffi::Future InvokeDot(const DotInvocation& request) {
+  const auto* left = static_cast<const scalar::Value<Left>*>(request.left);
+  const auto* right = static_cast<const scalar::Value<Right>*>(request.right);
+  auto* result = static_cast<scalar::Value<Result>*>(request.result);
+  const auto& prepared = *request.prepared;
+  if constexpr (scalar::kIsComplex<Left>) {
+    if (request.conjugate_left) {
+      return ExecuteDot<Result>(request.thread_pool, prepared.records, left, right, result,
+          prepared.source_size, prepared.output_size, request.batch_count,
+          expression::Conjugate<Left>{}, expression::Identity<Right>{});
+    }
+  }
+  return ExecuteDot<Result>(request.thread_pool, prepared.records, left, right, result,
+      prepared.source_size, prepared.output_size, request.batch_count,
+      expression::Identity<Left>{}, expression::Identity<Right>{});
+}
+
 template <ffi::DataType Dtype>
 ffi::Future Dot(
     ffi::Span<const int64_t>, int64_t conjugate_left, const PreparedState* prepared,
     ffi::AnyBuffer left, ffi::AnyBuffer right,
     ffi::ResultBufferR1<Dtype> result, ffi::ThreadPool thread_pool) {
   using Scalar = ScalarDtype<Dtype>;
-  std::function<ffi::Future()> execute;
+  DotInvocation invocation{thread_pool, prepared, nullptr, nullptr, result->typed_data(),
+      0, conjugate_left != 0};
+  ffi::Future (*execute)(const DotInvocation&) = nullptr;
   uint64_t batch_count = 0;
   const uint64_t left_size = prepared->source_size;
   const uint64_t right_size = prepared->output_size;
@@ -63,21 +93,15 @@ ffi::Future Dot(
                                result->typed_data(), output_bytes);
         ValidateDisjointBuffers(right_data, BufferBytes(right_elements, sizeof(*right_data)),
                                result->typed_data(), output_bytes);
-        execute = [=, result_data = result->typed_data()] {
-          if constexpr (scalar::kIsComplex<Left>) {
-            if (conjugate_left) {
-              return ExecuteDot<Scalar>(thread_pool, prepared->records, left_data, right_data, result_data,
-                  left_size, right_size, batch_count, expression::Conjugate<Left>{}, expression::Identity<Right>{});
-            }
-          }
-          return ExecuteDot<Scalar>(thread_pool, prepared->records, left_data, right_data, result_data,
-              left_size, right_size, batch_count, expression::Identity<Left>{}, expression::Identity<Right>{});
-        };
+        invocation.left = left_data;
+        invocation.right = right_data;
+        invocation.batch_count = batch_count;
+        execute = InvokeDot<Scalar, Left, Right>;
       });
     });
   });
   if (error.failure()) return CompletedFuture(error);
-  return execute();
+  return execute(invocation);
 }
 
 }

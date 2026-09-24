@@ -60,6 +60,42 @@ void CheckQueuedOwnership() {
   for (uint64_t i = 0; i < size * batches; ++i) assert(result[i] == (i % size == 0 ? 13 : 3));
 }
 
+void CheckQueuedCoefficientEntries() {
+  constexpr uint64_t size = 65536, batches = 4;
+  using Value = scalar::Value<scalar::C64>;
+  testing::ThreadPool pool(4);
+  std::vector<Value> source(size * batches, Value{2, 1}), base(size * batches, Value{3, -2});
+  std::vector<Value> first(size * batches, Value{-7, 0}), second = first;
+  // Coefficient buffers, like source/output buffers, outlive the queued requests.
+  float real_alpha = 2, real_beta = 3;
+  Value complex_alpha{2, -1}, complex_beta{3, 1};
+  bool first_ready = false, second_ready = false;
+  {
+    native::expression::Identity<scalar::C64> map;
+    const auto record = native::layout::BuildLayout({1}, {1}, 0, {1}, 0, size, size, 0);
+    auto first_future = native::ExecuteUpdate<scalar::C64, scalar::F32, scalar::C64>(
+        pool.get(), {record}, source.data(), base.data(), first.data(), size, size, batches,
+        &real_alpha, 1, &complex_beta, 1, map, map);
+    first_future.OnReady([&](const std::optional<ffi::Error>& error) {
+      assert(!error); first_ready = true;
+    });
+    auto second_future = native::ExecuteUpdate<scalar::C64, scalar::C64, scalar::F32>(
+        pool.get(), {record}, source.data(), base.data(), second.data(), size, size, batches,
+        &complex_alpha, 1, &real_beta, 1, map, map);
+    second_future.OnReady([&](const std::optional<ffi::Error>& error) {
+      assert(!error); second_ready = true;
+    });
+    assert(!first_ready && !second_ready);
+  }
+  // Both requests share map/storage types, but must retain their own typed entry.
+  pool.run_parallel();
+  assert(first_ready && second_ready);
+  for (uint64_t i = 0; i < size * batches; ++i) {
+    assert(first[i] == (i % size == 0 ? Value(15, -1) : base[i]));
+    assert(second[i] == (i % size == 0 ? Value(14, -6) : base[i]));
+  }
+}
+
 void CheckCopyFailure() {
   for (bool unknown : {false, true}) {
     testing::ThreadPool pool;
@@ -77,5 +113,6 @@ void CheckCopyFailure() {
 int main() {
   CheckEmptyAndSynchronous();
   CheckQueuedOwnership();
+  CheckQueuedCoefficientEntries();
   CheckCopyFailure();
 }

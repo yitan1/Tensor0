@@ -183,14 +183,15 @@ const MapProgramEntry& UpdateProgramEntry() {
   return entry;
 }
 
-template <typename Result, typename Alpha, typename Beta, typename SourceMap, typename BaseMap>
-ffi::Future ExecuteBoundUpdate(
+// Preparation depends on maps and storage types, not the bound coefficient types.
+template <typename Result, typename SourceMap, typename BaseMap>
+ffi::Future ExecuteUpdateProgram(
     ffi::ThreadPool thread_pool, const std::vector<layout::Record>& records,
     const scalar::Value<typename SourceMap::InputDtype>* source,
     const scalar::Value<Result>* base, scalar::Value<Result>* result,
     uint64_t source_size, uint64_t output_size, uint64_t batch_count,
     UpdateCoefficientReader alpha, UpdateCoefficientReader beta,
-    const SourceMap& source_map, const BaseMap& base_map) {
+    const SourceMap& source_map, const BaseMap& base_map, const MapProgramEntry& entry) {
   static_assert(std::is_same_v<typename BaseMap::InputDtype, Result>);
   try {
     auto state = MakeProgramState<UpdateProgram<Result, SourceMap, BaseMap>>(
@@ -202,12 +203,25 @@ ffi::Future ExecuteBoundUpdate(
     }
     return ExecuteOwnedMapProgram(thread_pool, records, sizeof(*source), sizeof(*result),
         output_size, batch_count,
-        {std::move(state), &UpdateProgramEntry<Result, Alpha, Beta, SourceMap, BaseMap>()});
+        {std::move(state), &entry});
   } catch (const std::exception& error) {
     return CompletedFuture(ffi::Error::Internal(std::string("tensor0-native: ") + error.what()));
   } catch (...) {
     return CompletedFuture(ffi::Error::Internal("tensor0-native: unknown map preparation exception"));
   }
+}
+
+template <typename Result, typename Alpha, typename Beta, typename SourceMap, typename BaseMap>
+ffi::Future ExecuteBoundUpdate(
+    ffi::ThreadPool thread_pool, const std::vector<layout::Record>& records,
+    const scalar::Value<typename SourceMap::InputDtype>* source,
+    const scalar::Value<Result>* base, scalar::Value<Result>* result,
+    uint64_t source_size, uint64_t output_size, uint64_t batch_count,
+    UpdateCoefficientReader alpha, UpdateCoefficientReader beta,
+    const SourceMap& source_map, const BaseMap& base_map) {
+  return ExecuteUpdateProgram<Result>(thread_pool, records, source, base, result,
+      source_size, output_size, batch_count, alpha, beta, source_map, base_map,
+      UpdateProgramEntry<Result, Alpha, Beta, SourceMap, BaseMap>());
 }
 
 // Typed callers select independent readers; only bound types reach the executor.

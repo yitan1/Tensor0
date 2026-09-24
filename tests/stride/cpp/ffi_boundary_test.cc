@@ -342,7 +342,53 @@ void CheckDotBoundary() {
 }
 
 
+void CheckQueuedDotInvocations() {
+  constexpr int64_t batches = 9, size = 16384;
+  const std::vector<int64_t> words{1, size, size, 1, 1, 0, 0, size, 1, 1};
+  const ffi::Span<const int64_t> layout(words.data(), words.size());
+  auto state = native::InstantiateDot(layout, 0);
+  assert(state.has_value());
+  testing::ThreadPool pool(4);
+  std::vector<std::complex<float>> left(batches * size, {1, 2});
+  std::vector<std::complex<double>> right(batches * size, {3, 4});
+  std::array<float, batches> unconjugated{}, conjugated{};
+  const auto invoke = [&](int64_t conjugate, float* output) {
+    std::array<int64_t, 2> dims{batches, size};
+    int64_t count = batches;
+    XLA_FFI_Buffer lhs{XLA_FFI_Buffer_STRUCT_SIZE, nullptr,
+        XLA_FFI_DataType_C64, left.data(), 2, dims.data()};
+    XLA_FFI_Buffer rhs{XLA_FFI_Buffer_STRUCT_SIZE, nullptr,
+        XLA_FFI_DataType_C128, right.data(), 2, dims.data()};
+    XLA_FFI_Buffer result{XLA_FFI_Buffer_STRUCT_SIZE, nullptr,
+        XLA_FFI_DataType_F32, output, 1, &count};
+    return native::Dot<ffi::F32>(layout, conjugate, state->get(),
+        ffi::AnyBuffer(&lhs), ffi::AnyBuffer(&rhs),
+        ffi::BufferR1<ffi::F32>(&result), pool.get());
+  };
+  bool first_ready = false, second_ready = false;
+  auto first = invoke(0, unconjugated.data());
+  first.OnReady([&](const std::optional<ffi::Error>& error) {
+    assert(!error);
+    first_ready = true;
+  });
+  auto second = invoke(1, conjugated.data());
+  second.OnReady([&](const std::optional<ffi::Error>& error) {
+    assert(!error);
+    second_ready = true;
+  });
+  // Both FFI calls and their stack-local invocation data are gone before execution.
+  assert(!first_ready && !second_ready && !pool.tasks.empty());
+  pool.run_parallel();
+  assert(first_ready && second_ready);
+  for (int64_t batch = 0; batch < batches; ++batch) {
+    assert(unconjugated[batch] == -5 * size);
+    assert(conjugated[batch] == 11 * size);
+  }
+}
+
+
 int main() {
+  CheckQueuedDotInvocations();
   CheckReductionBoundary();
   CheckDotBoundary();
   CheckBatchScheduling();

@@ -26,14 +26,34 @@ instantiated in four operation-owned units: `native/ffi/copy.cc`,
 `update.cc`, `reduction.cc` (including Accumulation), and `dot.cc`.
 Their typed inner kernels remain visible through headers for inlining.
 Shared lifecycle state and ordinary support implementations have one definition.
-Builds are serial and reuse each object independently using compiler-generated
+Native translation units compile in parallel, bounded by Cargo's `NUM_JOBS`
+(and the number of source files). The build script uses its implicit Cargo job
+slot for one task and acquires shared jobserver tokens for additional tasks, so
+C++ and Rust compilation share Cargo's concurrency budget. Tokens are returned
+when no longer needed; pending token requests are cancelled on completion or
+failure without waiting for other Cargo jobs to finish.
+Use `maturin build --release -j 2` to limit concurrency or `-j 1` for serial
+compilation. Heavy numerical units can each use several GiB of memory; choose the
+job count for available RAM, not just CPU count. Without an inherited jobserver,
+or without `NUM_JOBS`, the script uses one worker. After observing a failure it
+stops assigning new units; assigned units finish before the build exits. Successful
+objects remain cached for a retry. All workers finish before linking, and linker
+input order remains fixed. Changing only the job count does not invalidate
+object fingerprints. Use `maturin build --release -j 2 -vv` to display build-script
+stderr, including per-unit cache hits, compilation starts/results and elapsed wall
+times. The final native-object time includes cache checks and compilation, but not
+Rust compilation or linking. Per-unit times overlap in parallel builds and must
+not be summed as total wall time. When Cargo reuses the entire build-script result,
+the script does not run and no new per-unit messages are emitted.
+Builds reuse each object independently using compiler-generated
 dependency files, dependency contents,
 compiler identity/command and build-script inputs. Implementation-only edits to an
 ordinary `.cc` do not rebuild the numerical objects. Operation-specific `.cc` or
 execution-header edits rebuild only that operation; shared kernel headers can
 rebuild multiple operations.
 Missing objects/dependency files and failed compilations invalidate the affected
-cache entry. Compiler paths and discovered dependencies are watched by Cargo.
+cache entry. Build-script tests compile a small Cargo harness offline; run
+`cargo fetch` first if the build dependencies are not already cached. Compiler paths and discovered dependencies are watched by Cargo.
 Use a release build for performance measurements.
 
 ## Local Setup
