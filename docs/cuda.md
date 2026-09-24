@@ -232,6 +232,28 @@ There is no per-element index table or native device cache. The internal FFI ABI
 requires operand contents to match the immutable attribute; use stride primitives
 rather than hand-crafted FFI calls.
 
+The native CUDA implementation separates three responsibilities:
+
+- `native/cuda/*.cu` adapts the XLA FFI call, validates metadata and invocation
+  buffers, and contains exceptions at the call boundary.
+- `native/cuda/execute/` owns CUDA scheduling, output initialization, coefficient
+  dispatch and ordered kernel launches, including Dot scratch reuse.
+- `native/cuda/kernels/` implements device address traversal and numerical work.
+
+Both backends use `native/layout/descriptor.{h,cc}` for descriptor decoding and
+semantic validation, without CPU axis sorting or merging. CPU preparation applies
+its own record optimization before storing immutable `PreparedState`; CUDA keeps
+per-call host preparation and derives its schedules from the original metadata.
+Reduction semantic records canonicalize ignored reduction-axis output strides,
+so they are not a replacement for the original protocol's axis flags and cursors.
+Buffer-byte and alias checks in `native/ffi/buffers.h` remain invocation-boundary
+checks, separate from static descriptor semantics.
+
+CUDA executors use the XLA stream, independently of CPU executors and their
+thread pool. No persistent CUDA prepared state or device cache is introduced.
+Neither semantic records nor CPU-optimized records authorize reinterpreting an
+original device descriptor, especially for Reduction axis roles.
+
 After validating host metadata and buffer relationships, Copy, Accumulation and Reduction zero output; Update
 copies base to output when they differ. Copy/Update/Accumulation/Reduction launch one generic kernel per nonempty record; Dot
 launches two stages per nonempty record, in order on the XLA-provided stream. Update, Accumulation and Reduction

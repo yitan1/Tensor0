@@ -4,9 +4,11 @@
 #include <cstdint>
 #include <stdexcept>
 #include <type_traits>
-#include "../ffi/prepared.h"
+#include "xla/ffi/api/ffi.h"
 
 namespace tensor0::stride::cuda::arithmetic {
+
+namespace ffi = xla::ffi;
 
 // Device storage has the same two-component representation as FFI complex values.
 template <typename Real> struct Complex { Real real, imag; };

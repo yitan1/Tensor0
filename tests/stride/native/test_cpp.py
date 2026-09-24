@@ -60,6 +60,25 @@ def native_build(pytestconfig):
     return compiler, native, output, flags, objects, dependencies, identity
 
 
+def test_semantic_descriptor_standalone(tmp_path):
+    compiler = shutil.which(os.environ.get("CXX", "c++"))
+    if compiler is None:
+        pytest.skip("a C++20 compiler is required")
+    native = REPO_ROOT / "crates/tensor0-py/native"
+    executable = tmp_path / "semantic_descriptor_test"
+    # No vendor include path or CPU execution/FFI objects: the semantic decoder
+    # must remain usable independently of the native CPU runtime.
+    subprocess.run([
+        compiler, "-std=c++20", "-O1", "-Wall", "-Wextra", "-Wpedantic", "-Werror",
+        "-fsanitize=undefined", "-fno-sanitize-recover=undefined", "-I", str(native),
+        str(SOURCES / "semantic_descriptor_test.cc"),
+        str(native / "layout/descriptor.cc"), str(native / "layout/record.cc"),
+        "-o", str(executable),
+    ], check=True, capture_output=True, text=True, timeout=60)
+    completed = subprocess.run([str(executable)], capture_output=True, text=True, timeout=120)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+
+
 @pytest.mark.parametrize("source", sorted(path.name for path in SOURCES.glob("*_test.cc")))
 def test_cpp_contract(source, native_build):
     native, output = native_build[1:3]

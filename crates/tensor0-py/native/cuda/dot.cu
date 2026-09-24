@@ -1,5 +1,8 @@
+#include "execute/dot.cuh"
 #include "arithmetic.cuh"
 #include "../ffi/errors.h"
+#include "../ffi/buffers.h"
+#include "../layout/descriptor.h"
 
 #include <algorithm>
 #include <string>
@@ -7,80 +10,6 @@
 
 namespace ffi = xla::ffi;
 namespace tensor0::stride::cuda::dot {
-using namespace arithmetic;
-constexpr uint64_t kChunk = 1024;
-constexpr unsigned kThreads = 256;
-
-template <typename T> __device__ T Conjugate(T value) { return value; }
-template <typename R> __device__ Complex<R> Conjugate(Complex<R> value) {
-  return {value.real, -value.imag};
-}
-
-template <typename T>
-__device__ T Reduce(T value, T* shared) {
-  shared[threadIdx.x] = value;
-  __syncthreads();
-  for (unsigned width = kThreads / 2; width != 0; width /= 2) {
-    if (threadIdx.x < width) shared[threadIdx.x] = Sum(shared[threadIdx.x], shared[threadIdx.x + width]);
-    __syncthreads();
-  }
-  return shared[0];
-}
-
-template <typename T>
-__global__ void Partials(const T* left, const T* right, T* scratch,
-                         const int64_t* record, uint64_t count, uint64_t chunks,
-                         uint64_t capacity, uint64_t total, uint64_t left_size,
-                         uint64_t right_size, bool conjugate) {
-  __shared__ T shared[kThreads];
-  for (uint64_t task = blockIdx.x; task < total;) {
-    const uint64_t batch = task / chunks, chunk = task % chunks;
-    const uint64_t begin = chunk * kChunk;
-    const uint64_t length = min(kChunk, count - begin);
-    T value{};
-    for (uint64_t local = threadIdx.x; local < length; local += kThreads) {
-      uint64_t logical = begin + local;
-      int64_t lhs = record[1], rhs = record[2];
-      const int64_t rank = record[0];
-      for (int64_t axis = rank; axis-- > 0;) {
-        const auto coordinate = static_cast<int64_t>(logical % record[3 + axis]);
-        logical /= record[3 + axis];
-        lhs += coordinate * record[3 + rank + axis];
-        rhs += coordinate * record[3 + 2 * rank + axis];
-      }
-      const T a = left[batch * left_size + lhs];
-      value = Sum(value, Product(conjugate ? Conjugate(a) : a, right[batch * right_size + rhs]));
-    }
-    const T sum = Reduce(value, shared);
-    if (threadIdx.x == 0) scratch[batch * capacity + chunk] = sum;
-    __syncthreads();
-    if (total - task <= gridDim.x) break;
-    task += gridDim.x;
-  }
-}
-
-template <typename T>
-__global__ void Finish(const T* scratch, T* output, uint64_t chunks,
-                       uint64_t capacity, uint64_t batches) {
-  __shared__ T shared[kThreads];
-  for (uint64_t batch = blockIdx.x; batch < batches;) {
-    T value{};
-    for (uint64_t i = threadIdx.x; i < chunks;) {
-      value = Sum(value, scratch[batch * capacity + i]);
-      if (chunks - i <= kThreads) break;
-      i += kThreads;
-    }
-    const T sum = Reduce(value, shared);
-    if (threadIdx.x == 0) output[batch] = Sum(output[batch], sum);
-    __syncthreads();
-    if (batches - batch <= gridDim.x) break;
-    batch += gridDim.x;
-  }
-}
-
-void Check(cudaError_t status) {
-  if (status != cudaSuccess) throw std::runtime_error(std::string("CUDA dot: ") + cudaGetErrorString(status));
-}
 
 template <ffi::DataType Dtype, typename T>
 ffi::Error Dot(ffi::Span<const int64_t> words, int64_t conjugate,
@@ -128,24 +57,10 @@ ffi::Error Dot(ffi::Span<const int64_t> words, int64_t conjugate,
       ValidateDisjointBuffers(descriptor.typed_data(), descriptor_bytes, target.first, target.second);
     }
     ValidateDisjointBuffers(output, output_bytes, temporary, scratch_bytes);
-    // All metadata, sizes and aliases are validated before either result is written.
-    if (output_bytes != 0) Check(cudaMemsetAsync(output, 0, output_bytes, stream));
-    std::size_t cursor = 4;
-    for (std::size_t i = 0; i < counts.size(); ++i) {
-      const auto count = counts[i];
-      if (count != 0 && batches != 0) {
-        const uint64_t chunks = (count - 1) / kChunk + 1;
-        const uint64_t tasks = batches * chunks;
-        Partials<T><<<static_cast<unsigned>(std::min<uint64_t>(tasks, 65535)), kThreads, 0, stream>>>(
-            reinterpret_cast<const T*>(left.untyped_data()), reinterpret_cast<const T*>(right.untyped_data()),
-            temporary, descriptor.typed_data() + cursor, count, chunks, capacity, tasks,
-            decoded.source_size, decoded.output_size, conjugate != 0);
-        Check(cudaGetLastError());
-        Finish<T><<<static_cast<unsigned>(std::min<uint64_t>(batches, 65535)), kThreads, 0, stream>>>(temporary, output, chunks, capacity, batches);
-        Check(cudaGetLastError());
-      }
-      cursor += 3 + 3 * decoded.records[i].shape.size();
-    }
+    Execute<T>(reinterpret_cast<const T*>(left.untyped_data()),
+        reinterpret_cast<const T*>(right.untyped_data()), output, temporary,
+        capacity, conjugate != 0, decoded, counts, batches, output_bytes,
+        descriptor.typed_data(), stream);
   });
 }
 }  // namespace tensor0::stride::cuda::dot

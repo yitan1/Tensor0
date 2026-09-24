@@ -11,10 +11,11 @@ use std::time::Instant;
 const VENDORED_JAX_VERSION: &str = "0.10.1";
 const VENDORED_JAXLIB_VERSION: &str = "0.10.1";
 const FFI_HEADERS: [&str; 3] = ["api.h", "c_api.h", "ffi.h"];
-const STRIDE_NATIVE_SOURCES: [&str; 9] = [
+const STRIDE_NATIVE_SOURCES: [&str; 10] = [
     "native/execute/scheduling.cc",
     "native/ffi/prepared.cc",
     "native/layout/blocking.cc",
+    "native/layout/descriptor.cc",
     "native/layout/record.cc",
     "native/layout/traversal.cc",
     "native/ffi/copy.cc",

@@ -1,5 +1,8 @@
+#include "execute/reduction.cuh"
 #include "arithmetic.cuh"
 #include "../ffi/errors.h"
+#include "../ffi/buffers.h"
+#include "../layout/descriptor.h"
 
 #include <algorithm>
 #include <string>
@@ -8,64 +11,6 @@
 namespace ffi = xla::ffi;
 
 namespace tensor0::stride::cuda::reduction {
-using namespace arithmetic;
-
-// Device metadata is the original unsigned reduction protocol, not the
-// optimized host execution record. Axis flags, not output strides, define fibers.
-__device__ void Address(const uint64_t* record, uint64_t logical, bool fiber,
-                        int64_t& source, int64_t& destination) {
-  const uint64_t rank = record[0];
-  for (uint64_t axis = rank; axis-- > 0;) {
-    if ((record[3 + 4 * rank + axis] != 0) != fiber) continue;
-    const uint64_t coordinate = logical % record[3 + axis];
-    logical /= record[3 + axis];
-    const auto source_stride = static_cast<int64_t>(record[3 + rank + axis]);
-    const auto destination_stride = static_cast<int64_t>(record[3 + 3 * rank + axis]);
-    // Zero strides allow full uint64 extents without signed coordinate casts.
-    if (source_stride != 0) source += static_cast<int64_t>(coordinate) * source_stride;
-    if (!fiber && destination_stride != 0) destination += static_cast<int64_t>(coordinate) * destination_stride;
-  }
-}
-
-template <typename T, typename Real, typename Raw>
-__global__ void AccumulateRecord(const T* source, T* output, const Raw* coefficient,
-                                 uint64_t coefficient_count, const uint64_t* record,
-                                 uint64_t owners, uint64_t contributions, uint64_t total,
-                                 uint64_t source_size, uint64_t output_size) {
-  const uint64_t step = static_cast<uint64_t>(blockDim.x) * gridDim.x;
-  for (uint64_t index = static_cast<uint64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-       index < total;) {
-    const uint64_t batch = index / owners;
-    const auto factor = coefficient == nullptr ? Raw{1} : ReadCoefficient<Real>(coefficient, coefficient_count, batch);
-    if (!Zero(factor)) {
-      int64_t map_source = record[1], map_destination = record[2];
-      Address(record, index % owners, false, map_source, map_destination);
-      const auto* input = source + batch * source_size;
-      auto* result = output + batch * output_size;
-      // A fiber starts at the existing output, preserving cross-record grouping.
-      T value = result[map_destination];
-      for (uint64_t logical = 0; logical < contributions; ++logical) {
-        int64_t src = map_source, dst = map_destination;
-        Address(record, logical, true, src, dst);
-        const T term = One(factor) ? input[src] : Product(factor, input[src]);
-        value = Sum(value, term);
-      }
-      result[map_destination] = value;
-    }
-    // Unlike output storage, contribution counts can approach uint64's limit.
-    if (total - index <= step) break;
-    index += step;
-  }
-}
-
-struct Schedule {
-  uint64_t owners, contributions;
-  std::size_t cursor;
-};
-
-void Check(cudaError_t status) {
-  if (status != cudaSuccess) throw std::runtime_error(std::string("CUDA reduction: ") + cudaGetErrorString(status));
-}
 
 uint64_t CoefficientCount(ffi::AnyBuffer buffer, uint64_t batches) {
   const auto dimensions = buffer.dimensions();
@@ -97,7 +42,7 @@ ffi::Error Reduction(ffi::Span<const int64_t> words,
     }
     // Reconstruct protocol bytes explicitly: the i64 attribute is a bitcast,
     // not a signed-size representation. DecodeReductionLayout validates the
-    // stronger reduction contract before optimizing its private host records.
+    // stronger reduction contract without CPU execution optimization.
     std::vector<char> bytes;
     bytes.reserve(words.size() * sizeof(uint64_t));
     for (auto word : words) {
@@ -122,8 +67,7 @@ ffi::Error Reduction(ffi::Span<const int64_t> words,
     ValidateDisjointBuffers(input, BufferBytes(source_elements, sizeof(T)), output, output_bytes);
     ValidateDisjointBuffers(descriptor.typed_data(), BufferBytes(words.size(), sizeof(int64_t)), output, output_bytes);
     if (coefficient_records.size() != coefficients.size()) throw std::invalid_argument("CUDA reduction coefficient record count does not match operands");
-    std::vector<ffi::AnyBuffer> buffers;
-    std::vector<uint64_t> coefficient_counts;
+    std::vector<BoundCoefficient> buffers;
     std::vector<std::size_t> parameters(decoded.records.size(), coefficients.size());
     int64_t previous = -1;
     for (std::size_t i = 0; i < coefficients.size(); ++i) {
@@ -140,8 +84,7 @@ ffi::Error Reduction(ffi::Span<const int64_t> words,
         ValidateDisjointBuffers(buffer->untyped_data(), BufferBytes(count, sizeof(Raw)), output, output_bytes);
       });
       parameters[record] = i;
-      buffers.push_back(*buffer);
-      coefficient_counts.push_back(count);
+      buffers.push_back({buffer->untyped_data(), buffer->element_type(), count});
     }
     std::vector<Schedule> schedules;
     std::size_t cursor = 4;
@@ -162,29 +105,8 @@ ffi::Error Reduction(ffi::Span<const int64_t> words,
       schedules.push_back({owners, contributions, cursor});
       cursor += 3 + 5 * rank;
     }
-    // Bounds are validated for original axes. Optimization is never used to
-    // interpret original device metadata; record indices stay semantic indices.
-    // All validation, including empty-record coefficients, precedes writes.
-    if (output_bytes != 0) Check(cudaMemsetAsync(output, 0, output_bytes, stream));
-    for (std::size_t i = 0; i < decoded.records.size(); ++i) {
-      const auto schedule = schedules[i];
-      const auto total = batches * schedule.owners;
-      if (total != 0 && schedule.contributions != 0) {
-        const auto blocks = static_cast<unsigned>(std::min<uint64_t>((total - 1) / 256 + 1, 65535));
-        const auto parameter = parameters[i];
-        auto launch = [&](auto type) {
-          using Raw = typename decltype(type)::type;
-          const Raw* coefficient = parameter == buffers.size() ? nullptr : reinterpret_cast<const Raw*>(buffers[parameter].untyped_data());
-          const uint64_t count = parameter == buffers.size() ? 1 : coefficient_counts[parameter];
-          AccumulateRecord<T, Real, Raw><<<blocks, 256, 0, stream>>>(input, output, coefficient, count,
-              reinterpret_cast<const uint64_t*>(descriptor.typed_data()) + schedule.cursor, schedule.owners, schedule.contributions, total,
-              decoded.source_size, decoded.output_size);
-          Check(cudaGetLastError());
-        };
-        if (parameter == buffers.size()) launch(std::type_identity<Real>{});
-        else VisitCoefficient<T, Real>(buffers[parameter].element_type(), launch);
-      }
-    }
+    Execute<T, Real>(input, output, decoded.source_size, decoded.output_size, schedules, buffers,
+                     parameters, batches, output_bytes, descriptor.typed_data(), stream);
   });
 }
 }  // namespace tensor0::stride::cuda::reduction

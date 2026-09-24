@@ -1,7 +1,9 @@
+#include "execute/copy.cuh"
 #include <cuda_runtime.h>
 
 #include "../ffi/errors.h"
-#include "../ffi/prepared.h"
+#include "../ffi/buffers.h"
+#include "../layout/descriptor.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -13,38 +15,6 @@
 namespace ffi = xla::ffi;
 
 namespace tensor0::stride::cuda {
-
-// Copy storage bits, including complex components, without arithmetic conversions.
-template <int Bytes> struct Storage { unsigned char bytes[Bytes]; };
-
-template <int Bytes>
-__global__ void CopyRecord(const Storage<Bytes>* source, Storage<Bytes>* output,
-                          const int64_t* record, uint64_t count,
-                          uint64_t total, uint64_t source_size,
-                          uint64_t output_size) {
-  const uint64_t step = static_cast<uint64_t>(blockDim.x) * gridDim.x;
-  for (uint64_t index = static_cast<uint64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-       index < total; index += step) {
-    const uint64_t batch = index / count;
-    uint64_t logical = index % count;
-    const int64_t rank = record[0];
-    int64_t source_address = record[1];
-    int64_t output_address = record[2];
-    for (int64_t axis = rank; axis-- > 0;) {
-      const auto coordinate = static_cast<int64_t>(logical % record[3 + axis]);
-      logical /= record[3 + axis];
-      source_address += coordinate * record[3 + rank + axis];
-      output_address += coordinate * record[3 + 2 * rank + axis];
-    }
-    output[batch * output_size + output_address] = source[batch * source_size + source_address];
-  }
-}
-
-void Check(cudaError_t status) {
-  if (status != cudaSuccess) {
-    throw std::runtime_error(std::string("CUDA copy: ") + cudaGetErrorString(status));
-  }
-}
 
 template <ffi::DataType Dtype, int Bytes>
 ffi::Error Copy(ffi::Span<const int64_t> words, ffi::AnyBuffer source,
@@ -102,19 +72,8 @@ ffi::Error Copy(ffi::Span<const int64_t> words, ffi::AnyBuffer source,
       }
       counts.push_back(count);
     }
-    if (output_bytes != 0) Check(cudaMemsetAsync(output, 0, output_bytes, stream));
-    std::size_t cursor = 4;
-    for (std::size_t i = 0; i < decoded.records.size(); ++i) {
-      const auto count = counts[i];
-      const auto total = batches * count;
-      if (total != 0) {
-        const auto blocks = static_cast<unsigned>(std::min<uint64_t>((total - 1) / 256 + 1, 65535));
-        CopyRecord<Bytes><<<blocks, 256, 0, stream>>>(input, output,
-            descriptor.typed_data() + cursor, count, total, decoded.source_size, decoded.output_size);
-        Check(cudaGetLastError());
-      }
-      cursor += 3 + 3 * decoded.records[i].shape.size();
-    }
+    ExecuteCopy<Bytes>(input, output, decoded, counts, batches, output_bytes,
+                       descriptor.typed_data(), stream);
   });
 }
 

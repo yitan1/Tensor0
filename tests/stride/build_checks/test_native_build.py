@@ -90,7 +90,8 @@ if os.environ.get("MOCK_CONCURRENCY"):
     update(-1)
 # This mock conservatively shares headers across objects; real depfiles are
 # exercised separately with actual compiler invocations.
-deps = [source] + [str(p) for p in root.rglob("*") if p.suffix in (".h",)]
+deps = [source] + [str(p) for p in root.rglob("*")
+                   if p.suffix == ".h" or (source.endswith(".cu") and p.suffix == ".cuh")]
 def escape(path):
     return path.replace("$", "$$").replace(" ", "\\ ").replace("#", "\\#")
 pathlib.Path(sys.argv[sys.argv.index("-MF") + 1]).write_text(
@@ -386,7 +387,7 @@ def test_real_cargo_jobserver_and_noop(build):
     assert "with up to 3 workers" in result.stderr
     assert json.loads(state.read_text()) == [0, 3]
     objects = list((manifest / "target").rglob("native_*.o"))
-    assert len(objects) == 9
+    assert len(objects) == 10
     before = {path: path.stat().st_mtime_ns for path in objects}
     result = subprocess.run(command, env=env, capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stderr
@@ -394,7 +395,7 @@ def test_real_cargo_jobserver_and_noop(build):
     assert {path: path.stat().st_mtime_ns for path in objects} == before
 
 
-@pytest.mark.parametrize("jobs,slots,expected", [(3, 8, 3), (20, 19, 9)])
+@pytest.mark.parametrize("jobs,slots,expected", [(3, 8, 3), (20, 19, 10)])
 def test_job_count_and_source_count_bound_token_demand(build, jobs, slots, expected):
     run, _, output = build
     state = output / "bounded-concurrency.json"
@@ -463,6 +464,29 @@ def test_cuda_compile_cache_and_linkage(build):
     assert "native_cuda_copy.o" not in result.stdout
     assert "native_cuda_update.o" not in result.stdout
     assert "cudart" not in result.stdout
+
+
+@pytest.mark.parametrize("layer", ["execute", "kernels"])
+def test_cuda_cache_tracks_nested_headers(build, layer):
+    run, manifest, output = build
+    header = manifest / f"native/cuda/{layer}/copy.cuh"
+    header.parent.mkdir(parents=True, exist_ok=True)
+    header.write_text("original header")
+    toolkit = output.parent / "cuda"
+    (toolkit / "lib").mkdir(parents=True)
+    (toolkit / "lib/libcudart_static.a").touch()
+    options = dict(TENSOR0_CUDA="1", NVCC=str(output.parent / "compiler"), CUDA_HOME=str(toolkit))
+    result, _ = run(**options)
+    assert result.returncode == 0, result.stderr
+    assert f"cargo:rerun-if-changed={header}" in result.stdout
+    assert run(**options)[1] == []
+    header.write_text("modified header")
+    result, commands = run(**options)
+    assert result.returncode == 0, result.stderr
+    # The mock conservatively shares CUDA headers across all five CUDA units.
+    assert len(commands) == 5
+    assert all(command[command.index("-c") + 1].endswith(".cu") for command in commands)
+    assert run(**options)[1] == []
 
 
 def test_cuda_compile_uses_implicit_job_slot_after_cpu_workers(build):
@@ -578,7 +602,7 @@ else:
     assert result.returncode == 0, result.stderr
     assert subprocess.check_output([str(executable)], text=True).strip() == "1"
     objects = list((manifest / "target").rglob("native_*.o"))
-    assert len(objects) == 14
+    assert len(objects) == 15
     before = {path: path.stat().st_mtime_ns for path in objects}
     result = subprocess.run(command, env=env, capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stderr

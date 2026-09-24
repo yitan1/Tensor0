@@ -128,6 +128,13 @@ void Rejections() {
     h.words.insert(h.words.end(), {1, 0, 8, 1, 1, 1, 1, 0});
     h.Upload(); h.Reject("address exceeds");
   }
+  for (bool trailing : {false, true}) {
+    // Original-axis prefix overflow must precede even a trailing-word error.
+    Harness h;
+    h.words = {1,8,8,1,3,0,0,-1,2,0,0,0,0,1,2,1,0,1,0,1,0,1};
+    if (trailing) h.words.push_back(0);
+    h.Upload(); h.Reject("layout element count overflows");
+  }
   for (bool multiply : {false, true}) {
     Harness h;
     h.shape = {multiply ? 3 : 1, multiply ? std::numeric_limits<int64_t>::max() : std::numeric_limits<ptrdiff_t>::max() / 4 + 1};

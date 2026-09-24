@@ -30,9 +30,8 @@ def reduction_contract_binary(tmp_path_factory):
         "-arch=" + os.environ.get("TENSOR0_CUDA_ARCH", "sm_80"),
         "-I", str(native), "-I", jax.ffi.include_dir(),
         str(Path(__file__).with_name("reduction_contract.cu")),
-        str(native / "ffi" / "prepared.cc"),
+        str(native / "layout" / "descriptor.cc"),
         str(native / "layout" / "record.cc"),
-        str(native / "layout" / "traversal.cc"),
         "-o", str(executable),
     ]
     compiled = subprocess.run(command, text=True, capture_output=True, timeout=180)

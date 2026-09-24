@@ -88,9 +88,26 @@ void CheckExecution() {
   assert(decoded.records.size() == inputs.size());
   for (std::size_t index = 0; index < inputs.size(); ++index) {
     auto expected = Build(inputs[index], 7, 5);
-    layout::OptimizeRecordForExecution(&expected);
     const auto& record = decoded.records[index];
     assert(record.semantic_index == index);
+    assert(record.shape == expected.shape);
+    assert(record.source_offset == expected.source_offset);
+    assert(record.destination_offset == expected.destination_offset);
+    assert(record.source_strides == expected.source_strides);
+    assert(record.destination_strides == expected.destination_strides);
+  }
+  auto state = InstantiateReduction(
+      ffi::Span<const uint8_t>(reinterpret_cast<const uint8_t*>(bytes.data()), bytes.size()), {});
+  assert(state.has_value());
+  const auto& prepared = *state;
+  assert(prepared->source_size == decoded.source_size);
+  assert(prepared->output_size == decoded.output_size);
+  assert(prepared->records.size() == inputs.size());
+  for (std::size_t index = 0; index < inputs.size(); ++index) {
+    auto expected = Build(inputs[index], 7, 5);
+    layout::OptimizeRecordForExecution(&expected);
+    const auto& record = prepared->records[index];
+    assert(record.semantic_index == expected.semantic_index);
     assert(record.shape == expected.shape);
     assert(record.source_offset == expected.source_offset);
     assert(record.destination_offset == expected.destination_offset);
@@ -105,8 +122,8 @@ void CheckExecution() {
     {
       testing::ThreadPool pool(1);
       assert(!testing::CompletedError(ExecuteReduction<scalar::S32, scalar::S32>(
-          pool.get(), decoded.records, source.data(), result.data() + 1, decoded.source_size,
-          decoded.output_size, 2,
+          pool.get(), prepared->records, source.data(), result.data() + 1, prepared->source_size,
+          prepared->output_size, 2,
           [&](std::size_t index, uint64_t, auto execute) {
             bound.push_back(index);
             execute(expression::Scale<scalar::S32>{factor});
@@ -165,12 +182,33 @@ void CheckBoundary() {
       std::vector<int64_t>(12, INT64_MAX), std::vector<bool>(12, true)};
   const auto high_rank_bytes = Bytes(Encode({high_rank}, 1, 1));
   assert(descriptor::DecodeReductionLayout(high_rank_bytes.data(), high_rank_bytes.size())
-             .records[0].shape.empty());
+             .records[0].shape == high_rank.shape);
   const ReductionInput overflow{0, 0, 0, {UINT64_MAX, 2}, {0, 0}, {1, 1}, {1, 1}, {true, true}};
   ExpectInvalid(Bytes(Encode({overflow}, 1, 1)));
 }
 
+void CheckMapPreparation() {
+  const std::vector<int64_t> words{
+      1, 6, 6, 1, 3, 0, 0,
+      2, 1, 3, 3, INT64_MIN, 1, 3, INT64_MAX, 1};
+  const auto decoded = descriptor::DecodeLayout(words.data(), words.size());
+  assert((decoded.records[0].shape == std::vector<uint64_t>{2, 1, 3}));
+  auto expected = decoded.records[0];
+  layout::OptimizeRecordForExecution(&expected);
+  assert(expected.shape != decoded.records[0].shape);
+  auto state = InstantiatePrepared(ffi::Span<const int64_t>(words.data(), words.size()));
+  assert(state.has_value());
+  const auto& record = (*state)->records[0];
+  assert(record.semantic_index == expected.semantic_index);
+  assert(record.shape == expected.shape);
+  assert(record.source_offset == expected.source_offset);
+  assert(record.destination_offset == expected.destination_offset);
+  assert(record.source_strides == expected.source_strides);
+  assert(record.destination_strides == expected.destination_strides);
+}
+
 int main() {
+  CheckMapPreparation();
   CheckExecution();
   CheckBoundary();
 }
