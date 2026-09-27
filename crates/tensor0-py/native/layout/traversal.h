@@ -8,13 +8,6 @@
 
 namespace tensor0::stride::layout {
 
-std::vector<uint64_t> GeneratedIndexOrder(
-    const std::vector<int64_t>& strides);
-
-std::vector<std::size_t> ComputeLocalityOrder(const Record& record);
-
-void SortRecordDimensions(Record* record);
-
 void OptimizeRecordForExecution(Record* record);
 
 bool IsCompactSameMapping(const Record& record);

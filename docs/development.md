@@ -86,6 +86,21 @@ cache entry. Build-script tests compile a small Cargo harness offline; run
 `cargo fetch` first if the build dependencies are not already cached. Compiler paths and discovered dependencies are watched by Cargo.
 Use a release build for performance measurements.
 
+Both CPU instantiate and CUDA lowering use the same device-independent native
+layout preparation: full semantic validation, stable locality sorting, compatible
+axis fusion, then re-sorting and removal of nonempty singleton axes. This promotes
+the original CPU sorting/fusion policy to the shared layer rather than limiting CPU
+to CUDA's former order-preserving adjacent fusion. Copy/Update use injective map
+validation; Dot permits repeated read addresses, whereas Accumulation requires
+provably injective output owners after zero-stride fiber axes are separated.
+Reduction moves explicit axis roles with every permutation, fuses only like
+roles, then projects its address
+records for CPU execution. Empty records retain their original axis representation.
+Preparation repeats after a rank reduction until the canonical layout is stable:
+removing singleton/fused axes can change locality ranks. CPU and CUDA both consume
+this canonical layout; CPU execution may still choose different row/block/partial-
+sum schedules, so shared metadata does not imply bitwise-identical arithmetic.
+
 ## Optional CUDA stride build
 
 Linux builds are CPU-only by default and do not discover or link CUDA. To enable
@@ -129,9 +144,15 @@ returned their jobserver tokens, using the build script's implicit Cargo slot.
 It does not start a separate worker pool.
 
 The private `_stride_cuda_available()` export reports build-time support, not
-whether a usable GPU is present. `_stride_cuda_registration()` returns only the
-twenty execution-handler capsules, or an empty dictionary in CPU-only builds;
-CUDA has no instantiate/state registration. This initial backend supports
+whether a usable GPU is present. `_stride_cuda_registration()` returns twenty
+execution-handler capsules plus Copy, Update, Accumulation, Dot and Reduction instantiate handlers
+and their independent state type ids/type infos (35 entries), or an empty dictionary
+in CPU-only builds. These five operations own immutable host metadata per executable;
+Reduction owns explicit-role map/fiber schedules, descriptor cursors and sparse coefficient mapping. `_stride_cuda_copy_prepared_stats()`,
+`_stride_cuda_update_prepared_stats()`, `_stride_cuda_accumulation_prepared_stats()`,
+`_stride_cuda_dot_prepared_stats()` and `_stride_cuda_reduction_prepared_stats()` expose separate creation/destruction counts for lifecycle tests, or `None` without
+CUDA. No state owns device resources.
+This backend supports
 same-type Copy, Update, Accumulation, Dot and Reduction, not dtype
 conversion or complete reverse-mode differentiation. See [CUDA support](cuda.md)
 for the supported coefficient types and limited AD paths.
@@ -344,8 +365,11 @@ Multiple-output reductions can instead partition independent output coordinates
 for all supported dtypes, without splitting any output's sum. Records with the
 same output map stay in original order within a task. Distinct maps require
 disjoint address bounds to use this optimization; otherwise execution remains
-serial. This conservative eligibility check does not reject valid interleaved
-layouts or change the address-accumulation contract.
+serial. This conservative CPU scheduling eligibility check does not reject otherwise
+valid interleaved layouts. Independently, the common Accumulation preparation
+contract accepts only output owner maps proven injective; zero-stride fibers and
+ordered overlap across records remain legal. Reverse AD for nonzero-stride
+repeated source addresses is unsupported, while forward reads remain legal.
 Arithmetic and buffer alias contracts are unchanged. These scheduled operations
 complete through an FFI Future, including error completion.
 

@@ -64,8 +64,11 @@ buffer relationships from validation.
 ### Accumulation
 
 Accumulation clears independent output to arithmetic positive zero, then adds
-scaled source contributions in original record order. Both within-record and
-cross-record destination overlap are legal, including nonzero-stride collisions.
+scaled source contributions in original record order. Zero-stride fibers may
+have multiple contributions per output, and cross-record overlap stays ordered.
+Within one record, the nonzero destination-stride map axes must pass the native
+sufficient injectivity proof; otherwise preparation rejects the layout even if
+its addresses happen to be unique. Nonzero-stride owner collisions are unsupported.
 Holes stay zero. Optional coefficients address original record indices, including
 empty records, and use the same type matrix and scalar/shared/batched forms as
 Update. Zero skips source contribution arithmetic; one skips multiplication.
@@ -76,15 +79,17 @@ Scheduling follows the CPU's safety principle without executing on CPU:
 
 - Proven injective destination maps have parallel output owners.
 - Zero destination-stride axes are reduced by one owner per remaining map
-  coordinate if that map is proven injective. Each owner starts from existing
-  output and traverses its fiber in fixed logical order.
-- Other affine maps, including injective maps not established by the sufficient
-  stride-span proof, use one GPU thread per batch and sequential record traversal.
+  coordinate if that map is proven injective. Short or resource-limited fibers
+  are traversed by one owner thread in logical order; selected long fibers use
+  multiple threads per owner and a tree reduction.
+- Layouts whose map-axis injectivity cannot be proven are rejected before
+  launch, even with zero coefficients or an empty batch.
 
-Records launch in order on the XLA stream. No atomics, sorting, per-element index
-arrays or extra device allocation are used. The general branch and long fibers
-can be slow, especially for a single large batch; no performance claim is made.
-Fixed traversal does not promise CPU bitwise equality or reproducibility across
+Records launch in order on the XLA stream. Parallel fibers use an XLA-owned
+internal partial buffer, not a native per-call allocation; each owner combines
+its partials with the existing output exactly once. No atomics or per-element
+index arrays are used. Parallel summation can change floating-point grouping;
+neither strategy promises CPU bitwise equality or reproducibility across
 architectures. Source, descriptors and coefficients must be disjoint from output;
 zero coefficients and empty selections do not exempt invalid metadata or aliases.
 
@@ -93,17 +98,21 @@ zero coefficients and empty selections do not exempt invalid metadata or aliases
 Dot supports same-dtype left/right/result F32/F64/C64/C128, with one scalar per
 batch on GPU. `dotu` multiplies directly; `dotc` conjugates only the left input.
 All legal affine read layouts, including repeated addresses, are supported.
-Left and right may alias each other; neither may overlap result or scratch.
+Left and right may alias each other; neither may overlap the result.
 Empty selections return arithmetic positive zero.
 
-Each record uses fixed 1024-contribution chunks and 256-thread tree reductions,
-followed by a second reduction stage adding its result in record order. An
-internal second FFI result provides XLA-owned temporary partials, sized to the
-largest record and reused in stream order. No atomics, native per-call device
-allocation, synchronization or per-element address table is used. Real products
-and additions are separate RN operations; complex products retain the explicit
-FMA expression. Reduction order differs from CPU; finite results are compared
-with dtype-appropriate tolerances, not bitwise equivalence.
+Dot uses one output owner per batch. Single-contribution records use the
+common sequential owner/fiber kernel. Longer fibers use 1024-contribution
+chunks with a 256-thread tree per chunk, followed by a second kernel combining
+chunk partials with the previous output once. Records complete in order on the
+XLA stream. The internal partial buffer is an XLA-owned second result; it is
+not returned to the caller. Both strategies share the packed owner/fiber
+address representation and static Dot calculation policy with the common
+map/reduce kernel used by the other operations. No atomics, native per-call
+device allocation, synchronization or per-element address table is used. Real
+products and additions are separate RN operations; complex products retain
+the explicit FMA expression. Parallel reduction changes the sum grouping from
+sequential traversal and does not guarantee bitwise equality with CPU.
 
 ### Reduction
 
@@ -115,12 +124,16 @@ ignored. Output bounds are validated even for empty fibers. Records may overlap
 one another and execute in original order; optional coefficients retain original
 record indices, including empty records.
 
-Independent output is zero-initialized, including holes. One GPU thread owns
-each output map coordinate and traverses its fiber in fixed logical order, starting
-from the existing output. Every contribution is multiplied before addition, with
-the same zero/one and real/full-complex branches as Accumulation. There are no
-atomics or temporary partials. Long fibers can be slow; this is not a performance
-claim. Unsigned 64-bit descriptor extents retain their full protocol range even
+Independent output is zero-initialized, including holes. Each output map
+coordinate has one owner. Short or resource-limited fibers run sequentially;
+selected long fibers use shared chunk partials and an XLA-owned internal
+buffer. For Accumulation and Reduction, parallel execution requires at least
+1024 contributions per owner and at most 2^20 partial slots per batch
+(`owners * ceil(contributions / 1024)`). This static threshold is based on
+limited A100 measurements, not a universal performance guarantee. A finish task combines each owner's existing output exactly once.
+Every contribution is multiplied before addition, with the same zero/one and
+real/full-complex branches as Accumulation. No atomics are used, and changed
+sum grouping does not imply bitwise equality. Unsigned 64-bit descriptor extents retain their full protocol range even
 when JAX x64 is disabled. Invalid role/shape/map/count/address/alias metadata is
 rejected before output writes.
 
@@ -128,10 +141,13 @@ rejected before output writes.
 
 All five native stride primitives have CUDA paths in the limited dtype scope above.
 Existing JAX linear algebra is unchanged.
-At the **stride primitive** layer, same-dtype Dot JVP/reverse, Copy reverse (including repeated source addresses),
+At the **stride primitive** layer, same-dtype Dot JVP/reverse, Copy reverse,
 fixed-coefficient Update input reverse, Reduction source reverse and matching-type
-Reduction JVP, and Update coefficient JVP use the existing
-AD rules. Update/Accumulation/Reduction coefficient VJPs are supported only when the
+Reduction JVP, and Update coefficient JVP use the existing AD rules. Input reverse
+AD requires the differentiated view's nonzero-stride map axes to pass the
+injectivity check; zero-stride broadcast repetition remains supported. Forward
+repeated reads remain legal, but nonzero-stride overlapping input reverse AD is
+unsupported. Update/Accumulation/Reduction coefficient VJPs are supported only when the
 resulting Dot operands and result all have the same supported dtype. In
 particular **real coefficients with complex storage still fail in coefficient
 VJP**, because that requests complex Dot inputs and a real result. Wider/mixed
@@ -225,43 +241,104 @@ partitioning. Installing GPU JAX does not enable native CUDA execution in a
 CPU-only Tensor0 extension; rebuild with CUDA explicitly enabled. JAX and JAXLIB
 must match the pinned native FFI header versions (0.10.1).
 
-CUDA lowering emits compact i64 metadata as an XLA-owned constant operand, even
-when JAX x64 is disabled. The same encoding is a host attribute for validation. Reduction bitcasts its
-little-endian unsigned-word byte protocol to i64 without changing its bits.
+CUDA lowering calls native semantic preparation before emitting compact i64
+metadata. All five operations use the validated semantic result as the host
+attribute and a mechanically packed owner/fiber view of those same prepared
+records as the XLA-owned device constant. Reduction retains explicit roles in its host protocol;
+its unsigned extents and signed strides retain their i64 bit patterns in the
+device view. Constants remain i64 even when JAX x64 is disabled.
 There is no per-element index table or native device cache. The internal FFI ABI
-requires operand contents to match the immutable attribute; use stride primitives
-rather than hand-crafted FFI calls.
+requires device operand contents to match the semantic host attribute through
+the native packer; use stride primitives rather than hand-crafted FFI calls.
 
 The native CUDA implementation separates three responsibilities:
 
 - `native/cuda/*.cu` adapts the XLA FFI call, validates metadata and invocation
   buffers, and contains exceptions at the call boundary.
 - `native/cuda/execute/` owns CUDA scheduling, output initialization, coefficient
-  dispatch and ordered kernel launches, including Dot scratch reuse.
+  dispatch and ordered kernel launches.
 - `native/cuda/kernels/` implements device address traversal and numerical work.
 
 Both backends use `native/layout/descriptor.{h,cc}` for descriptor decoding and
-semantic validation, without CPU axis sorting or merging. CPU preparation applies
-its own record optimization before storing immutable `PreparedState`; CUDA keeps
-per-call host preparation and derives its schedules from the original metadata.
-Reduction semantic records canonicalize ignored reduction-axis output strides,
-so they are not a replacement for the original protocol's axis flags and cursors.
+semantic validation. Reduction records compose an address layout with explicit
+axis roles; roles are never inferred from zero strides. Native lowering preparation
+validates the complete original protocol before transforming or encoding it.
+Preparation uses the previous CPU stable locality order, fuses adjacent axes
+contiguous in both address views in first-axis-fastest order, then sorts again
+and removes nonempty singleton axes. Repeated preparation after rank reduction
+makes the canonical descriptor idempotent when removed axes change stride ranks.
+Reduction permutes explicit roles with each axis and fuses only equal roles;
+roles are never inferred from zero destination strides. Empty records, storage
+sizes, offsets, semantic indices, record order and coefficient mapping remain
+intact. Address fused extents stay within the signed V1 protocol; Reduction
+retains unsigned extents. Ignored reduction-axis output strides are canonicalized in the host semantic
+metadata and the derived device execution view. Sorting can change the
+floating-point contribution order; correctness is checked against the numerical
+contract, not a former GPU bitwise traversal order.
+CPU preparation calls the same shared functions and stores their normalized
+records in immutable `PreparedState`; Reduction fuses role-aware records before
+projecting their address layouts. CPU and CUDA therefore share canonical prepared
+records, though CPU row traversal, blocking and partial-sum trees still differ
+from CUDA execution and do not guarantee bitwise equality. CPU Copy/Update may
+reorder independent map iterations within private execution plans without changing
+the canonical prepared records. CUDA Copy, Update,
+Accumulation and Dot validate the supplied semantic host attribute at FFI
+instantiate and store decoded records, element counts, packed owner/fiber
+schedules and the expected device operand length in separate immutable host
+states owned by the executable. Update stores each record's identity-mapping
+predicate; Accumulation stores the static mapping from records to coefficient
+operands and scratch capacity, retaining empty records. Dot also stores its
+conjugation mode and static scratch capacity. Reduction stores its scratch
+capacity alongside its explicit-role map/fiber schedule. Actual aliases,
+coefficient buffer types/shapes and operand counts remain invocation checks.
+Reduction keeps explicit-role map/fiber schedules and sparse coefficient mapping in immutable executable-owned host state. Neither
+backend independently transforms the canonical prepared layout. CPU Update
+alias validation compares logical addresses and ignores unused singleton strides
+for nonempty records, as CUDA Update does.
 Buffer-byte and alias checks in `native/ffi/buffers.h` remain invocation-boundary
 checks, separate from static descriptor semantics.
 
 CUDA executors use the XLA stream, independently of CPU executors and their
-thread pool. No persistent CUDA prepared state or device cache is introduced.
-Neither semantic records nor CPU-optimized records authorize reinterpreting an
-original device descriptor, especially for Reduction axis roles.
+thread pool. All five CUDA host states contain no device pointers or stream
+resources; their destructors neither free device memory nor synchronize. Launched kernels use
+value arguments and the XLA-owned device descriptor, not host state pointers.
+Actual buffer shapes, batch products, byte sizes and alias relationships are still
+checked on every call before any writes. No native device cache is introduced.
+Every layout transform must update the authoritative preparation result
+before host and device encoding; changing host records alone is insufficient.
 
-After validating host metadata and buffer relationships, Copy, Accumulation and Reduction zero output; Update
-copies base to output when they differ. Copy/Update/Accumulation/Reduction launch one generic kernel per nonempty record; Dot
-launches two stages per nonempty record, in order on the XLA-provided stream. Update, Accumulation and Reduction
-read coefficients on device. No handler reads device data on host or allocates
+After validating host metadata and buffer relationships, Copy, Dot,
+Accumulation and Reduction zero output; Update copies base to output when they
+differ. Copy and Update launch specializations of the common owner/fiber kernel.
+Accumulation and Reduction choose sequential owner or shared parallel
+partial/finish execution per record. Dot uses the same sequential kernel for
+a single contribution, and the parallel fiber strategy for longer records.
+All launches occur in record order on the XLA-provided stream.
+Update, Accumulation and Reduction read coefficients on device. No handler reads device data on host or allocates
 device memory per
 call, and none synchronizes. Immediate launch errors are reported by the handler;
 asynchronous errors may surface at a later JAX synchronization. Ordered launches
-preserve overlapping-record Accumulation/Reduction semantics, but do not relax Copy/Update destination disjointness requirements.
+preserve overlapping-record Accumulation/Reduction semantics, but do not relax
+Copy/Update destination disjointness requirements. The native packer maps
+Copy/Update axes to output owners, Dot axes to a single owner's fiber, and
+Accumulation/Reduction axes to their validated owner/fiber groups. The two
+device address lanes denote source/output for Copy, Update, Accumulation and
+Reduction and left/right inputs for Dot; Dot's output is the batch scalar.
+Reduction retains explicit roles in its semantic descriptor and zeros ignored
+fiber output strides before packing. The CUDA device descriptor format is
+internal to the lowering/FFI boundary.
+
+## Reproducible CUDA execution diagnostic
+
+The bounded script described in [benchmarks/README.md](../benchmarks/README.md)
+measures Copy, Update, Dot, Accumulation and Reduction on the installed CUDA
+backend. It covers short and long fibers, single and multiple owners, multiple
+Dot records and conjugated complex Dot. It checks an independent NumPy result,
+preloads input buffers, compiles before warmup, and synchronizes every timed
+call. Reported latency includes JAX invocation and synchronization, not just
+kernel time; compile time is reported separately. Results from different builds
+must use the same GPU, input cases and sampling settings. This is a regression
+diagnostic, not a cross-backend or cross-device performance ranking.
 
 ## Testing
 

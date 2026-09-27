@@ -83,13 +83,12 @@ def test_signed_and_broadcast_batch_vmap_jvp_vjp(source_dtype, result_dtype, fac
 
 
 @pytest.mark.skipif(not native_available(), reason='native CPU stride unavailable')
-def test_large_repeated_source_forward_and_vjp_accumulate():
+def test_large_repeated_source_forward_and_vjp_rejected():
     rows, columns = 1024, 512
     record = AffineRecord((rows, columns), (1, 1), 0, (columns, 1), 0)
     source = affine_values("float32", rows + columns - 1)
     addresses = np.arange(rows)[:, None] + np.arange(columns)[None, :]
     expected = (source[addresses] * jnp.float32(1.25)).reshape(-1)
-    counts = np.bincount(addresses.ravel(), minlength=source.size)
     execute = lambda value: native(value, record, 1.25, "float32")
     compiled = jax.jit(execute)
     pullback = jax.jit(jax.vjp(execute, source)[1])
@@ -98,8 +97,8 @@ def test_large_repeated_source_forward_and_vjp_accumulate():
         for limit in (1, 4):
             set_num_threads(limit)
             affine_assert_close(compiled(source), expected)
-            affine_assert_close(pullback(jnp.ones(rows * columns, dtype=jnp.float32))[0],
-                         jnp.asarray(counts * 1.25, dtype=source.dtype))
+            with pytest.raises(Exception, match="cannot prove injective output owners"):
+                pullback(jnp.ones(rows * columns, dtype=jnp.float32))[0]
     finally:
         restore_threads(previous)
 
@@ -416,7 +415,7 @@ def test_update_jvp_vjp_and_linear_transpose(beta, mixed, transpose_layout):
 
 MULTIRECORD_LAYOUTS = (
     (AffineRecord((3,), (1,), 0, (2,), 1), AffineRecord((3,), (1,), 0, (2,), 2)),
-    (AffineRecord((2, 2), (1, 1), 0, (4, 1), 1), AffineRecord((2,), (0,), 3, (-4,), 7)),
+    (AffineRecord((2, 2), (2, 1), 0, (4, 1), 1), AffineRecord((2,), (0,), 3, (-4,), 7)),
     (AffineRecord((3,), (-1,), 5, (-2,), 6), AffineRecord((2,), (1,), 0, (2,), 1)),
     (AffineRecord((0,), (1,), 6, (1,), 10),),
 )
@@ -552,7 +551,7 @@ def single_record_functions(record):
 
 
 update_coefficient_ad_RECORDS = [
-    AffineRecord((2, 2), (1, 1), 1, (2, 1), 1),
+    AffineRecord((2, 2), (2, 1), 1, (2, 1), 1),
     AffineRecord((2, 2, 2), (0, -1, -1), 3, (-4, -2, -1), 8),
     AffineRecord((0,), (1,), 5, (1,), 10),
     AffineRecord((), (), 2, (), 3),
@@ -582,12 +581,12 @@ def test_direct_transpose_of_independent_terms(dtype, active):
 @pytest.mark.skipif(not native_available(), reason='native CPU stride is unavailable')
 def test_selected_dot_lowering_and_unselected_nonfinite_values():
     execute, _ = single_record_functions(update_coefficient_ad_RECORDS[0])
-    source = jnp.asarray([np.nan, 2, 3, 4, np.inf], jnp.float32)
+    source = jnp.asarray([np.nan, 2, 3, 4, 5, np.inf], jnp.float32)
     base = jnp.asarray([np.nan, 5, 6, 7, 8, np.inf, np.nan, np.inf, np.nan, np.inf], jnp.float32)
     cotangent = jnp.asarray([np.nan, 1, 2, 3, 4, np.inf, np.nan, np.inf, np.nan, np.inf], jnp.float32)
     reverse = jax.jit(lambda first, second, value: jax.vjp(lambda alpha, beta: execute(first, second, alpha, beta), jnp.float32(0), jnp.float32(1))[1](value))
     alpha_gradient, beta_gradient = reverse(source, base, cotangent)
-    np.testing.assert_array_equal(alpha_gradient, 33)
+    np.testing.assert_array_equal(alpha_gradient, 40)
     np.testing.assert_array_equal(beta_gradient, 70)
     text = reverse.lower(source, base, cotangent).as_text()
     assert text.count('stablehlo.custom_call @tensor0_stride_dot_f32_cpu_v1') == 2

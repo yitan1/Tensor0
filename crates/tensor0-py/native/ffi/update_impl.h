@@ -159,8 +159,7 @@ ffi::Future Update(ffi::Span<const int64_t>, const PreparedState* prepared,
             throw std::invalid_argument("unsupported source/result alias: requires identical source/base/result storage");
           }
           for (const auto& record : records) {
-            if (record.source_offset != record.destination_offset ||
-                record.source_strides != record.destination_strides) {
+            if (!layout::HasIdenticalAddresses(record)) {
               throw std::invalid_argument("source/result alias requires identical per-element addresses");
             }
           }

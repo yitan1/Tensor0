@@ -8,18 +8,14 @@ import numpy as np
 import pytest
 
 from tensor0 import _native
+from tests.stride.support.availability import cuda_device_or_skip
 from tensor0._stride import _jax, StridedView, dotu, dotc
 from tensor0._stride._layout import AffineRecord
 
 
 @pytest.fixture
 def cuda_device():
-    if not getattr(_native, "_stride_cuda_available", lambda: False)():
-        pytest.skip("native CUDA dot is unavailable")
-    try:
-        return jax.devices("cuda")[0]
-    except RuntimeError:
-        pytest.skip("CUDA device is unavailable")
+    return cuda_device_or_skip()
 
 
 DTYPES = ["float32", "float64", "complex64", "complex128"]
@@ -71,8 +67,8 @@ def test_public_dot_jvp_vjp(cuda_device, dtype, conjugate):
             a = a + 1j * a
             b = b - .5j * b
         op = dotc if conjugate else dotu
-        run = lambda x, y: op(StridedView(x, (2, 2), (1, 1), 0), StridedView(y, (2, 2), (0, -1), 2))
-        ai, bi = jnp.array([0, 1, 1, 2]), jnp.array([2, 1, 2, 1])
+        run = lambda x, y: op(StridedView(x, (2, 2), (0, 1), 0), StridedView(y, (2, 2), (0, -1), 2))
+        ai, bi = jnp.array([0, 1, 0, 1]), jnp.array([2, 1, 2, 1])
         reference = lambda x, y: jnp.sum((jnp.conj(x[ai]) if conjugate else x[ai]) * y[bi])
         for actual, expected in zip(jax.jit(lambda x, y: jax.jvp(run, (x, y), (x, y)))(a, b), jax.jvp(reference, (a, b), (a, b))):
             np.testing.assert_allclose(actual, expected, rtol=2e-6, atol=2e-6)
@@ -125,7 +121,7 @@ def test_unsupported_dtype(cuda_device, left, right, result):
             jax.jit(lambda x, y: dot(x, y, (), dtype=np.dtype(result)))(a, b)
 
 
-def test_multirecord_order_concurrent_scratch_and_hlo(cuda_device):
+def test_multirecord_order_concurrent_and_hlo(cuda_device):
     records = tuple(AffineRecord((), (), i, (), i) for i in range(3))
     a = jax.device_put(np.array([2**24, 1, -2**24], np.float32), cuda_device)
     b = jax.device_put(np.ones(3, np.float32), cuda_device)
@@ -136,9 +132,16 @@ def test_multirecord_order_concurrent_scratch_and_hlo(cuda_device):
     with ThreadPoolExecutor(4) as pool:
         values = list(pool.map(lambda i: operations[i % 2](*args[i]), range(12)))
     np.testing.assert_array_equal(values, [i * (2051 if i % 2 == 0 else 3077) for i in range(12)])
-    text = operations[0].lower(*args[0]).as_text()
+    lowered = operations[0].lower(*args[0])
+    text = lowered.as_text()
     assert "tensor0_stride_dot_f32_cuda_v1" in text and "_cpu_v1" not in text
-    assert "tensor<1x3xf32>" in text  # Internal XLA-owned scratch result.
+    module = lowered.compiler_ir(dialect="stablehlo")
+    calls = [inner for operation in module.operation.regions[0].blocks[0].operations
+             for region in operation.regions for block in region.blocks
+             for inner in block.operations if inner.name == "stablehlo.custom_call"]
+    assert len(calls) == 1
+    assert [tuple(result.type.shape) for result in calls[0].results] == [(1,), (1, 3)]
+    # The second structured result is the XLA-owned partial scratch.
 
 
 def test_partition_callback_platform(cuda_device, monkeypatch):
@@ -208,8 +211,8 @@ def test_subnormal_nonfinite_and_empty(cuda_device, dtype):
         assert result == 0 and not np.signbit(result.real)
 
 
-def test_second_block_grid_iteration_and_x64_disabled(cuda_device):
-    count = 65536 * 1024 + 3
+def test_long_single_owner_fiber_and_x64_disabled(cuda_device):
+    count = 4097
     records = (AffineRecord((count,), (0,), 0, (0,), 0),)
     with jax.enable_x64():
         a = jax.device_put(np.ones(1, np.float64), cuda_device)
@@ -222,7 +225,7 @@ def test_second_block_grid_iteration_and_x64_disabled(cuda_device):
 
 
 @pytest.mark.parametrize("dtype", DTYPES)
-def test_multirecord_reuses_only_initialized_scratch_prefix(cuda_device, dtype):
+def test_multirecord_sequential_fiber_with_empty_record(cuda_device, dtype):
     records = (AffineRecord((2051,), (1,), 0, (1,), 0),
                AffineRecord((0,), (1,), 0, (1,), 0),
                AffineRecord((1,), (0,), 0, (0,), 0),

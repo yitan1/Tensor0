@@ -25,8 +25,8 @@ def assert_close(actual, expected):
 
 @cache
 def functions(operation, dtype):
-    records = (AffineRecord((2, 2), (1, 1), 0, (1, 1), 1),
-               AffineRecord((2, 2), (0, -1), 3, (-1, 1), 3),
+    records = (AffineRecord((2, 2), (2, 1), 0, (1, 0), 1),
+               AffineRecord((2, 2), (0, -1), 3, (-1, 0), 3),
                AffineRecord((0,), (1,), 5, (1,), 5))
     def run(source, first, second):
         if operation == "accumulation":
@@ -66,8 +66,8 @@ def compare_derivatives(run, reference, arguments):
 
 RECORDS = (
     AffineRecord((2, 0), (1, 1), 8, (2, 7), 1),
-    AffineRecord((2, 2), (1, 1), 1, (2, 1), 1),
-    AffineRecord((2, 2), (-1, 1), 3, (100, 1), 2),
+    AffineRecord((2, 2), (2, 1), 1, (2, 1), 1),
+    AffineRecord((2, 2), (-2, 1), 3, (100, 1), 2),
     AffineRecord((2, 3), (0, -1), 5, (3, 100), 0),
 )
 

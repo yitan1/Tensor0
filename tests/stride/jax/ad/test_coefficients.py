@@ -214,7 +214,7 @@ def test_update_batch_coefficients(dtype, batch_shape, form):
 @pytest.mark.parametrize('dtype', ['float16', 'bfloat16'])
 def test_pullback_lowering_and_vmap(dtype):
     data = values((5,), dtype)
-    run, reference = dot_functions(dotu, ((2, 2), (1, 1), 0, (0, -1), 3), dtype)
+    run, reference = dot_functions(dotu, ((2, 2), (2, 1), 0, (0, -1), 3), dtype)
     reverse = jax.vjp(lambda source: run(source, data), data)[1]
     oracle = jax.vjp(lambda source: reference(source, data), data)[1]
     cotangents = jnp.asarray([0, 1, 2], dtype=dtype)
@@ -256,7 +256,7 @@ def test_wide_coefficient_gradient_range(operation):
                          + [(dtype, batch) for dtype in ('bool', 'int32', 'uint64')
                             for batch in ((2,), (0,), (2, 0))])
 def test_scaled_discrete_results(operation, dtype, batch_shape):
-    records = (AffineRecord((2, 2), (1, 1), 0, (1, 1), 1), AffineRecord((0,), (1,), 3, (1,), 3))
+    records = (AffineRecord((2, 2), (1, 1), 0, (1, 0), 1), AffineRecord((0,), (1,), 3, (1,), 3))
     source = jnp.broadcast_to(jnp.asarray([1, 2, 3], dtype=jnp.float32), (*batch_shape, 3))
     factor = jnp.full(batch_shape, 2, dtype=jnp.float16)
 

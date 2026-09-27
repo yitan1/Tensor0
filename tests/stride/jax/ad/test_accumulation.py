@@ -108,7 +108,7 @@ def test_coefficient_derivative_uses_algebraic_formula(factor):
     source = jnp.asarray([1, 2, 3, 4, 5], jnp.float32)
     for function in (two_record_accumulation, two_record_reference):
         result = jax.grad(lambda coefficient: function(source, coefficient, jnp.float32(2)).sum())(jnp.float32(factor))
-        assert result == 8
+        assert result == 10
 
 
 @pytest.mark.usefixtures("enable_x64")
@@ -118,11 +118,11 @@ def test_unscaled_records_and_cross_kind_coefficient_derivative():
 
     def unscaled(data):
         return accumulation_p.bind(data, records=TWO_RECORDS, coefficient_records=(), output_size=5, dtype=data.dtype)
-    np.testing.assert_array_equal(jax.grad(lambda data: unscaled(data).sum())(source), [1, 3, 3, 1, 0])
-    np.testing.assert_array_equal(jax.grad(lambda data: accumulation_p.bind(data, jnp.int32(2), records=(TWO_RECORDS[0],), coefficient_records=(0,), output_size=5, dtype=data.dtype).sum())(source), [2, 4, 2, 0, 0])
+    np.testing.assert_array_equal(jax.grad(lambda data: unscaled(data).sum())(source), [2, 2, 2, 2, 0])
+    np.testing.assert_array_equal(jax.grad(lambda data: accumulation_p.bind(data, jnp.int32(2), records=(TWO_RECORDS[0],), coefficient_records=(0,), output_size=5, dtype=data.dtype).sum())(source), [2, 2, 2, 2, 0])
     with jax.enable_x64():
         gradient = jax.grad(lambda factor: accumulation_p.bind(source, factor, records=TWO_RECORDS, coefficient_records=(0,), output_size=5, dtype=source.dtype).sum())(jnp.complex128(2))
-        np.testing.assert_array_equal(gradient, 4 + 0j)
+        np.testing.assert_array_equal(gradient, 6 + 0j)
         assert gradient.dtype == jnp.complex128
 
 
@@ -158,8 +158,8 @@ def test_zero_one_shortcuts_and_empty_records(factor):
 
 
 MIXED_RECORDS = (
-    AffineRecord((2, 2), (1, -1), 1, (1, 1), 1),
-    AffineRecord((2, 2), (0, 1), 1, (1, -1), 2),
+    AffineRecord((2, 2), (2, -1), 1, (2, 1), 1),
+    AffineRecord((2, 2), (0, 1), 1, (2, -1), 2),
     AffineRecord((0,), (1,), 5, (1,), 5),
     AffineRecord((1,), (1,), 4, (1,), 4),
 )
@@ -238,13 +238,17 @@ def test_project_after_multiply_and_coefficient_gradient_dtype():
 @pytest.mark.parametrize('source_dtype,dtype', [('float32', 'complex128'), ('complex64', 'float64')])
 def test_unscaled_empty_and_symbolic_zero(source_dtype, dtype):
     source = samples_values((3,), source_dtype)
-    for record in (AffineRecord((2, 2), (1, 1), 0, (1, 1), 1), AffineRecord((0,), (1,), 3, (1,), 5)):
+    for record in (AffineRecord((2, 2), (1, 1), 0, (2, 1), 1), AffineRecord((0,), (1,), 3, (1,), 5)):
         run = lambda data: accumulation_p.bind(data, records=(record,), output_size=5, dtype=jnp.dtype(dtype))
         frozen = lambda data: run(jax.lax.stop_gradient(data))
         np.testing.assert_array_equal(jax.jvp(frozen, (source,), (source,))[1], jnp.zeros(5, dtype=dtype))
         result, pullback = jax.vjp(run, source)
-        gradient = jax.jit(pullback)(jnp.ones_like(result))[0]
-        np.testing.assert_array_equal(gradient, [1, 2, 1] if record.logical_shape != (0,) else [0, 0, 0])
+        if record.logical_shape != (0,):
+            with pytest.raises(Exception, match="cannot prove injective output owners"):
+                jax.jit(pullback)(jnp.ones_like(result))[0]
+        else:
+            gradient = jax.jit(pullback)(jnp.ones_like(result))[0]
+            np.testing.assert_array_equal(gradient, [0, 0, 0])
 
 
 PARTIAL = (AffineRecord((16,), (2,), 1, (3,), 2),)
@@ -303,6 +307,12 @@ def test_affine_forward_jvp_vjp_and_linear_transpose(
         affine_ad_assert_close(actual, expected)
     assert_native_calls(forward.lower(source, direction), 2)
     reverse = jax.jit(lambda value, cot: (native(value), jax.vjp(native, value)[1](cot)[0]))
+    if records[0].source_strides == (1, 1):
+        # Forward repeated source reads stay legal; nonzero-stride reverse
+        # output collisions are outside the narrowed Accumulation contract.
+        with pytest.raises(Exception, match="cannot prove injective output owners"):
+            reverse(source, cotangent)
+        return
     actual, gradient = reverse(source, cotangent)
     affine_ad_assert_close(actual, reference(source))
     expected_gradient = jax.vjp(reference, source)[1](cotangent)[0]

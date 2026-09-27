@@ -45,13 +45,12 @@ void ExecuteGenericAffineScalarRow(
     int64_t source_base, int64_t destination_base, uint64_t inner_count,
     int64_t source_inner_stride, int64_t destination_inner_stride,
     const SourceOp& source_op) {
-  int64_t source_index = source_base;
-  int64_t destination_index = destination_base;
+  // Form only accessed offsets: an unused singleton stride can be any int64.
   for (uint64_t inner = 0; inner < inner_count; ++inner) {
+    const int64_t source_index = source_base + static_cast<int64_t>(inner) * source_inner_stride;
+    const int64_t destination_index = destination_base + static_cast<int64_t>(inner) * destination_inner_stride;
     result[destination_index] =
         scalar::Convert<Result, typename SourceOp::OutputDtype>(source_op(source[source_index]));
-    source_index += source_inner_stride;
-    destination_index += destination_inner_stride;
   }
 }
 
@@ -86,13 +85,11 @@ void ExecuteBinaryMapRecord(
   ForEachAffineRow<2>(record, {record.source_offset, record.destination_offset},
                      {&record.source_strides, &record.destination_strides},
                      [&](const auto& offsets, uint64_t inner_count) {
-    int64_t source_index = offsets[0];
-    int64_t destination_index = offsets[1];
     for (uint64_t inner = 0; inner < inner_count; ++inner) {
+      const int64_t source_index = offsets[0] + static_cast<int64_t>(inner) * source_stride;
+      const int64_t destination_index = offsets[1] + static_cast<int64_t>(inner) * destination_stride;
       const auto value = operation(source[source_index], base[destination_index]);
       result[destination_index] = scalar::Convert<Result, typename BinaryOp::OutputDtype>(value);
-      source_index += source_stride;
-      destination_index += destination_stride;
     }
   });
 }

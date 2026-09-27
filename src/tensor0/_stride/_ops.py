@@ -71,9 +71,9 @@ def add(
     Logical and batch shapes must match. Coefficients are scalar or match the
     batch shape, and weak coefficients are normalized before native branching.
     Native validates supported source/storage dtype pairs. Floating/complex
-    input AD supports these pairs and accumulates repeated
-    right addresses, including zero- and nonzero-stride overlap, with fused
-    scaling. Nonzero coefficient gradients require F16/BF16/F32/F64/C64/C128 storage and differentiated
+    input AD supports these pairs and accumulates repeated right addresses
+    represented by zero-stride fibers, with fused scaling. Reverse AD for
+    nonzero-stride overlapping right addresses is unsupported. Nonzero coefficient gradients require F16/BF16/F32/F64/C64/C128 storage and differentiated
     coefficient dtypes; fixed coefficients retain their dtypes. Integer/bool
     results have float0 tangents and zero coefficient gradients. Batch axes support
     partitioning; packed storage stays local to each device.
@@ -133,8 +133,9 @@ def dotu(left: StridedView, right: StridedView, *, dtype: DTypeLike | None = Non
     product contribution to the input gradient's storage type at writeback.
     Higher derivatives through mixed coefficient AD support F16/BF16/F32/F64/C64/C128,
     including real/complex crossings.
-    AD and vmap use native
-    Dot and address accumulation, including repeated input addresses.
+    AD and vmap use native Dot and address accumulation. Repeated input reads
+    remain legal in the forward operation; input reverse AD requires injective
+    nonzero-stride map axes, with zero-stride broadcast repetition supported.
     CPU NamedSharding partitions batches while both storage axes stay complete.
     Matching batch placement uses local Dot and local input-gradient accumulation.
     Native traversal and row writeback determine rounding, not legacy partial sums.

@@ -4,20 +4,70 @@
 #include "../ffi/errors.h"
 #include "../ffi/buffers.h"
 #include "../layout/descriptor.h"
+#include "../layout/owner_fiber.h"
 
-#include <algorithm>
+#include <atomic>
+#include <cstddef>
 #include <cstdint>
-#include <numeric>
+#include <memory>
 #include <stdexcept>
-#include <string>
+#include <utility>
 #include <vector>
 
 namespace ffi = xla::ffi;
 
 namespace tensor0::stride::cuda {
 
+namespace {
+std::atomic<uint64_t> copy_prepared_created_count{0};
+std::atomic<uint64_t> copy_prepared_destroyed_count{0};
+}  // namespace
+
+struct CopyPreparedState {
+  static ffi::TypeId id;
+
+  CopyPreparedState(descriptor::DecodedLayout value, std::vector<uint64_t> sizes,
+                    std::vector<layout::OwnerFiberSchedule> tasks, std::size_t words)
+      : decoded(std::move(value)), counts(std::move(sizes)),
+        schedules(std::move(tasks)), word_count(words) {
+    copy_prepared_created_count.fetch_add(1, std::memory_order_relaxed);
+  }
+  CopyPreparedState(const CopyPreparedState&) = delete;
+  CopyPreparedState& operator=(const CopyPreparedState&) = delete;
+  ~CopyPreparedState() {
+    copy_prepared_destroyed_count.fetch_add(1, std::memory_order_relaxed);
+  }
+
+  const descriptor::DecodedLayout decoded;
+  const std::vector<uint64_t> counts;
+  const std::vector<layout::OwnerFiberSchedule> schedules;
+  const std::size_t word_count;
+};
+
+ffi::TypeId CopyPreparedState::id = {};
+const ffi::TypeInfo kCopyPreparedTypeInfo = ffi::MakeTypeInfo<CopyPreparedState>();
+
+ffi::ErrorOr<std::unique_ptr<CopyPreparedState>> InstantiateCopy(
+    ffi::Span<const int64_t> words) {
+  std::unique_ptr<CopyPreparedState> state;
+  const auto error = ContainErrors([&] {
+    // Final descriptor words are authoritative: preserve every axis and record.
+    auto decoded = descriptor::DecodeLayout(words.begin(), words.size());
+    std::vector<uint64_t> counts;
+    counts.reserve(decoded.records.size());
+    for (const auto& record : decoded.records) {
+      counts.push_back(layout::ElementCount(record));
+    }
+    auto packed = layout::PackOwnerFiber(decoded, 0);
+    state = std::make_unique<CopyPreparedState>(
+        std::move(decoded), std::move(counts), std::move(packed.schedules), packed.words.size());
+  });
+  if (error.failure()) return ffi::Unexpected(error);
+  return state;
+}
+
 template <ffi::DataType Dtype, int Bytes>
-ffi::Error Copy(ffi::Span<const int64_t> words, ffi::AnyBuffer source,
+ffi::Error Copy(const CopyPreparedState* prepared, ffi::AnyBuffer source,
                 ffi::BufferR1<ffi::S64> descriptor,
                 ffi::ResultBufferR2<Dtype> result, cudaStream_t stream) {
   return ContainErrors([&] {
@@ -33,12 +83,12 @@ ffi::Error Copy(ffi::Span<const int64_t> words, ffi::AnyBuffer source,
       }
     }
     if (descriptor.dimensions()[0] < 0 ||
-        static_cast<uint64_t>(descriptor.dimensions()[0]) != words.size()) {
+        static_cast<uint64_t>(descriptor.dimensions()[0]) != prepared->word_count) {
       throw std::invalid_argument("CUDA copy descriptor operand shape does not match layout");
     }
     // The internal lowering supplies the same immutable words as host attribute
     // and XLA-owned device constant. Device buffers are never read on the host.
-    const auto decoded = descriptor::DecodeAddressLayout(words.begin(), words.size());
+    const auto& decoded = prepared->decoded;
     if (source.dimensions()[0] != result->dimensions()[0] ||
         static_cast<uint64_t>(source.dimensions()[1]) != decoded.source_size ||
         static_cast<uint64_t>(result->dimensions()[1]) != decoded.output_size) {
@@ -55,34 +105,52 @@ ffi::Error Copy(ffi::Span<const int64_t> words, ffi::AnyBuffer source,
     const auto* input = reinterpret_cast<const Storage<Bytes>*>(source.untyped_data());
     auto* output = reinterpret_cast<Storage<Bytes>*>(result->untyped_data());
     ValidateDisjointBuffers(input, source_bytes, output, output_bytes);
-    ValidateDisjointBuffers(descriptor.typed_data(), BufferBytes(words.size(), sizeof(int64_t)),
+    ValidateDisjointBuffers(descriptor.typed_data(), BufferBytes(prepared->word_count, sizeof(int64_t)),
                             output, output_bytes);
-    // Validate all records before submitting any writes. Cross-record disjoint
+    // Validate runtime batch sizes before submitting any writes. Static map
+    // validation and element counts belong to instantiate. Cross-record disjoint
     // destinations remain a producer precondition, as on the CPU path.
-    std::vector<uint64_t> counts;
-    counts.reserve(decoded.records.size());
-    for (const auto& record : decoded.records) {
-      const uint64_t count = layout::ElementCount(record);
-      std::vector<std::size_t> axes(count == 0 ? 0 : record.shape.size());
-      std::iota(axes.begin(), axes.end(), 0);
-      layout::ValidateInjectiveView(record, false, std::move(axes));
+    for (const auto count : prepared->counts) {
       uint64_t total = 0;
       if (!layout::CheckedMultiply(batches, count, &total)) {
         throw std::invalid_argument("CUDA copy logical batch size overflows");
       }
-      counts.push_back(count);
     }
-    ExecuteCopy<Bytes>(input, output, decoded, counts, batches, output_bytes,
+    ExecuteCopy<Bytes>(input, output, decoded, prepared->schedules, batches, output_bytes,
                        descriptor.typed_data(), stream);
   });
 }
 
 }  // namespace tensor0::stride::cuda
 
+XLA_FFI_DEFINE_HANDLER_SYMBOL(
+    Tensor0StrideCudaCopyInstantiateV1, tensor0::stride::cuda::InstantiateCopy,
+    ffi::Ffi::BindInstantiate().Attr<ffi::Span<const int64_t>>("layout"));
+
+extern "C" void* Tensor0StrideCudaCopyInstantiateV1Handler() {
+  return reinterpret_cast<void*>(&Tensor0StrideCudaCopyInstantiateV1);
+}
+
+extern "C" void* Tensor0StrideCudaCopyPreparedTypeId() {
+  return reinterpret_cast<void*>(&tensor0::stride::cuda::CopyPreparedState::id);
+}
+
+extern "C" const void* Tensor0StrideCudaCopyPreparedTypeInfo() {
+  return reinterpret_cast<const void*>(&tensor0::stride::cuda::kCopyPreparedTypeInfo);
+}
+
+extern "C" uint64_t Tensor0StrideCudaCopyPreparedCreatedCount() {
+  return tensor0::stride::cuda::copy_prepared_created_count.load(std::memory_order_relaxed);
+}
+
+extern "C" uint64_t Tensor0StrideCudaCopyPreparedDestroyedCount() {
+  return tensor0::stride::cuda::copy_prepared_destroyed_count.load(std::memory_order_relaxed);
+}
+
 #define TENSOR0_CUDA_COPY(Suffix, Dtype, Bytes) \
 XLA_FFI_DEFINE_HANDLER_SYMBOL( \
     Tensor0StrideCudaCopy##Suffix##V1, (tensor0::stride::cuda::Copy<ffi::Dtype, Bytes>), \
-    ffi::Ffi::BindExecute().Attr<ffi::Span<const int64_t>>("layout") \
+    ffi::Ffi::BindExecute().Ctx<ffi::State<tensor0::stride::cuda::CopyPreparedState>>() \
         .Arg<ffi::AnyBuffer>().Arg<ffi::BufferR1<ffi::S64>>() \
         .Ret<ffi::BufferR2<ffi::Dtype>>().Ctx<ffi::PlatformStream<cudaStream_t>>()); \
 extern "C" void* Tensor0StrideCudaCopy##Suffix##V1Handler() { \

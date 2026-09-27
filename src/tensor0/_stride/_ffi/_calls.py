@@ -10,6 +10,7 @@ from jax.interpreters import mlir, xla
 import numpy as np
 import jax.numpy as jnp
 
+from ... import _native
 from ._registration import cuda_reduction_target, cuda_accumulation_target, cuda_copy_target, cuda_dot_target, cuda_update_target, operation_target
 
 
@@ -156,11 +157,12 @@ def execute_accumulation(
     coefficient_records: tuple[int, ...] = (), layout: np.ndarray,
     output_size: int, dtype=None, platform="cpu",
 ) -> Array:
-    """Fresh address sum using paired-address layout words, including overlap.
+    """Fresh address sum with independent output owners and zero-stride fibers.
 
     Coefficients and writeback follow execute_reduction. Native clears the whole
-    output once and sums records in order; nonzero destination stride overlap is
-    legal. This raw FFI call has no AD rule and no old-backend fallback.
+    output once and sums records in order. Cross-record overlap is legal; within
+    each record, nonzero destination-stride map axes must pass the injectivity
+    check. This raw FFI call has no AD rule and no old-backend fallback.
     """
     return _execute_reduction(
         "accumulation", source, coefficients, coefficient_records=coefficient_records,
@@ -219,10 +221,11 @@ def _cuda_copy_abstract(source, *, layout, output_size, dtype):
 
 def _cuda_copy_lowering(context, source, *, layout, output_size, dtype):
     target = cuda_copy_target(context.avals_in[0].dtype, dtype)
-    words = np.asarray(layout, dtype=np.int64)
+    words = np.asarray(_native._stride_prepare_layout("copy", layout), dtype=np.int64)
+    packed = np.asarray(_native._stride_pack_owner_fiber("copy", words.tolist()), dtype=np.int64)
     # Emit i64 directly: tracing a JAX constant would narrow it when x64 is off.
-    metadata = mlir.ir_constant(words)
-    context = context.replace(avals_in=(*context.avals_in, jax.core.ShapedArray(words.shape, words.dtype)))
+    metadata = mlir.ir_constant(packed)
+    context = context.replace(avals_in=(*context.avals_in, jax.core.ShapedArray(packed.shape, packed.dtype)))
     return jax.ffi.ffi_lowering(
         target,
         operand_layouts=((1, 0), (0,)), result_layouts=((1, 0),),
@@ -241,11 +244,12 @@ def _cuda_update_abstract(source, base, alpha, beta, *, layout):
 
 def _cuda_update_lowering(context, source, base, alpha, beta, *, layout):
     target = cuda_update_target(*(value.dtype for value in context.avals_in))
-    words = np.asarray(layout, dtype=np.int64)
+    words = np.asarray(_native._stride_prepare_layout("update", layout), dtype=np.int64)
+    packed = np.asarray(_native._stride_pack_owner_fiber("update", words.tolist()), dtype=np.int64)
     # Emit i64 directly even when JAX x64 is disabled.
-    metadata = mlir.ir_constant(words)
+    metadata = mlir.ir_constant(packed)
     operand_layouts = tuple(tuple(reversed(range(value.ndim))) for value in context.avals_in)
-    context = context.replace(avals_in=(*context.avals_in, jax.core.ShapedArray(words.shape, words.dtype)))
+    context = context.replace(avals_in=(*context.avals_in, jax.core.ShapedArray(packed.shape, packed.dtype)))
     return jax.ffi.ffi_lowering(
         target, operand_layouts=(*operand_layouts, (0,)), result_layouts=((1, 0),),
         operand_output_aliases={1: 0},
@@ -265,16 +269,23 @@ def _cuda_accumulation_abstract(source, *coefficients, layout, output_size, dtyp
 def _cuda_accumulation_lowering(context, source, *coefficients, layout, output_size, dtype, coefficient_records):
     target = cuda_accumulation_target(context.avals_in[0].dtype, dtype,
                                       *(value.dtype for value in context.avals_in[1:]))
-    words = np.asarray(layout, dtype=np.int64)
-    metadata = mlir.ir_constant(words)
+    words = np.asarray(_native._stride_prepare_layout("accumulation", layout), dtype=np.int64)
+    packed = np.asarray(_native._stride_pack_owner_fiber("accumulation", words.tolist()), dtype=np.int64)
+    metadata = mlir.ir_constant(packed)
+    capacity = _native._stride_sum_scratch_capacity("accumulation", words.tolist())
+    batches = context.avals_in[0].shape[0]
+    if batches * capacity > np.iinfo(np.int64).max // np.dtype(dtype).itemsize:
+        raise ValueError("CUDA accumulation scratch storage size overflows")
+    scratch = jax.core.ShapedArray((batches, capacity), dtype)
     avals = context.avals_in
-    ordered_avals = (avals[0], jax.core.ShapedArray(words.shape, words.dtype), *avals[1:])
-    context = context.replace(avals_in=ordered_avals)
-    return jax.ffi.ffi_lowering(
+    ordered_avals = (avals[0], jax.core.ShapedArray(packed.shape, packed.dtype), *avals[1:])
+    context = context.replace(avals_in=ordered_avals, avals_out=(*context.avals_out, scratch))
+    results = jax.ffi.ffi_lowering(
         target, operand_layouts=tuple(tuple(reversed(range(value.ndim))) for value in ordered_avals),
-        result_layouts=((1, 0),),
+        result_layouts=((1, 0), (1, 0)),
     )(context, source, metadata, *coefficients, layout=words,
       coefficient_records=np.asarray(coefficient_records, dtype=np.int64))
+    return results[:1]
 
 
 _cuda_accumulation_p = core.Primitive("tensor0_stride_cuda_accumulation_call")
@@ -289,20 +300,17 @@ def _cuda_dot_abstract(left, right, *, layout, conjugate_left, dtype):
 
 def _cuda_dot_lowering(context, left, right, *, layout, conjugate_left, dtype):
     target = cuda_dot_target(context.avals_in[0].dtype, context.avals_in[1].dtype, dtype)
-    words = np.asarray(layout, dtype=np.int64)
-    cursor, capacity = 4, 0
-    for _ in range(layout[3]):
-        rank = layout[cursor]
-        count = prod(layout[cursor + 3:cursor + 3 + rank])
-        capacity = max(capacity, (count + 1023) // 1024)
-        cursor += 3 + 3 * rank
+    prepared = _native._stride_prepare_layout("dot", layout)
+    words = np.asarray(prepared, dtype=np.int64)
+    packed = np.asarray(_native._stride_pack_owner_fiber("dot", words.tolist()), dtype=np.int64)
+    capacity = _native._stride_dot_scratch_capacity(prepared)
     batches = context.avals_in[0].shape[0]
-    if capacity > np.iinfo(np.int64).max or batches * capacity > np.iinfo(np.int64).max // np.dtype(dtype).itemsize:
+    if batches * capacity > np.iinfo(np.int64).max // np.dtype(dtype).itemsize:
         raise ValueError("CUDA dot scratch storage size overflows")
     scratch = jax.core.ShapedArray((batches, capacity), dtype)
-    metadata = mlir.ir_constant(words)
+    metadata = mlir.ir_constant(packed)
     context = context.replace(
-        avals_in=(*context.avals_in, jax.core.ShapedArray(words.shape, words.dtype)),
+        avals_in=(*context.avals_in, jax.core.ShapedArray(packed.shape, packed.dtype)),
         avals_out=(*context.avals_out, scratch),
     )
     results = jax.ffi.ffi_lowering(
@@ -324,16 +332,23 @@ def _cuda_reduction_abstract(source, *coefficients, layout, output_size, dtype, 
 def _cuda_reduction_lowering(context, source, *coefficients, layout, output_size, dtype, coefficient_records):
     target = cuda_reduction_target(context.avals_in[0].dtype, dtype,
                                       *(value.dtype for value in context.avals_in[1:]))
-    words = np.asarray(layout, dtype=np.int64)
-    metadata = mlir.ir_constant(words)
+    words = np.asarray(_native._stride_prepare_layout("reduction", layout), dtype=np.int64)
+    packed = np.asarray(_native._stride_pack_owner_fiber("reduction", words.tolist()), dtype=np.int64)
+    metadata = mlir.ir_constant(packed)
+    capacity = _native._stride_sum_scratch_capacity("reduction", words.tolist())
+    batches = context.avals_in[0].shape[0]
+    if batches * capacity > np.iinfo(np.int64).max // np.dtype(dtype).itemsize:
+        raise ValueError("CUDA reduction scratch storage size overflows")
+    scratch = jax.core.ShapedArray((batches, capacity), dtype)
     avals = context.avals_in
-    ordered_avals = (avals[0], jax.core.ShapedArray(words.shape, words.dtype), *avals[1:])
-    context = context.replace(avals_in=ordered_avals)
-    return jax.ffi.ffi_lowering(
+    ordered_avals = (avals[0], jax.core.ShapedArray(packed.shape, packed.dtype), *avals[1:])
+    context = context.replace(avals_in=ordered_avals, avals_out=(*context.avals_out, scratch))
+    results = jax.ffi.ffi_lowering(
         target, operand_layouts=tuple(tuple(reversed(range(value.ndim))) for value in ordered_avals),
-        result_layouts=((1, 0),),
+        result_layouts=((1, 0), (1, 0)),
     )(context, source, metadata, *coefficients, layout=words,
       coefficient_records=np.asarray(coefficient_records, dtype=np.int64))
+    return results[:1]
 
 
 _cuda_reduction_p = core.Primitive("tensor0_stride_cuda_reduction_call")

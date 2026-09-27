@@ -99,3 +99,29 @@ def test_native_mixed_source_rank_and_base_alias_checks(source_dtype, base_dtype
     alias_call = jax.ffi.ffi_call(target, jax.ShapeDtypeStruct(base.shape, base.dtype), input_output_aliases={1: 0})
     result = alias_call(source, base, jnp.int32(1), jnp.int32(1), layout=layout)
     np.testing.assert_array_equal(result, reference(source, base, 1, 1))
+
+
+@pytest.mark.parametrize("alpha", [0, 2])
+def test_update_base_donation_with_retained_singleton_axes(alpha):
+    """Base donation remains valid with extreme, unused singleton strides."""
+    # XLA may copy repeated inputs. Actual source/result alias rejection is
+    # tested with explicit buffer pointers in ffi_boundary_test.cc.
+    record = AffineRecord((1, 2), ((1 << 63) - 1, 1), 1, (-(1 << 63), 1), 1)
+    layout = encode_layout((record,), source_size=4, output_size=4)
+    with jax.default_device(jax.devices("cpu")[0]):
+        call = jax.ffi.ffi_call(
+            operation_target("update", np.dtype("float32")),
+            jax.ShapeDtypeStruct((1, 4), np.dtype("float32")),
+            input_output_aliases={1: 0},
+        )
+        operation = jax.jit(
+            lambda value, a, b: call(value, value, a, b, layout=layout),
+            donate_argnums=(0,),
+        )
+        value = jnp.asarray([[1, 2, 3, 4]], dtype=jnp.float32)
+        pointer = value.unsafe_buffer_pointer()
+        result = operation(value, jnp.float32(alpha), jnp.float32(3))
+        result.block_until_ready()
+        np.testing.assert_array_equal(result, [[1, 2 * (alpha + 3), 3 * (alpha + 3), 4]])
+        assert value.is_deleted()
+        assert result.unsafe_buffer_pointer() == pointer

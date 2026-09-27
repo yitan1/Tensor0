@@ -1,6 +1,7 @@
 #include "record.h"
 
 #include <algorithm>
+#include <array>
 #include <limits>
 #include <numeric>
 #include <stdexcept>
@@ -33,6 +34,18 @@ uint64_t ElementCount(const Record& record) {
     }
   }
   return count;
+}
+
+bool HasIdenticalAddresses(const Record& record) {
+  if (record.source_offset != record.destination_offset) return false;
+  const bool empty = ElementCount(record) == 0;
+  for (std::size_t axis = 0; axis < record.shape.size(); ++axis) {
+    if ((empty || record.shape[axis] > 1) &&
+        record.source_strides[axis] != record.destination_strides[axis]) {
+      return false;
+    }
+  }
+  return true;
 }
 
 uint64_t AbsoluteStride(int64_t stride) {
@@ -68,6 +81,182 @@ bool CheckedMultiplyStride(int64_t stride, uint64_t extent,
   const int64_t signed_magnitude = static_cast<int64_t>(magnitude);
   *result = stride < 0 ? -signed_magnitude : signed_magnitude;
   return true;
+}
+
+namespace {
+
+bool TryFuseAdjacentPair(Record& record, std::size_t outer,
+                         uint64_t maximum_extent) {
+  const std::size_t inner = outer + 1;
+  if (record.shape[outer] <= 1 || record.shape[inner] <= 1) {
+    return false;
+  }
+  uint64_t extent = 0;
+  int64_t source_stride = 0;
+  int64_t destination_stride = 0;
+  if (!CheckedMultiply(record.shape[outer], record.shape[inner], &extent) ||
+      extent > maximum_extent ||
+      !CheckedMultiplyStride(record.source_strides[inner], record.shape[inner],
+                             &source_stride) ||
+      source_stride != record.source_strides[outer] ||
+      !CheckedMultiplyStride(record.destination_strides[inner], record.shape[inner],
+                             &destination_stride) ||
+      destination_stride != record.destination_strides[outer]) {
+    return false;
+  }
+  record.shape[outer] = extent;
+  record.source_strides[outer] = record.source_strides[inner];
+  record.destination_strides[outer] = record.destination_strides[inner];
+  record.shape.erase(record.shape.begin() + inner);
+  record.source_strides.erase(record.source_strides.begin() + inner);
+  record.destination_strides.erase(record.destination_strides.begin() + inner);
+  return true;
+}
+
+}  // namespace
+
+void FuseAdjacentAxes(Record& record) {
+  if (ElementCount(record) == 0) return;
+  for (std::size_t axis = 0; axis + 1 < record.shape.size();) {
+    if (!TryFuseAdjacentPair(record, axis,
+                             static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))) {
+      ++axis;
+    }
+  }
+}
+
+void FuseAdjacentAxes(ReductionRecord& record) {
+  if (ElementCount(record.layout) == 0) return;
+  for (std::size_t axis = 0; axis + 1 < record.layout.shape.size();) {
+    if (record.reduction_axes[axis] == record.reduction_axes[axis + 1] &&
+        TryFuseAdjacentPair(record.layout, axis, std::numeric_limits<uint64_t>::max())) {
+      record.reduction_axes.erase(record.reduction_axes.begin() + axis + 1);
+    } else {
+      ++axis;
+    }
+  }
+}
+
+std::vector<uint64_t> GeneratedIndexOrder(
+    const std::vector<int64_t>& strides) {
+  std::vector<uint64_t> order(strides.size(), 1);
+  for (std::size_t axis = 0; axis < strides.size(); ++axis) {
+    const uint64_t stride = AbsoluteStride(strides[axis]);
+    if (stride == 0) continue;
+    for (int64_t candidate : strides) {
+      const uint64_t candidate_stride = AbsoluteStride(candidate);
+      if (candidate_stride != 0 && candidate_stride < stride) ++order[axis];
+    }
+  }
+  return order;
+}
+
+std::vector<std::size_t> ComputeLocalityOrder(const Record& record) {
+  const auto destination_order = GeneratedIndexOrder(record.destination_strides);
+  const auto source_order = GeneratedIndexOrder(record.source_strides);
+  std::vector<std::size_t> axes(record.shape.size());
+  std::iota(axes.begin(), axes.end(), 0);
+  const auto importance_key = [&](std::size_t axis) {
+    const auto destination = destination_order[axis];
+    const auto source = source_order[axis];
+    const uint64_t priority = destination == source ? 0 : destination < source ? 1 : 2;
+    return std::array<uint64_t, 4>{
+        record.shape[axis] > 1 ? UINT64_C(0) : UINT64_C(1),
+        record.shape[axis] > 1 ? std::min(destination, source) : 0,
+        record.shape[axis] > 1 ? priority : 0,
+        record.shape[axis] > 1 ? std::max(destination, source) : 0};
+  };
+  std::stable_sort(axes.begin(), axes.end(), [&](std::size_t left, std::size_t right) {
+    return importance_key(left) < importance_key(right);
+  });
+  return axes;
+}
+
+void SortRecordDimensions(Record* record) {
+  const auto axes = ComputeLocalityOrder(*record);
+  const auto reorder = [&](auto* values) {
+    auto reordered = *values;
+    for (std::size_t axis = 0; axis < record->shape.size(); ++axis) {
+      reordered[axis] = (*values)[axes[axis]];
+    }
+    *values = std::move(reordered);
+  };
+  reorder(&record->shape);
+  reorder(&record->source_strides);
+  reorder(&record->destination_strides);
+}
+
+namespace {
+
+template <typename T>
+void ReorderAxes(std::vector<T>* values, const std::vector<std::size_t>& order) {
+  auto reordered = *values;
+  for (std::size_t axis = 0; axis < order.size(); ++axis) {
+    reordered[axis] = (*values)[order[axis]];
+  }
+  *values = std::move(reordered);
+}
+
+void SortPreparedAxes(Record& layout, std::vector<bool>* roles) {
+  const auto axes = ComputeLocalityOrder(layout);
+  ReorderAxes(&layout.shape, axes);
+  ReorderAxes(&layout.source_strides, axes);
+  ReorderAxes(&layout.destination_strides, axes);
+  if (roles) ReorderAxes(roles, axes);
+}
+
+void OptimizePreparedAxes(Record& layout, std::vector<bool>* roles,
+                          uint64_t maximum_extent) {
+  // Empty layouts retain every axis, including ignored singleton strides.
+  if (ElementCount(layout) == 0) return;
+  SortPreparedAxes(layout, roles);
+  for (std::size_t axis = layout.shape.size(); axis > 1; --axis) {
+    const std::size_t inner = axis - 2;
+    const std::size_t outer = axis - 1;
+    int64_t source_span = 0;
+    int64_t destination_span = 0;
+    uint64_t extent = 0;
+    if (roles && (*roles)[inner] != (*roles)[outer]) continue;
+    if (!CheckedMultiplyStride(layout.source_strides[inner], layout.shape[inner],
+                               &source_span) ||
+        !CheckedMultiplyStride(layout.destination_strides[inner], layout.shape[inner],
+                               &destination_span) ||
+        source_span != layout.source_strides[outer] ||
+        destination_span != layout.destination_strides[outer] ||
+        !CheckedMultiply(layout.shape[inner], layout.shape[outer], &extent) ||
+        extent > maximum_extent) continue;
+    layout.shape[inner] = extent;
+    layout.shape[outer] = 1;
+  }
+  SortPreparedAxes(layout, roles);
+  while (!layout.shape.empty() && layout.shape.back() == 1) {
+    layout.shape.pop_back();
+    layout.source_strides.pop_back();
+    layout.destination_strides.pop_back();
+    if (roles) roles->pop_back();
+  }
+}
+
+}  // namespace
+
+void OptimizeRecordForPreparation(Record& record) {
+  if (ElementCount(record) == 0) return;
+  // Removing singleton/fused axes changes locality ranks of the remaining
+  // strides. Repeat until rank stops decreasing so re-preparation is stable.
+  for (;;) {
+    const auto rank = record.shape.size();
+    OptimizePreparedAxes(record, nullptr, static_cast<uint64_t>(INT64_MAX));
+    if (record.shape.size() == rank) return;
+  }
+}
+
+void OptimizeRecordForPreparation(ReductionRecord& record) {
+  if (ElementCount(record.layout) == 0) return;
+  for (;;) {
+    const auto rank = record.layout.shape.size();
+    OptimizePreparedAxes(record.layout, &record.reduction_axes, UINT64_MAX);
+    if (record.layout.shape.size() == rank) return;
+  }
 }
 
 const std::vector<int64_t>& Strides(const Record& record, bool source) {

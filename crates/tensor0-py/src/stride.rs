@@ -2,11 +2,40 @@
 use std::ffi::{c_char, c_void, CStr};
 
 use pyo3::exceptions::PyRuntimeError;
+#[cfg(tensor0_stride_ffi)]
+use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use pyo3::types::{PyAny, PyDict};
+use pyo3::types::{PyAny, PyDict, PyTuple};
 
 #[cfg(tensor0_stride_ffi)]
 unsafe extern "C" {
+    fn Tensor0StrideSumScratchCapacity(
+        operation: i32,
+        words: *const i64,
+        word_count: usize,
+        context: *mut c_void,
+        callback: unsafe extern "C" fn(*mut c_void, i32, *const i64, usize, *const c_char, usize),
+    );
+    fn Tensor0StrideDotScratchCapacity(
+        words: *const i64,
+        word_count: usize,
+        context: *mut c_void,
+        callback: unsafe extern "C" fn(*mut c_void, i32, *const i64, usize, *const c_char, usize),
+    );
+    fn Tensor0StridePackOwnerFiber(
+        operation: i32,
+        words: *const i64,
+        word_count: usize,
+        context: *mut c_void,
+        callback: unsafe extern "C" fn(*mut c_void, i32, *const i64, usize, *const c_char, usize),
+    );
+    fn Tensor0StridePrepareLayout(
+        operation: i32,
+        words: *const i64,
+        word_count: usize,
+        context: *mut c_void,
+        callback: unsafe extern "C" fn(*mut c_void, i32, *const i64, usize, *const c_char, usize),
+    );
     fn Tensor0StrideGetWorkerLimit() -> u64;
     fn Tensor0StrideSetWorkerLimit(limit: u64);
     fn Tensor0StrideBuiltJaxVersion() -> *const c_char;
@@ -97,6 +126,106 @@ unsafe extern "C" {
 }
 
 #[cfg(tensor0_stride_ffi)]
+#[derive(Default)]
+struct PreparedLayoutResult {
+    status: i32,
+    words: Vec<i64>,
+    error: Vec<u8>,
+}
+
+// The native bridge calls synchronously, borrowing valid buffers for this call
+// only. Reserve fallibly before copying so no allocation panic crosses the ABI.
+#[cfg(tensor0_stride_ffi)]
+unsafe extern "C" fn receive_prepared_layout(
+    context: *mut c_void,
+    status: i32,
+    words: *const i64,
+    word_count: usize,
+    error: *const c_char,
+    error_size: usize,
+) {
+    let result = unsafe { &mut *context.cast::<PreparedLayoutResult>() };
+    result.status = 2;
+    if status == 0 {
+        if result.words.try_reserve(word_count).is_err() {
+            return;
+        }
+        if word_count != 0 {
+            result
+                .words
+                .extend_from_slice(unsafe { std::slice::from_raw_parts(words, word_count) });
+        }
+    } else {
+        if result.error.try_reserve(error_size).is_err() {
+            return;
+        }
+        if error_size != 0 {
+            result.error.extend_from_slice(unsafe {
+                std::slice::from_raw_parts(error.cast::<u8>(), error_size)
+            });
+        }
+    }
+    result.status = status;
+}
+
+/// Fully validate and canonically sort/fuse a semantic V1 descriptor.
+/// Accumulation requires provably independent output owners; Reduction
+/// preserves its explicit axis roles and unsigned extent bit patterns.
+/// Raises ValueError for invalid descriptors and RuntimeError for native failure.
+#[pyfunction]
+pub fn _stride_prepare_layout(
+    py: Python<'_>,
+    operation: &str,
+    words: Vec<i64>,
+) -> PyResult<Py<PyTuple>> {
+    #[cfg(tensor0_stride_ffi)]
+    {
+        let operation = match operation {
+            "copy" => 0,
+            "update" => 1,
+            "dot" => 2,
+            "accumulation" => 3,
+            "reduction" => 4,
+            _ => return Err(PyValueError::new_err("unsupported stride layout operation")),
+        };
+        let mut result = PreparedLayoutResult {
+            status: 2,
+            ..Default::default()
+        };
+        // No pointers escape this synchronous call, including the stack context.
+        unsafe {
+            Tensor0StridePrepareLayout(
+                operation,
+                words.as_ptr(),
+                words.len(),
+                (&mut result as *mut PreparedLayoutResult).cast(),
+                receive_prepared_layout,
+            );
+        }
+        if result.status != 0 {
+            let message = if result.error.is_empty() {
+                "native stride layout preparation failed".into()
+            } else {
+                String::from_utf8_lossy(&result.error).into_owned()
+            };
+            return Err(if result.status == 1 {
+                PyValueError::new_err(message)
+            } else {
+                PyRuntimeError::new_err(message)
+            });
+        }
+        Ok(PyTuple::new(py, result.words)?.unbind())
+    }
+    #[cfg(not(tensor0_stride_ffi))]
+    {
+        let _ = (py, operation, words);
+        Err(PyRuntimeError::new_err(
+            "native stride layout preparation is unavailable",
+        ))
+    }
+}
+
+#[cfg(tensor0_stride_ffi)]
 fn pointer_capsule(py: Python<'_>, pointer: *mut c_void) -> PyResult<Py<PyAny>> {
     if pointer.is_null() {
         return Err(PyRuntimeError::new_err(
@@ -112,19 +241,44 @@ fn pointer_capsule(py: Python<'_>, pointer: *mut c_void) -> PyResult<Py<PyAny>> 
 
 #[cfg(tensor0_stride_cuda)]
 unsafe extern "C" {
+    fn Tensor0StrideCudaCopyInstantiateV1Handler() -> *mut c_void;
+    fn Tensor0StrideCudaCopyPreparedTypeId() -> *mut c_void;
+    fn Tensor0StrideCudaCopyPreparedTypeInfo() -> *const c_void;
+    fn Tensor0StrideCudaCopyPreparedCreatedCount() -> u64;
+    fn Tensor0StrideCudaCopyPreparedDestroyedCount() -> u64;
     fn Tensor0StrideCudaCopyF32V1Handler() -> *mut c_void;
     fn Tensor0StrideCudaCopyF64V1Handler() -> *mut c_void;
     fn Tensor0StrideCudaCopyC64V1Handler() -> *mut c_void;
     fn Tensor0StrideCudaCopyC128V1Handler() -> *mut c_void;
+    fn Tensor0StrideCudaUpdateInstantiateV1Handler() -> *mut c_void;
+    fn Tensor0StrideCudaUpdatePreparedTypeId() -> *mut c_void;
+    fn Tensor0StrideCudaUpdatePreparedTypeInfo() -> *const c_void;
+    fn Tensor0StrideCudaUpdatePreparedCreatedCount() -> u64;
+    fn Tensor0StrideCudaUpdatePreparedDestroyedCount() -> u64;
     fn Tensor0StrideCudaUpdateF32V1Handler() -> *mut c_void;
     fn Tensor0StrideCudaUpdateF64V1Handler() -> *mut c_void;
     fn Tensor0StrideCudaUpdateC64V1Handler() -> *mut c_void;
     fn Tensor0StrideCudaUpdateC128V1Handler() -> *mut c_void;
+    fn Tensor0StrideCudaDotInstantiateV1Handler() -> *mut c_void;
+    fn Tensor0StrideCudaDotPreparedTypeId() -> *mut c_void;
+    fn Tensor0StrideCudaDotPreparedTypeInfo() -> *const c_void;
+    fn Tensor0StrideCudaDotPreparedCreatedCount() -> u64;
+    fn Tensor0StrideCudaDotPreparedDestroyedCount() -> u64;
     fn Tensor0StrideCudaDotF32V1Handler() -> *mut c_void;
     fn Tensor0StrideCudaDotF64V1Handler() -> *mut c_void;
     fn Tensor0StrideCudaDotC64V1Handler() -> *mut c_void;
     fn Tensor0StrideCudaDotC128V1Handler() -> *mut c_void;
+    fn Tensor0StrideCudaAccumulationInstantiateV1Handler() -> *mut c_void;
+    fn Tensor0StrideCudaAccumulationPreparedTypeId() -> *mut c_void;
+    fn Tensor0StrideCudaAccumulationPreparedTypeInfo() -> *const c_void;
+    fn Tensor0StrideCudaAccumulationPreparedCreatedCount() -> u64;
+    fn Tensor0StrideCudaAccumulationPreparedDestroyedCount() -> u64;
     fn Tensor0StrideCudaAccumulationF32V1Handler() -> *mut c_void;
+    fn Tensor0StrideCudaReductionInstantiateV1Handler() -> *mut c_void;
+    fn Tensor0StrideCudaReductionPreparedTypeId() -> *mut c_void;
+    fn Tensor0StrideCudaReductionPreparedTypeInfo() -> *const c_void;
+    fn Tensor0StrideCudaReductionPreparedCreatedCount() -> u64;
+    fn Tensor0StrideCudaReductionPreparedDestroyedCount() -> u64;
     fn Tensor0StrideCudaReductionF32V1Handler() -> *mut c_void;
     fn Tensor0StrideCudaAccumulationF64V1Handler() -> *mut c_void;
     fn Tensor0StrideCudaReductionF64V1Handler() -> *mut c_void;
@@ -145,19 +299,34 @@ pub fn _stride_cuda_registration(py: Python<'_>) -> PyResult<Py<PyAny>> {
     let registration = PyDict::new(py);
     #[cfg(tensor0_stride_cuda)]
     for (name, handler) in [
+        ("copy_instantiate", unsafe { Tensor0StrideCudaCopyInstantiateV1Handler() }),
+        ("copy_type_id", unsafe { Tensor0StrideCudaCopyPreparedTypeId() }),
+        ("copy_type_info", unsafe { Tensor0StrideCudaCopyPreparedTypeInfo().cast_mut() }),
         ("copy_f32", unsafe { Tensor0StrideCudaCopyF32V1Handler() }),
         ("copy_f64", unsafe { Tensor0StrideCudaCopyF64V1Handler() }),
         ("copy_c64", unsafe { Tensor0StrideCudaCopyC64V1Handler() }),
         ("copy_c128", unsafe { Tensor0StrideCudaCopyC128V1Handler() }),
+        ("update_instantiate", unsafe { Tensor0StrideCudaUpdateInstantiateV1Handler() }),
+        ("update_type_id", unsafe { Tensor0StrideCudaUpdatePreparedTypeId() }),
+        ("update_type_info", unsafe { Tensor0StrideCudaUpdatePreparedTypeInfo().cast_mut() }),
         ("update_f32", unsafe { Tensor0StrideCudaUpdateF32V1Handler() }),
         ("update_f64", unsafe { Tensor0StrideCudaUpdateF64V1Handler() }),
         ("update_c64", unsafe { Tensor0StrideCudaUpdateC64V1Handler() }),
         ("update_c128", unsafe { Tensor0StrideCudaUpdateC128V1Handler() }),
+        ("dot_instantiate", unsafe { Tensor0StrideCudaDotInstantiateV1Handler() }),
+        ("dot_type_id", unsafe { Tensor0StrideCudaDotPreparedTypeId() }),
+        ("dot_type_info", unsafe { Tensor0StrideCudaDotPreparedTypeInfo().cast_mut() }),
         ("dot_f32", unsafe { Tensor0StrideCudaDotF32V1Handler() }),
         ("dot_f64", unsafe { Tensor0StrideCudaDotF64V1Handler() }),
         ("dot_c64", unsafe { Tensor0StrideCudaDotC64V1Handler() }),
         ("dot_c128", unsafe { Tensor0StrideCudaDotC128V1Handler() }),
+        ("accumulation_instantiate", unsafe { Tensor0StrideCudaAccumulationInstantiateV1Handler() }),
+        ("accumulation_type_id", unsafe { Tensor0StrideCudaAccumulationPreparedTypeId() }),
+        ("accumulation_type_info", unsafe { Tensor0StrideCudaAccumulationPreparedTypeInfo().cast_mut() }),
         ("accumulation_f32", unsafe { Tensor0StrideCudaAccumulationF32V1Handler() }),
+        ("reduction_instantiate", unsafe { Tensor0StrideCudaReductionInstantiateV1Handler() }),
+        ("reduction_type_id", unsafe { Tensor0StrideCudaReductionPreparedTypeId() }),
+        ("reduction_type_info", unsafe { Tensor0StrideCudaReductionPreparedTypeInfo().cast_mut() }),
         ("reduction_f32", unsafe { Tensor0StrideCudaReductionF32V1Handler() }),
         ("accumulation_f64", unsafe { Tensor0StrideCudaAccumulationF64V1Handler() }),
         ("reduction_f64", unsafe { Tensor0StrideCudaReductionF64V1Handler() }),
@@ -170,6 +339,91 @@ pub fn _stride_cuda_registration(py: Python<'_>) -> PyResult<Py<PyAny>> {
         registration.set_item(name, pointer_capsule(py, handler)?)?;
     }
     Ok(registration.into_any().unbind())
+}
+
+#[pyfunction]
+pub fn _stride_cuda_copy_prepared_stats() -> Option<(u64, u64)> {
+    #[cfg(tensor0_stride_cuda)]
+    {
+        Some(unsafe {
+            (
+                Tensor0StrideCudaCopyPreparedCreatedCount(),
+                Tensor0StrideCudaCopyPreparedDestroyedCount(),
+            )
+        })
+    }
+    #[cfg(not(tensor0_stride_cuda))]
+    {
+        None
+    }
+}
+
+#[pyfunction]
+pub fn _stride_cuda_update_prepared_stats() -> Option<(u64, u64)> {
+    #[cfg(tensor0_stride_cuda)]
+    {
+        Some(unsafe {
+            (
+                Tensor0StrideCudaUpdatePreparedCreatedCount(),
+                Tensor0StrideCudaUpdatePreparedDestroyedCount(),
+            )
+        })
+    }
+    #[cfg(not(tensor0_stride_cuda))]
+    {
+        None
+    }
+}
+
+#[pyfunction]
+pub fn _stride_cuda_dot_prepared_stats() -> Option<(u64, u64)> {
+    #[cfg(tensor0_stride_cuda)]
+    {
+        Some(unsafe {
+            (
+                Tensor0StrideCudaDotPreparedCreatedCount(),
+                Tensor0StrideCudaDotPreparedDestroyedCount(),
+            )
+        })
+    }
+    #[cfg(not(tensor0_stride_cuda))]
+    {
+        None
+    }
+}
+
+#[pyfunction]
+pub fn _stride_cuda_accumulation_prepared_stats() -> Option<(u64, u64)> {
+    #[cfg(tensor0_stride_cuda)]
+    {
+        Some(unsafe {
+            (
+                Tensor0StrideCudaAccumulationPreparedCreatedCount(),
+                Tensor0StrideCudaAccumulationPreparedDestroyedCount(),
+            )
+        })
+    }
+    #[cfg(not(tensor0_stride_cuda))]
+    {
+        None
+    }
+}
+
+#[pyfunction]
+pub fn _stride_cuda_reduction_prepared_stats() -> Option<(u64, u64)> {
+    #[cfg(tensor0_stride_cuda)]
+    {
+        Some(unsafe {
+            (
+                Tensor0StrideCudaReductionPreparedCreatedCount(),
+                Tensor0StrideCudaReductionPreparedDestroyedCount(),
+            )
+        })
+    }
+    #[cfg(not(tensor0_stride_cuda))]
+    {
+        None
+    }
 }
 
 #[pyfunction]
@@ -340,9 +594,132 @@ pub fn _stride_ffi_build_versions() -> Option<(String, String)> {
     }
 }
 
+/// Encode validated records as a CUDA owner/fiber execution view.
+#[pyfunction]
+pub fn _stride_pack_owner_fiber(
+    py: Python<'_>, operation: &str, words: Vec<i64>,
+) -> PyResult<Py<PyTuple>> {
+    #[cfg(tensor0_stride_ffi)]
+    {
+        let operation = match operation {
+            "copy" => 0,
+            "update" => 1,
+            "dot" => 2,
+            "accumulation" => 3,
+            "reduction" => 4,
+            _ => return Err(PyValueError::new_err("unsupported owner/fiber operation")),
+        };
+        let mut result = PreparedLayoutResult { status: 2, ..Default::default() };
+        unsafe {
+            Tensor0StridePackOwnerFiber(operation, words.as_ptr(), words.len(),
+                (&mut result as *mut PreparedLayoutResult).cast(), receive_prepared_layout);
+        }
+        if result.status != 0 {
+            let message = if result.error.is_empty() {
+                "native owner/fiber encoding failed".into()
+            } else {
+                String::from_utf8_lossy(&result.error).into_owned()
+            };
+            return Err(if result.status == 1 {
+                PyValueError::new_err(message)
+            } else {
+                PyRuntimeError::new_err(message)
+            });
+        }
+        Ok(PyTuple::new(py, result.words)?.unbind())
+    }
+    #[cfg(not(tensor0_stride_ffi))]
+    {
+        let _ = (py, operation, words);
+        Err(PyRuntimeError::new_err("native stride owner/fiber encoding is unavailable"))
+    }
+}
+
+/// Scratch slots per batch for prepared Accumulation or Reduction.
+#[pyfunction]
+pub fn _stride_sum_scratch_capacity(operation: &str, words: Vec<i64>) -> PyResult<i64> {
+    #[cfg(tensor0_stride_ffi)]
+    {
+        let operation = match operation {
+            "accumulation" => 3,
+            "reduction" => 4,
+            _ => return Err(PyValueError::new_err("unsupported sum scratch operation")),
+        };
+        let mut result = PreparedLayoutResult { status: 2, ..Default::default() };
+        unsafe {
+            Tensor0StrideSumScratchCapacity(operation, words.as_ptr(), words.len(),
+                (&mut result as *mut PreparedLayoutResult).cast(), receive_prepared_layout);
+        }
+        if result.status != 0 {
+            let message = if result.error.is_empty() {
+                "native sum scratch preparation failed".into()
+            } else {
+                String::from_utf8_lossy(&result.error).into_owned()
+            };
+            return Err(if result.status == 1 {
+                PyValueError::new_err(message)
+            } else {
+                PyRuntimeError::new_err(message)
+            });
+        }
+        if result.words.len() != 1 {
+            return Err(PyRuntimeError::new_err("native sum scratch preparation returned invalid capacity"));
+        }
+        Ok(result.words[0])
+    }
+    #[cfg(not(tensor0_stride_ffi))]
+    {
+        let _ = (operation, words);
+        Err(PyRuntimeError::new_err("native sum scratch preparation is unavailable"))
+    }
+}
+
+/// Scratch slots per batch for a prepared Dot descriptor.
+#[pyfunction]
+pub fn _stride_dot_scratch_capacity(words: Vec<i64>) -> PyResult<i64> {
+    #[cfg(tensor0_stride_ffi)]
+    {
+        let mut result = PreparedLayoutResult { status: 2, ..Default::default() };
+        unsafe {
+            Tensor0StrideDotScratchCapacity(words.as_ptr(), words.len(),
+                (&mut result as *mut PreparedLayoutResult).cast(), receive_prepared_layout);
+        }
+        if result.status != 0 {
+            let message = if result.error.is_empty() {
+                "native dot scratch preparation failed".into()
+            } else {
+                String::from_utf8_lossy(&result.error).into_owned()
+            };
+            return Err(if result.status == 1 {
+                PyValueError::new_err(message)
+            } else {
+                PyRuntimeError::new_err(message)
+            });
+        }
+        if result.words.len() != 1 {
+            return Err(PyRuntimeError::new_err("native dot scratch preparation returned invalid capacity"));
+        }
+        Ok(result.words[0])
+    }
+    #[cfg(not(tensor0_stride_ffi))]
+    {
+        let _ = words;
+        Err(PyRuntimeError::new_err("native dot scratch preparation is unavailable"))
+    }
+}
+
 pub fn add_stride_functions(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    module.add_function(wrap_pyfunction!(_stride_prepare_layout, module)?)?;
+    module.add_function(wrap_pyfunction!(_stride_dot_scratch_capacity, module)?)?;
+    module.add_function(wrap_pyfunction!(_stride_sum_scratch_capacity, module)?)?;
+    module.add_function(wrap_pyfunction!(_stride_pack_owner_fiber, module)?)?;
     module.add_function(wrap_pyfunction!(_stride_cuda_available, module)?)?;
     module.add_function(wrap_pyfunction!(_stride_cuda_registration, module)?)?;
+    module.add_function(wrap_pyfunction!(_stride_cuda_copy_prepared_stats, module)?)?;
+    module.add_function(wrap_pyfunction!(_stride_cuda_update_prepared_stats, module)?)?;
+    module.add_function(wrap_pyfunction!(_stride_cuda_accumulation_prepared_stats, module)?)?;
+    module.add_function(wrap_pyfunction!(_stride_cuda_dot_prepared_stats, module)?)?;
+    module.add_function(wrap_pyfunction!(_stride_cuda_reduction_prepared_stats, module)?)?;
     module.add_function(wrap_pyfunction!(_stride_native_worker_limit, module)?)?;
     module.add_function(wrap_pyfunction!(_set_stride_native_worker_limit, module)?)?;
     module.add_function(wrap_pyfunction!(_stride_native_registration, module)?)?;

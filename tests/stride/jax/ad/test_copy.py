@@ -51,7 +51,7 @@ COPY_BATCH_PAIRS = [("float16", "float32"), ("float64", "bfloat16"),
 @pytest.mark.parametrize("source_dtype,result_dtype,batch_shape,shape,strides,offset", [
     pytest.param(source, result, batch, shape, strides, offset,
                  id=f'shape{layout}-strides{layout}-{offset}-{source}-{result}-batch_shape{index}')
-    for layout, (shape, strides, offset) in enumerate([((2, 2), (1, -1), 1), ((4,), (0,), 2)])
+    for layout, (shape, strides, offset) in enumerate([((2, 2), (2, -1), 1), ((4,), (0,), 2)])
     for index, (source, result, batch) in enumerate(
         [(*pair, ()) for pair in COPY_PAIRS]
         + [(*pair, batch) for pair in COPY_BATCH_PAIRS for batch in ((2,), (2, 0))])
@@ -193,8 +193,8 @@ def test_cross_kind_vmap_and_lowering(source_dtype, result_dtype):
         source = jnp.arange(6).astype(source_dtype).reshape((2, 3))
         if source_dtype.startswith("complex"):
             source = source + 2j
-        run = lambda values: materialize(StridedView(values, (2, 2), (1, 1), 0), dtype=result_dtype)
-        reference = lambda values: copy_converted(values[jnp.asarray([[0, 1], [1, 2]])], result_dtype)
+        run = lambda values: materialize(StridedView(values, (2, 2), (0, 1), 0), dtype=result_dtype)
+        reference = lambda values: copy_converted(values[jnp.asarray([[0, 1], [0, 1]])], result_dtype)
         cotangent = jnp.full((2, 2, 2), 2 + 3j if result_dtype.startswith("complex") else 2, dtype=result_dtype)
         mapped = jax.vmap(run)
         gradient = jax.jit(jax.vjp(mapped, source)[1])(cotangent)[0]

@@ -6,55 +6,6 @@
 
 namespace tensor0::stride::layout {
 
-std::vector<uint64_t> GeneratedIndexOrder(
-    const std::vector<int64_t>& strides) {
-  std::vector<uint64_t> order(strides.size(), 1);
-  for (std::size_t axis = 0; axis < strides.size(); ++axis) {
-    const uint64_t stride = AbsoluteStride(strides[axis]);
-    if (stride == 0) continue;
-    for (int64_t candidate : strides) {
-      const uint64_t candidate_stride = AbsoluteStride(candidate);
-      if (candidate_stride != 0 && candidate_stride < stride) ++order[axis];
-    }
-  }
-  return order;
-}
-
-std::vector<std::size_t> ComputeLocalityOrder(const Record& record) {
-  const auto destination_order = GeneratedIndexOrder(record.destination_strides);
-  const auto source_order = GeneratedIndexOrder(record.source_strides);
-  std::vector<std::size_t> axes(record.shape.size());
-  std::iota(axes.begin(), axes.end(), 0);
-  const auto importance_key = [&](std::size_t axis) {
-    const auto destination = destination_order[axis];
-    const auto source = source_order[axis];
-    const uint64_t priority = destination == source ? 0 : destination < source ? 1 : 2;
-    return std::array<uint64_t, 4>{
-        record.shape[axis] > 1 ? UINT64_C(0) : UINT64_C(1),
-        record.shape[axis] > 1 ? std::min(destination, source) : 0,
-        record.shape[axis] > 1 ? priority : 0,
-        record.shape[axis] > 1 ? std::max(destination, source) : 0};
-  };
-  std::stable_sort(axes.begin(), axes.end(), [&](std::size_t left, std::size_t right) {
-    return importance_key(left) < importance_key(right);
-  });
-  return axes;
-}
-
-void SortRecordDimensions(Record* record) {
-  const auto axes = ComputeLocalityOrder(*record);
-  const auto reorder = [&](auto* values) {
-    auto reordered = *values;
-    for (std::size_t axis = 0; axis < record->shape.size(); ++axis) {
-      reordered[axis] = (*values)[axes[axis]];
-    }
-    *values = std::move(reordered);
-  };
-  reorder(&record->shape);
-  reorder(&record->source_strides);
-  reorder(&record->destination_strides);
-}
-
 void OptimizeRecordForExecution(Record* record) {
   if (ElementCount(*record) == 0 || record->shape.size() == 0) {
     SortRecordDimensions(record);

@@ -484,7 +484,8 @@ def test_cuda_compile_cache_and_linkage(build):
 @pytest.mark.parametrize("layer", ["execute", "kernels"])
 def test_cuda_cache_tracks_nested_headers(build, layer):
     run, manifest, output = build
-    header = manifest / f"native/cuda/{layer}/copy.cuh"
+    # Synthetic mock dependency: this tests cache invalidation, not a real include chain.
+    header = manifest / f"native/cuda/{layer}/synthetic_header.cuh"
     header.parent.mkdir(parents=True, exist_ok=True)
     header.write_text("original header")
     toolkit = output.parent / "cuda"

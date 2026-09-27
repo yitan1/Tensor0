@@ -9,18 +9,14 @@ import numpy as np
 import pytest
 
 from tensor0 import _native
+from tests.stride.support.availability import cuda_device_or_skip
 from tensor0._stride import _jax
 from tensor0._stride._layout import AffineRecord
 
 
 @pytest.fixture
 def cuda_device():
-    if not getattr(_native, "_stride_cuda_available", lambda: False)():
-        pytest.skip("native CUDA reduction is unavailable")
-    try:
-        return jax.devices("cuda")[0]
-    except RuntimeError:
-        pytest.skip("CUDA device is unavailable")
+    return cuda_device_or_skip()
 
 
 def reduce_records(source, records, size, *coefficients, indices=()):
@@ -159,10 +155,11 @@ def test_nonfinite_real_complex_products_and_per_contribution_scaling(cuda_devic
 
 
 def test_i64_metadata_without_x64(cuda_device):
+    empty = AffineRecord((0, 1), (1, 1 << 35), 0, (0, -(1 << 34)), 0)
     record = AffineRecord((1, 2), (1 << 35, 1), 0, (-(1 << 34), 0), 0)
     with jax.enable_x64(False):
         value = jax.device_put(np.array([2, 3], np.float32), cuda_device)
-        operation = jax.jit(lambda s: reduce_records(s, (record,), 1))
+        operation = jax.jit(lambda s: reduce_records(s, (empty, record), 1))
         text = str(operation.lower(value).compiler_ir("stablehlo"))
         assert "34359738368" in text and "i64" in text
         np.testing.assert_array_equal(operation(value), [5])
@@ -201,10 +198,10 @@ def test_grid_stride_second_iteration(cuda_device):
 @pytest.mark.parametrize("dtype", ["float32", "float64", "complex64", "complex128"])
 @pytest.mark.parametrize("coefficient_shape", [(), (1,), (2,)])
 def test_reduction_ad(cuda_device, dtype, coefficient_shape):
-    records = (AffineRecord((2, 2), (1, 1), 0, (0, 1), 1),
+    records = (AffineRecord((2, 2), (2, 1), 0, (0, 1), 1),
                AffineRecord((2,), (-1,), 2, (0,), 1))
     with jax.enable_x64():
-        source = np.arange(6).reshape(2, 3).astype(dtype) + 1
+        source = np.arange(8).reshape(2, 4).astype(dtype) + 1
         coefficient = np.full(coefficient_shape, 2, dtype)
         if dtype.startswith("complex"):
             source += 1j

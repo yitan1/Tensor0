@@ -43,7 +43,7 @@ def update_functions(records):
 
 LAYOUTS = [
     (AffineRecord((3,), (1,), 0, (2,), 1), AffineRecord((3,), (1,), 0, (2,), 2)),
-    (AffineRecord((2, 2), (1, 1), 0, (4, 1), 1), AffineRecord((2,), (0,), 3, (-4,), 7)),
+    (AffineRecord((2, 2), (2, 1), 0, (4, 1), 1), AffineRecord((2,), (0,), 3, (-4,), 7)),
     (AffineRecord((3,), (-1,), 5, (-2,), 6), AffineRecord((2,), (1,), 0, (2,), 1)),
     (AffineRecord((), (), 0, (), 2), AffineRecord((), (), 0, (), 5)),
     (AffineRecord((2,), (1,), 1, (1,), 2), AffineRecord((0,), (1,), 6, (1,), 10)),

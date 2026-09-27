@@ -102,7 +102,7 @@ def test_mixed_reduction_reverse_product_range_and_coefficient_ad_boundary():
 @pytest.mark.skipif(not native_available(), reason='native CPU stride is unavailable')
 def test_mixed_reduction_batch_coefficients_and_zero_one_branches():
     source = jnp.ones((3, 4), dtype=jnp.float16)
-    record = AffineRecord((2, 2), (1, 1), 0, (1, 1), 1)
+    record = AffineRecord((2, 2), (2, 1), 0, (1, 1), 1)
     factors = jnp.asarray([0, 1, 2], dtype=jnp.float32)
     def execute(values, coefficients):
         return reduction_p.bind(values, coefficients, records=(record,), output_shapes=((2, 1),),
@@ -111,7 +111,7 @@ def test_mixed_reduction_batch_coefficients_and_zero_one_branches():
     cotangent = jnp.asarray([[jnp.nan, 1, 2, jnp.nan]] * 3, dtype=jnp.float32)
     actual = jax.jit(jax.vjp(run, source)[1])(cotangent)[0]
     assert actual.dtype == source.dtype
-    np.testing.assert_allclose(actual, [[0, 0, 0, 0], [1, 3, 2, 0], [2, 6, 4, 0]], rtol=1e-3, atol=1e-3)
+    np.testing.assert_allclose(actual, [[0, 0, 0, 0], [1, 1, 2, 2], [2, 2, 4, 4]], rtol=1e-3, atol=1e-3)
     source_rows = jnp.stack((source, source * 2))
     factor_rows = jnp.stack((factors, factors))
     mapped = jax.vmap(execute)
@@ -121,8 +121,7 @@ def test_mixed_reduction_batch_coefficients_and_zero_one_branches():
     np.testing.assert_array_equal(tangent[0], [0, 0, 0, 0])
     gradient = jax.linear_transpose(run, source)(jnp.full((3, 4), jnp.inf, dtype=jnp.float32))[0]
     np.testing.assert_array_equal(gradient[0], [0, 0, 0, 0])
-    assert jnp.all(jnp.isposinf(gradient[1, :3]))
-    assert gradient[1, 3] == 0
+    assert jnp.all(jnp.isposinf(gradient[1]))
 
 
 @pytest.fixture(autouse=False)

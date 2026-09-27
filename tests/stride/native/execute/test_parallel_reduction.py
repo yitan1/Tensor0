@@ -98,7 +98,7 @@ def _batch_layouts(accumulation):
     records = (
         AffineRecord((4,), (-1,), 7, (0,), 3),
         AffineRecord((4,), (1,), 11, (2,), 9),
-        AffineRecord((2, 3), (0, 1), 30, (1, 1) if accumulation else (1, 0), 3),
+        AffineRecord((2, 3), (0, 1), 30, (3, 1) if accumulation else (1, 0), 3),
     )
     return records, _encode_thread_layout(accumulation, records, BATCH_SIZE, BATCH_SIZE)
 
@@ -309,14 +309,11 @@ def test_single_zero_record_does_not_read_or_erase_contributions(accumulation):
 
 @pytest.mark.usefixtures("restore_worker_limit")
 @pytest.mark.skipif(not native_available(), reason='native CPU stride unavailable')
-def test_single_general_overlap_falls_back_without_losing_contributions():
+def test_single_general_overlap_is_rejected_before_writes():
     record = AffineRecord((2, SINGLE_SIZE // 2), (1, 2), 0, (1, 1), 0)
     layout = encode_layout((record,), source_size=SINGLE_SIZE, output_size=SINGLE_SIZE)
-    result = execute_accumulation(jnp.ones(SINGLE_SIZE, jnp.float32), layout=layout, output_size=SINGLE_SIZE)
-    expected = np.zeros(SINGLE_SIZE, np.float32)
-    expected[:SINGLE_SIZE // 2] += 1
-    expected[1:SINGLE_SIZE // 2 + 1] += 1
-    np.testing.assert_array_equal(result, expected)
+    with pytest.raises(Exception, match="cannot prove injective output owners"):
+        execute_accumulation(jnp.ones(SINGLE_SIZE, jnp.float32), layout=layout, output_size=SINGLE_SIZE).block_until_ready()
 
 
 @pytest.mark.usefixtures("restore_worker_limit")

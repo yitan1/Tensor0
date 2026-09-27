@@ -12,7 +12,9 @@ from tensor0._stride._ffi._descriptor import encode_layout
 from tensor0._stride._layout import AffineRecord
 
 from tests.stride.support.availability import native_available
-from tests.stride.support.layouts import OVERLAP
+
+
+INDEPENDENT = AffineRecord((2, 2), (1, 2), 0, (2, 1), 1)
 
 
 pytestmark = pytest.mark.skipif(not native_available(), reason='native CPU stride is unavailable')
@@ -26,7 +28,7 @@ def enable_x64():
 
 @pytest.mark.usefixtures("enable_x64")
 @pytest.mark.parametrize('batch_shape', [(), (2,), (2, 3), (0,), (2, 0)])
-@pytest.mark.parametrize('record', [OVERLAP, AffineRecord((2, 2, 2), (-1, -2, -4), 7, (1, -1, 0), 2), AffineRecord((2, 2, 2), (1, 2, 4), 0, (0, 1, 1), 2), AffineRecord((0,), (-(1 << 63),), 8, ((1 << 63) - 1,), 8), AffineRecord((), (), 2, (), 3), AffineRecord((1,) * 70, ((1 << 63) - 1,) * 70, 2, (-(1 << 63),) * 70, 3)])
+@pytest.mark.parametrize('record', [INDEPENDENT, AffineRecord((2, 2, 2), (-1, -2, -4), 7, (2, -1, 0), 2), AffineRecord((2, 2, 2), (1, 2, 4), 0, (0, 2, 1), 2), AffineRecord((0,), (-(1 << 63),), 8, ((1 << 63) - 1,), 8), AffineRecord((), (), 2, (), 3), AffineRecord((1,) * 70, ((1 << 63) - 1,) * 70, 2, (-(1 << 63),) * 70, 3)])
 def test_layouts_and_batches(batch_shape, record):
     source = jnp.arange(prod(batch_shape) * 8, dtype=jnp.float32).reshape((*batch_shape, 8))
     expected = np.zeros((*batch_shape, 8), np.float32)
@@ -43,7 +45,7 @@ def test_layouts_and_batches(batch_shape, record):
 @pytest.mark.usefixtures("enable_x64")
 @pytest.mark.parametrize('batch_shape', [(), (3,), (2, 3), (0,), (2, 0)])
 def test_record_coefficients_and_reuse(batch_shape):
-    records = (OVERLAP, AffineRecord((0,), (1,), 8, (1,), 8), AffineRecord((2, 2), (-1, -2), 7, (-1, -1), 3))
+    records = (INDEPENDENT, AffineRecord((0,), (1,), 8, (1,), 8), AffineRecord((2, 2), (-1, -2), 7, (-2, -1), 3))
     source = jnp.arange(prod(batch_shape) * 8, dtype=jnp.float32).reshape((*batch_shape, 8)) + 1
     original = np.asarray(source).copy()
     factors = jnp.asarray(np.arange(prod(batch_shape)).reshape(batch_shape) % 3, dtype=jnp.int32)

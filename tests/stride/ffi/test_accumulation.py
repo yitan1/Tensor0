@@ -36,13 +36,33 @@ def test_map_and_axis_reduction_still_reject_overlap():
         jax.ffi.ffi_call(operation_target('reduction', jnp.dtype('float32')), jax.ShapeDtypeStruct((1, 5), jnp.float32))(jnp.ones((1, 4)), layout=axis_layout, coefficient_records=np.asarray([], np.int64)).block_until_ready()
 
 
+@pytest.mark.usefixtures("enable_x64")
+@pytest.mark.parametrize("strides", [(1, 1), (3, 2)])
+@pytest.mark.parametrize("factor,batches", [(0.0, 0), (1.0, 1)])
+def test_accumulation_rejects_unproven_output_owners(strides, factor, batches):
+    record = AffineRecord((2, 3), (3, 1), 0, strides, 0)
+    layout = encode_layout((record,), source_size=6, output_size=8)
+    data = jnp.ones((batches, 6), jnp.float32)
+    from tensor0 import _native
+    with pytest.raises(ValueError, match="cannot prove injective output owners"):
+        _native._stride_prepare_layout("accumulation", tuple(map(int, layout)))
+    if batches:
+        with pytest.raises(Exception, match="cannot prove injective output owners"):
+            execute_accumulation(data, (jnp.float32(factor),), coefficient_records=(0,),
+                                 layout=layout, output_size=8).block_until_ready()
+        with pytest.raises(Exception, match="cannot prove injective output owners"):
+            raw_call(data, layout, coefficients=(jnp.float32(factor),), indices=(0,),
+                     shape=(batches, 8)).block_until_ready()
+
+
 def raw_call(source, layout, *, coefficients=(), indices=(), shape=(1, 5), dtype=jnp.float32, aliases=None):
     return jax.ffi.ffi_call(operation_target('accumulation', jnp.dtype(dtype)), jax.ShapeDtypeStruct(shape, dtype), vmap_method='sequential', input_output_aliases=aliases)(source, *coefficients, layout=layout, coefficient_records=np.asarray(indices, dtype=np.int64))
 
 
 @pytest.mark.usefixtures("enable_x64")
 def test_invalid_protocol_and_buffers():
-    layout = encode_layout((OVERLAP,), source_size=4, output_size=5)
+    valid = AffineRecord((2, 2), (1, 2), 0, (2, 1), 1)
+    layout = encode_layout((valid,), source_size=4, output_size=5)
     for length in range(layout.size):
         with pytest.raises(Exception, match='descriptor|record count|rank'):
             raw_call(jnp.ones((1, 4)), layout[:length]).block_until_ready()
@@ -69,7 +89,8 @@ def test_invalid_protocol_and_buffers():
 
 @pytest.mark.usefixtures("enable_x64")
 def test_alias_and_python_boundaries():
-    layout = encode_layout((OVERLAP,), source_size=4, output_size=4)
+    valid = AffineRecord((2, 2), (1, 2), 0, (2, 1), 0)
+    layout = encode_layout((valid,), source_size=4, output_size=4)
     with pytest.raises(Exception, match='overlap'):
         raw_call(jnp.ones((1, 4), dtype=jnp.float32), layout, shape=(1, 4), aliases={0: 0}).block_until_ready()
     with pytest.raises(TypeError, match='JAX'):

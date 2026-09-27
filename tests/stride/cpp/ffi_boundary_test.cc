@@ -132,6 +132,70 @@ void CheckParallelUpdate() {
   assert(rejected && pool.tasks.empty() && result == original);
 }
 
+void CheckSingletonUpdateAlias() {
+  std::array<int64_t, 2> dimensions{1, 4};
+  int64_t count = 1;
+  float alpha = 0, beta = 3;
+  std::array<float, 4> values{7, 11, 13, 17};
+  std::array<float, 4> other{3, 5, 7, 9};
+  XLA_FFI_Buffer storage{XLA_FFI_Buffer_STRUCT_SIZE, nullptr, XLA_FFI_DataType_F32,
+      values.data(), 2, dimensions.data()};
+  XLA_FFI_Buffer source = storage;
+  XLA_FFI_Buffer coefficient{XLA_FFI_Buffer_STRUCT_SIZE, nullptr, XLA_FFI_DataType_F32,
+      &alpha, 1, &count};
+  XLA_FFI_Buffer beta_buffer = coefficient;
+  beta_buffer.data = &beta;
+  const auto invoke = [&](const native::PreparedState* prepared) {
+    return testing::Update<ffi::F32>(ffi::Span<const int64_t>{}, prepared,
+        ffi::AnyBuffer(&source),
+        ffi::BufferR2<ffi::F32>(&storage), ffi::AnyBuffer(&coefficient),
+        ffi::AnyBuffer(&beta_buffer), ffi::BufferR2<ffi::F32>(&storage));
+  };
+  for (int64_t unused : {INT64_MAX, INT64_MIN}) {
+    // Axis zero is retained despite its unused, differing source/destination
+    // strides. Source, base and result share the very same pointer.
+    const std::vector<int64_t> singleton{1, 4, 4, 1, 2, 1, 1, 1, 2,
+                                          unused, 1, -1 - unused, 1};
+    auto prepared = native::InstantiatePrepared(singleton);
+    assert(prepared.has_value());
+    assert(((*prepared)->records[0].shape == std::vector<uint64_t>{2}));
+    for (float scale : {0.0f, 2.0f}) {
+      alpha = scale;
+      values = {7, 11, 13, 17};
+      assert(invoke(prepared->get()).success());
+      assert((values == std::array<float, 4>{7, 11 * (scale + 3),
+                                              13 * (scale + 3), 17}));
+    }
+  }
+
+  // Empty records still compare every stride, including singleton axes.
+  const std::vector<int64_t> empty{1, 4, 4, 1, 2, 1, 1, 0, 1,
+                                   INT64_MAX, 1, INT64_MAX, INT64_MIN};
+  auto empty_state = native::InstantiatePrepared(empty);
+  assert(empty_state.has_value());
+  // A real permutation touches the same two addresses in opposite order.
+  const std::vector<int64_t> permutation{1, 4, 4, 1, 2, 1, 2, 2, 1,
+                                         1, INT64_MAX, -1, INT64_MIN};
+  auto swapped = native::InstantiatePrepared(permutation);
+  assert(swapped.has_value());
+  for (float scale : {0.0f, 2.0f}) {
+    alpha = scale;
+    values = {7, 11, 13, 17};
+    const auto unchanged = values;
+    assert(invoke(empty_state->get()).message().find("per-element addresses") !=
+           std::string::npos);
+    assert(values == unchanged);
+    assert(invoke(swapped->get()).message().find("per-element addresses") !=
+           std::string::npos);
+    assert(values == unchanged);
+  }
+  // A failed alias invocation does not poison the prepared state or executor.
+  source.data = other.data();
+  alpha = 2;
+  assert(invoke(swapped->get()).success());
+  assert((values == std::array<float, 4>{7, 47, 49, 17}));
+}
+
 std::vector<uint8_t> Bytes(std::initializer_list<uint64_t> words) {
   std::vector<uint8_t> bytes;
   for (const auto word : words) {
@@ -468,6 +532,7 @@ int main() {
   CheckDotBoundary();
   CheckBatchScheduling();
   CheckParallelUpdate();
+  CheckSingletonUpdateAlias();
   const std::vector<int64_t> words{1, 8, 8, 1, 1, 1, 1, 3, 2, 2};
   auto prepared = native::InstantiatePrepared(words);
   assert(prepared.has_value());

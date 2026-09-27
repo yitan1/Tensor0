@@ -232,10 +232,10 @@ def check(left_dtype, right_dtype, dtype, operation, batch_shape=()):
     result_dtype = jnp.result_type(left, right) if dtype is None else jnp.dtype(dtype)
 
     def run(first, second):
-        return operation(StridedView(first, (2, 2), (1, 1), 0), StridedView(second, (2, 2), (0, -1), 2), dtype=dtype)
+        return operation(StridedView(first, (2, 2), (0, 1), 0), StridedView(second, (2, 2), (0, -1), 2), dtype=dtype)
 
     def reference(first, second):
-        selected_left = first[..., jnp.asarray([[0, 1], [1, 2]])]
+        selected_left = first[..., jnp.asarray([[0, 1], [0, 1]])]
         selected_right = second[..., jnp.asarray([[2, 1], [2, 1]])]
         if operation is dotc:
             selected_left = jnp.conj(selected_left)

@@ -1,7 +1,6 @@
 #include "prepared.h"
 
 #include "errors.h"
-#include "../layout/traversal.h"
 #include <stdexcept>
 #include <utility>
 
@@ -25,8 +24,7 @@ const ffi::TypeInfo kPreparedTypeInfo = ffi::MakeTypeInfo<PreparedState>();
 ffi::ErrorOr<std::unique_ptr<PreparedState>> InstantiatePrepared(ffi::Span<const int64_t> words) {
   std::unique_ptr<PreparedState> state;
   const auto error = ContainErrors([&] {
-    auto layout = descriptor::DecodeLayout(words.begin(), words.size());
-    for (auto& record : layout.records) layout::OptimizeRecordForExecution(&record);
+    auto layout = descriptor::PrepareLayout(words.begin(), words.size());
     state = std::make_unique<PreparedState>(std::move(layout));
   });
   if (error.failure()) return ffi::Unexpected(error);
@@ -37,10 +35,15 @@ ffi::ErrorOr<std::unique_ptr<PreparedState>> InstantiateReduction(
     ffi::Span<const uint8_t> bytes, ffi::Span<const int64_t>) {
   std::unique_ptr<PreparedState> state;
   const auto error = ContainErrors([&] {
-    auto layout = descriptor::DecodeReductionLayout(
+    auto decoded = descriptor::PrepareReductionLayout(
         reinterpret_cast<const char*>(bytes.begin()), bytes.size());
-    for (auto& record : layout.records) layout::OptimizeRecordForExecution(&record);
-    state = std::make_unique<PreparedState>(std::move(layout));
+    descriptor::DecodedLayout legacy;
+    legacy.source_size = decoded.source_size;
+    legacy.output_size = decoded.output_size;
+    legacy.records.reserve(decoded.records.size());
+    // Fuse role-aware records before projecting their address layouts.
+    for (auto& record : decoded.records) legacy.records.push_back(std::move(record.layout));
+    state = std::make_unique<PreparedState>(std::move(legacy));
   });
   if (error.failure()) return ffi::Unexpected(error);
   return state;
@@ -50,8 +53,7 @@ ffi::ErrorOr<std::unique_ptr<PreparedState>> InstantiateDot(
     ffi::Span<const int64_t> words, int64_t) {
   std::unique_ptr<PreparedState> state;
   const auto error = ContainErrors([&] {
-    auto layout = descriptor::DecodeAddressLayout(words.begin(), words.size());
-    for (auto& record : layout.records) layout::OptimizeRecordForExecution(&record);
+    auto layout = descriptor::PrepareAddressLayout(words.begin(), words.size());
     state = std::make_unique<PreparedState>(std::move(layout));
   });
   if (error.failure()) return ffi::Unexpected(error);
@@ -62,8 +64,7 @@ ffi::ErrorOr<std::unique_ptr<PreparedState>> InstantiateAccumulation(
     ffi::Span<const int64_t> words, ffi::Span<const int64_t>) {
   std::unique_ptr<PreparedState> state;
   const auto error = ContainErrors([&] {
-    auto layout = descriptor::DecodeAddressLayout(words.begin(), words.size());
-    for (auto& record : layout.records) layout::OptimizeRecordForExecution(&record);
+    auto layout = descriptor::PrepareAccumulationLayout(words.begin(), words.size());
     state = std::make_unique<PreparedState>(std::move(layout));
   });
   if (error.failure()) return ffi::Unexpected(error);

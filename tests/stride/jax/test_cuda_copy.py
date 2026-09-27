@@ -8,18 +8,14 @@ import numpy as np
 import pytest
 
 from tensor0 import _native
+from tests.stride.support.availability import cuda_device_or_skip
 from tensor0._stride._jax import copy_p
 from tensor0._stride._layout import AffineRecord
 
 
 @pytest.fixture
 def cuda_device():
-    if not getattr(_native, "_stride_cuda_available", lambda: False)():
-        pytest.skip("native CUDA copy is unavailable")
-    try:
-        return jax.devices("cuda")[0]
-    except RuntimeError:
-        pytest.skip("CUDA device is unavailable")
+    return cuda_device_or_skip()
 
 
 def _copy(source, records, output_size, dtype=None):
@@ -62,13 +58,15 @@ def test_cuda_copy_empty(cuda_device, records, source_shape, output_size):
 
 
 def test_cuda_copy_i64_metadata_with_x64_disabled(cuda_device):
-    # An unused singleton stride is deliberately not representable as int32.
-    records = (AffineRecord((1,), (1 << 33,), 0, (1 << 34,), 1),)
+    # Empty records keep their original i64 strides even though nonempty
+    # singleton axes are removed by canonical preparation.
+    records = (AffineRecord((0, 1), (1, 1 << 33), 0, (1, 1 << 34), 1),
+               AffineRecord((1,), (1,), 0, (1,), 1))
     with jax.enable_x64(False):
         source = jax.device_put(np.array([7], np.float32), cuda_device)
         operation = jax.jit(lambda value: _copy(value, records, 3))
         text = str(operation.lower(source).compiler_ir("stablehlo"))
-        assert "tensor<10xi64>" in text
+        assert "tensor<18xi64>" in text
         assert "8589934592" in text
         assert "17179869184" in text
         np.testing.assert_array_equal(operation(source), [0, 7, 0])

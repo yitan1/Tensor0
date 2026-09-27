@@ -31,6 +31,19 @@ Generated results belong under the ignored `benchmark-results/standard/` and
 `benchmark-results/cross_backend/` directories. Large results retained for
 internal analysis belong under `local/benchmarks/`.
 
-See [`standard/README.md`](standard/README.md) and
+A bounded CUDA stride owner/fiber diagnostic is available separately from the
+standard suite runner:
+
+```sh
+mkdir -p benchmark-results/standard
+python -m benchmarks.standard.diagnostics.cuda_owner_fiber > benchmark-results/standard/cuda-owner-fiber.json
+```
+
+Use a CUDA-enabled Tensor0 installation and JAX CUDA device; this diagnostic
+fails instead of falling back to CPU. It checks results against independent NumPy
+references, then records compiled-call-and-synchronize latency (not pure kernel
+time). Run it separately for each candidate build to compare versions; its output
+identifies the imported native extension. See
+[`standard/README.md`](standard/README.md) and
 [`cross_backend/README.md`](cross_backend/README.md) for suite-specific
 contracts.

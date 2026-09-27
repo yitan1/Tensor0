@@ -10,18 +10,14 @@ import numpy as np
 import pytest
 
 from tensor0 import _native
+from tests.stride.support.availability import cuda_device_or_skip
 from tensor0._stride import _jax
 from tensor0._stride._layout import AffineRecord
 
 
 @pytest.fixture
 def cuda_device():
-    if not getattr(_native, "_stride_cuda_available", lambda: False)():
-        pytest.skip("native CUDA update is unavailable")
-    try:
-        return jax.devices("cuda")[0]
-    except RuntimeError:
-        pytest.skip("CUDA device is unavailable")
+    return cuda_device_or_skip()
 
 
 def _update(source, base, alpha, beta, records):
@@ -87,13 +83,14 @@ def test_cuda_update_layouts_empty_holes(cuda_device, records, source_size, outp
 
 
 def test_cuda_update_i64_metadata_x64_disabled(cuda_device):
-    records = (AffineRecord((1,), (1 << 33,), 0, (1 << 34,), 1),)
+    records = (AffineRecord((0, 1), (1, 1 << 33), 0, (1, 1 << 34), 1),
+               AffineRecord((1,), (1,), 0, (1,), 1))
     with jax.enable_x64(False):
         source = jax.device_put(np.array([7], np.float32), cuda_device)
         base = jax.device_put(np.array([2, 3, 4], np.float32), cuda_device)
         operation = jax.jit(lambda s, b: _update(s, b, jnp.int32(1), jnp.int32(0), records))
         text = str(operation.lower(source, base).compiler_ir("stablehlo"))
-        assert "tensor<10xi64>" in text and "8589934592" in text and "17179869184" in text
+        assert "tensor<18xi64>" in text and "8589934592" in text and "17179869184" in text
         np.testing.assert_array_equal(operation(source, base), [2, 7, 4])
 
 

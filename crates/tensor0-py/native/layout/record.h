@@ -15,11 +15,32 @@ struct Record {
   std::vector<int64_t> destination_strides;
 };
 
+struct ReductionRecord {
+  Record layout;
+  std::vector<bool> reduction_axes;
+};
+
 bool CheckedAdd(uint64_t left, uint64_t right, uint64_t* result);
 
 bool CheckedMultiply(uint64_t left, uint64_t right, uint64_t* result);
 
 uint64_t ElementCount(const Record& record);
+
+// Equal logical source/destination addresses, ignoring unused singleton strides
+// for nonempty records. Empty records retain the prior strict stride/offset rule.
+bool HasIdenticalAddresses(const Record& record);
+
+// Conservative order-preserving fusion retained for direct layout utilities.
+void FuseAdjacentAxes(Record& record);
+void FuseAdjacentAxes(ReductionRecord& record);
+
+// Stable locality ordering, then first-axis-fastest fusion and a second sort.
+// Only validated, nonempty records are normalized; reduction roles move with axes.
+std::vector<uint64_t> GeneratedIndexOrder(const std::vector<int64_t>& strides);
+std::vector<std::size_t> ComputeLocalityOrder(const Record& record);
+void SortRecordDimensions(Record* record);
+void OptimizeRecordForPreparation(Record& record);
+void OptimizeRecordForPreparation(ReductionRecord& record);
 
 uint64_t AbsoluteStride(int64_t stride);
 

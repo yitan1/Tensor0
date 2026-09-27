@@ -1,4 +1,4 @@
-"""CUDA address accumulation: owned outputs/fibers and sequential general maps."""
+"""CUDA address accumulation with provably disjoint output owners."""
 
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
@@ -9,18 +9,14 @@ import numpy as np
 import pytest
 
 from tensor0 import _native
+from tests.stride.support.availability import cuda_device_or_skip
 from tensor0._stride import _jax
 from tensor0._stride._layout import AffineRecord
 
 
 @pytest.fixture
 def cuda_device():
-    if not getattr(_native, "_stride_cuda_available", lambda: False)():
-        pytest.skip("native CUDA accumulation is unavailable")
-    try:
-        return jax.devices("cuda")[0]
-    except RuntimeError:
-        pytest.skip("CUDA device is unavailable")
+    return cuda_device_or_skip()
 
 
 def accumulate(source, records, size, *coefficients, indices=()):
@@ -30,17 +26,16 @@ def accumulate(source, records, size, *coefficients, indices=()):
 
 CASES = [
     (AffineRecord((3, 2), (2, 1), 0, (4, 1), 1), 6, 12),  # injective
+    (AffineRecord((2, 2), (1, 1), 0, (2, 1), 0), 3, 4),  # repeated source reads stay legal
     (AffineRecord((2, 3, 2), (6, 2, 1), 0, (0, -2, 0), 5), 12, 8),  # fibers
-    (AffineRecord((2, 2), (2, 1), 0, (1, 1), 0), 4, 4),  # collision
-    (AffineRecord((3, 2), (2, 1), 0, (2, 3), 0), 6, 8),  # proof false negative
-    (AffineRecord((2, 2, 2), (4, 2, 1), 0, (0, 1, 1), 0), 8, 4),
+    (AffineRecord((2, 2, 2), (4, 2, 1), 0, (0, 2, 1), 0), 8, 4),
     (AffineRecord((3, 2), (0, -1), 1, (0, 0), 2), 2, 4),
     (AffineRecord((1, 3), (-(1 << 63), 1), 0, ((1 << 63) - 1, -1), 2), 3, 5),
     (AffineRecord((), (), 1, (), 2), 3, 4),
     (AffineRecord((1,) * 20 + (2,), (0,) * 20 + (1,), 0, (0,) * 21, 1), 2, 3),
     (AffineRecord((0,), (1,), 0, (1,), 0), 0, 4),
     (AffineRecord((0,), (1,), 0, (1,), 0), 0, 0),
-    (AffineRecord((33, 35), (0, 0), 0, (1, 1), 0), 1, 70),
+    (AffineRecord((33, 35), (0, 0), 0, (35, 1), 0), 1, 1155),
     (AffineRecord((257,), (-1,), 256, (2,), 1), 257, 519),
 ]
 
@@ -76,7 +71,7 @@ MATRIX = [(storage, coefficient) for storage, coefficients in (
 @pytest.mark.parametrize("shape", [(), (1,), (3,)])
 def test_coefficient_matrix_sparse_empty_records(cuda_device, storage, coefficient, shape):
     records = (AffineRecord((0,), (1,), 0, (1,), 0),
-               AffineRecord((2, 2), (2, 1), 0, (1, 1), 0),
+               AffineRecord((2, 2), (2, 1), 0, (2, 1), 0),
                AffineRecord((2, 2), (2, 1), 0, (0, 1), 0))
     with jax.enable_x64():
         source = np.arange(12).reshape(3, 4).astype(storage) + 1
@@ -146,13 +141,18 @@ def test_copy_and_update_reverse(cuda_device, dtype, strides):
                                           jnp.array(0, s.dtype), records=records),
         ):
             reverse = jax.jit(lambda s, w: jax.vjp(operation, s)[1](w)[0])
-            cpu = reverse(*(jax.device_put(v, jax.devices("cpu")[0]) for v in (source, weights)))
-            gpu = reverse(*(jax.device_put(v, cuda_device) for v in (source, weights)))
-            np.testing.assert_array_equal(gpu, cpu)
+            if strides == (1, 1):
+                for device in (jax.devices("cpu")[0], cuda_device):
+                    with pytest.raises(Exception, match="cannot prove injective output owners"):
+                        reverse(*(jax.device_put(v, device) for v in (source, weights)))
+            else:
+                cpu = reverse(*(jax.device_put(v, jax.devices("cpu")[0]) for v in (source, weights)))
+                gpu = reverse(*(jax.device_put(v, cuda_device) for v in (source, weights)))
+                np.testing.assert_array_equal(gpu, cpu)
 
 
 def test_concurrent_hlo_and_coefficient_reverse(cuda_device):
-    records = [(AffineRecord((2, 2), (2, 1), 0, strides, 0),) for strides in ((1, 1), (0, 1))]
+    records = [(AffineRecord((2, 2), (2, 1), 0, strides, 0),) for strides in ((2, 1), (0, 1))]
     operations = [jax.jit(lambda s, c, rec=rec: accumulate(s, rec, 4, c, indices=(0,))) for rec in records]
     inputs = [tuple(jax.device_put(v, cuda_device) for v in
                     (np.arange(4, dtype=np.float32) + i, np.array(i + 1, np.float32))) for i in range(12)]
@@ -160,7 +160,7 @@ def test_concurrent_hlo_and_coefficient_reverse(cuda_device):
     with ThreadPoolExecutor(max_workers=4) as pool:
         results = list(pool.map(lambda i: operations[i % 2](*inputs[i]), range(12)))
     for i, result in enumerate(results):
-        expected = np.array([i, 2 * i + 3, i + 3, 0]) if i % 2 == 0 else np.array([2 * i + 2, 2 * i + 4, 0, 0])
+        expected = np.array([i, i + 1, i + 2, i + 3]) if i % 2 == 0 else np.array([2 * i + 2, 2 * i + 4, 0, 0])
         np.testing.assert_array_equal(result, expected * (i + 1))
     text = str(operations[0].lower(*inputs[0]).compiler_ir("stablehlo"))
     assert "tensor0_stride_accumulation_f32_cuda_v1" in text
@@ -210,10 +210,11 @@ def test_nonfinite_real_complex_products_and_per_contribution_scaling(cuda_devic
 
 
 def test_i64_metadata_without_x64(cuda_device):
+    empty = AffineRecord((0, 1), (1, 1 << 35), 0, (0, -(1 << 34)), 0)
     record = AffineRecord((1, 2), (1 << 35, 1), 0, (-(1 << 34), 0), 0)
     with jax.enable_x64(False):
         value = jax.device_put(np.array([2, 3], np.float32), cuda_device)
-        operation = jax.jit(lambda s: accumulate(s, (record,), 1))
+        operation = jax.jit(lambda s: accumulate(s, (empty, record), 1))
         text = str(operation.lower(value).compiler_ir("stablehlo"))
         assert "34359738368" in text and "i64" in text
         np.testing.assert_array_equal(operation(value), [5])
@@ -265,6 +266,8 @@ def test_update_both_input_vjp_and_coefficient_jvp(cuda_device, dtype):
                             (a, c), (jnp.ones_like(a), jnp.ones_like(c))))
         cpu_args = tuple(jax.device_put(v, jax.devices("cpu")[0]) for v in (source, base, alpha, beta))
         gpu_args = tuple(jax.device_put(v, cuda_device) for v in (source, base, alpha, beta))
-        for transform in (reverse, forward):
-            for actual, expected in zip(transform(*gpu_args), transform(*cpu_args)):
-                np.testing.assert_array_equal(actual, expected)
+        for args in (cpu_args, gpu_args):
+            with pytest.raises(Exception, match="cannot prove injective output owners"):
+                reverse(*args)
+        for actual, expected in zip(forward(*gpu_args), forward(*cpu_args)):
+            np.testing.assert_array_equal(actual, expected)

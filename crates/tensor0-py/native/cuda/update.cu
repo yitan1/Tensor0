@@ -5,18 +5,75 @@
 #include "../ffi/errors.h"
 #include "../ffi/buffers.h"
 #include "../layout/descriptor.h"
+#include "../layout/owner_fiber.h"
 
-#include <algorithm>
+#include <atomic>
+#include <cstddef>
 #include <cstdint>
-#include <numeric>
+#include <memory>
 #include <stdexcept>
 #include <string>
-#include <type_traits>
+#include <utility>
 #include <vector>
 
 namespace ffi = xla::ffi;
 
 namespace tensor0::stride::cuda::update {
+
+namespace {
+std::atomic<uint64_t> update_prepared_created_count{0};
+std::atomic<uint64_t> update_prepared_destroyed_count{0};
+}  // namespace
+
+struct UpdatePreparedState {
+  static ffi::TypeId id;
+
+  UpdatePreparedState(descriptor::DecodedLayout value, std::vector<uint64_t> sizes,
+                      std::vector<bool> identities, std::vector<layout::OwnerFiberSchedule> tasks,
+                      std::size_t words)
+      : decoded(std::move(value)), counts(std::move(sizes)),
+        identity(std::move(identities)), schedules(std::move(tasks)), word_count(words) {
+    update_prepared_created_count.fetch_add(1, std::memory_order_relaxed);
+  }
+  UpdatePreparedState(const UpdatePreparedState&) = delete;
+  UpdatePreparedState& operator=(const UpdatePreparedState&) = delete;
+  ~UpdatePreparedState() {
+    update_prepared_destroyed_count.fetch_add(1, std::memory_order_relaxed);
+  }
+
+  const descriptor::DecodedLayout decoded;
+  const std::vector<uint64_t> counts;
+  const std::vector<bool> identity;
+  const std::vector<layout::OwnerFiberSchedule> schedules;
+  const std::size_t word_count;
+};
+
+ffi::TypeId UpdatePreparedState::id = {};
+const ffi::TypeInfo kUpdatePreparedTypeInfo = ffi::MakeTypeInfo<UpdatePreparedState>();
+
+ffi::ErrorOr<std::unique_ptr<UpdatePreparedState>> InstantiateUpdate(
+    ffi::Span<const int64_t> words) {
+  std::unique_ptr<UpdatePreparedState> state;
+  const auto error = ContainErrors([&] {
+    // Preserve all axes and records; device descriptor words retain their offsets.
+    auto decoded = descriptor::DecodeLayout(words.begin(), words.size());
+    std::vector<uint64_t> counts;
+    std::vector<bool> identity;
+    counts.reserve(decoded.records.size());
+    identity.reserve(decoded.records.size());
+    for (const auto& record : decoded.records) {
+      const auto count = layout::ElementCount(record);
+      counts.push_back(count);
+      identity.push_back(layout::HasIdenticalAddresses(record));
+    }
+    auto packed = layout::PackOwnerFiber(decoded, 1);
+    state = std::make_unique<UpdatePreparedState>(
+        std::move(decoded), std::move(counts), std::move(identity),
+        std::move(packed.schedules), packed.words.size());
+  });
+  if (error.failure()) return ffi::Unexpected(error);
+  return state;
+}
 
 uint64_t CoefficientCount(ffi::AnyBuffer buffer, uint64_t batches) {
   const auto dimensions = buffer.dimensions();
@@ -32,7 +89,7 @@ uint64_t CoefficientCount(ffi::AnyBuffer buffer, uint64_t batches) {
 }
 
 template <ffi::DataType Dtype, typename T, typename Real>
-ffi::Error Update(ffi::Span<const int64_t> words, ffi::AnyBuffer source,
+ffi::Error Update(const UpdatePreparedState* prepared, ffi::AnyBuffer source,
                   ffi::BufferR2<Dtype> base, ffi::AnyBuffer alpha, ffi::AnyBuffer beta,
                   ffi::BufferR1<ffi::S64> descriptor,
                   ffi::ResultBufferR2<Dtype> result, cudaStream_t stream) {
@@ -50,11 +107,11 @@ ffi::Error Update(ffi::Span<const int64_t> words, ffi::AnyBuffer source,
       }
     }
     if (descriptor.dimensions()[0] < 0 ||
-        static_cast<uint64_t>(descriptor.dimensions()[0]) != words.size()) {
+        static_cast<uint64_t>(descriptor.dimensions()[0]) != prepared->word_count) {
       throw std::invalid_argument("CUDA update descriptor operand shape does not match layout");
     }
-    // The lowering supplies identical words as host attribute and device constant.
-    const auto decoded = descriptor::DecodeAddressLayout(words.begin(), words.size());
+    // The lowering supplies identical immutable host words and device constant.
+    const auto& decoded = prepared->decoded;
     if (source.dimensions()[0] != result->dimensions()[0] ||
         base.dimensions()[0] != result->dimensions()[0] ||
         base.dimensions()[1] != result->dimensions()[1] ||
@@ -77,13 +134,13 @@ ffi::Error Update(ffi::Span<const int64_t> words, ffi::AnyBuffer source,
     const auto beta_count = CoefficientCount(beta, batches);
     for (const auto& coefficient : {alpha, beta}) {
       const uint64_t count = CoefficientCount(coefficient, batches);
-      VisitCoefficient<T, Real>(coefficient.element_type(), [&](auto type) {
+      arithmetic::VisitCoefficient<T, Real>(coefficient.element_type(), [&](auto type) {
         using Raw = typename decltype(type)::type;
         ValidateDisjointBuffers(coefficient.untyped_data(), BufferBytes(count, sizeof(Raw)), output, output_bytes);
       });
     }
     if (old != output) ValidateDisjointBuffers(old, output_bytes, output, output_bytes);
-    ValidateDisjointBuffers(descriptor.typed_data(), BufferBytes(words.size(), sizeof(int64_t)), output, output_bytes);
+    ValidateDisjointBuffers(descriptor.typed_data(), BufferBytes(prepared->word_count, sizeof(int64_t)), output, output_bytes);
     const bool source_alias = source_bytes != 0 && output_bytes != 0 && input == output;
     if (source_alias) {
       if (decoded.source_size != decoded.output_size || old != output) {
@@ -92,42 +149,52 @@ ffi::Error Update(ffi::Span<const int64_t> words, ffi::AnyBuffer source,
     } else {
       ValidateDisjointBuffers(input, source_bytes, output, output_bytes);
     }
-    std::vector<uint64_t> counts;
-    counts.reserve(decoded.records.size());
-    for (const auto& record : decoded.records) {
-      const auto count = layout::ElementCount(record);
-      std::vector<std::size_t> axes(count == 0 ? 0 : record.shape.size());
-      std::iota(axes.begin(), axes.end(), 0);
-      layout::ValidateInjectiveView(record, false, std::move(axes));
-      if (source_alias) {
-        bool identity = record.source_offset == record.destination_offset;
-        for (std::size_t axis = 0; axis < record.shape.size(); ++axis) {
-          // CPU normalization removes singleton axes only from nonempty records.
-          if (count == 0 || record.shape[axis] > 1) {
-            identity = identity && record.source_strides[axis] == record.destination_strides[axis];
-          }
-        }
-        if (!identity) throw std::invalid_argument("CUDA update source/result alias requires identical per-element addresses");
+    for (std::size_t i = 0; i < prepared->counts.size(); ++i) {
+      if (source_alias && !prepared->identity[i]) {
+        throw std::invalid_argument("CUDA update source/result alias requires identical per-element addresses");
       }
       uint64_t total = 0;
-      if (!layout::CheckedMultiply(batches, count, &total)) {
+      if (!layout::CheckedMultiply(batches, prepared->counts[i], &total)) {
         throw std::invalid_argument("CUDA update logical batch size overflows");
       }
-      counts.push_back(count);
     }
     Execute<T, Real>(input, old, output,
         {alpha.untyped_data(), alpha.element_type(), alpha_count},
         {beta.untyped_data(), beta.element_type(), beta_count},
-        decoded, counts, batches, output_bytes, descriptor.typed_data(), stream);
+        decoded, prepared->schedules, batches, output_bytes, descriptor.typed_data(), stream);
   });
 }
 
 }  // namespace tensor0::stride::cuda::update
 
+XLA_FFI_DEFINE_HANDLER_SYMBOL(
+    Tensor0StrideCudaUpdateInstantiateV1, tensor0::stride::cuda::update::InstantiateUpdate,
+    ffi::Ffi::BindInstantiate().Attr<ffi::Span<const int64_t>>("layout"));
+
+extern "C" void* Tensor0StrideCudaUpdateInstantiateV1Handler() {
+  return reinterpret_cast<void*>(&Tensor0StrideCudaUpdateInstantiateV1);
+}
+
+extern "C" void* Tensor0StrideCudaUpdatePreparedTypeId() {
+  return reinterpret_cast<void*>(&tensor0::stride::cuda::update::UpdatePreparedState::id);
+}
+
+extern "C" const void* Tensor0StrideCudaUpdatePreparedTypeInfo() {
+  return reinterpret_cast<const void*>(&tensor0::stride::cuda::update::kUpdatePreparedTypeInfo);
+}
+
+extern "C" uint64_t Tensor0StrideCudaUpdatePreparedCreatedCount() {
+  return tensor0::stride::cuda::update::update_prepared_created_count.load(std::memory_order_relaxed);
+}
+
+extern "C" uint64_t Tensor0StrideCudaUpdatePreparedDestroyedCount() {
+  return tensor0::stride::cuda::update::update_prepared_destroyed_count.load(std::memory_order_relaxed);
+}
+
 #define TENSOR0_CUDA_UPDATE(Suffix, Dtype, T, Real) \
 XLA_FFI_DEFINE_HANDLER_SYMBOL( \
     Tensor0StrideCudaUpdate##Suffix##V1, (tensor0::stride::cuda::update::Update<ffi::Dtype, T, Real>), \
-    ffi::Ffi::BindExecute().Attr<ffi::Span<const int64_t>>("layout") \
+    ffi::Ffi::BindExecute().Ctx<ffi::State<tensor0::stride::cuda::update::UpdatePreparedState>>() \
         .Arg<ffi::AnyBuffer>().Arg<ffi::BufferR2<ffi::Dtype>>() \
         .Arg<ffi::AnyBuffer>().Arg<ffi::AnyBuffer>().Arg<ffi::BufferR1<ffi::S64>>() \
         .Ret<ffi::BufferR2<ffi::Dtype>>().Ctx<ffi::PlatformStream<cudaStream_t>>()); \
@@ -137,7 +204,7 @@ extern "C" void* Tensor0StrideCudaUpdate##Suffix##V1Handler() { \
 
 TENSOR0_CUDA_UPDATE(F32, F32, float, float)
 TENSOR0_CUDA_UPDATE(F64, F64, double, double)
-TENSOR0_CUDA_UPDATE(C64, C64, tensor0::stride::cuda::update::Complex<float>, float)
-TENSOR0_CUDA_UPDATE(C128, C128, tensor0::stride::cuda::update::Complex<double>, double)
+TENSOR0_CUDA_UPDATE(C64, C64, tensor0::stride::cuda::arithmetic::Complex<float>, float)
+TENSOR0_CUDA_UPDATE(C128, C128, tensor0::stride::cuda::arithmetic::Complex<double>, double)
 
 #undef TENSOR0_CUDA_UPDATE

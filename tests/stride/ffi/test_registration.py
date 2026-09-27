@@ -28,6 +28,9 @@ def test_extension_exposes_only_native_stride_registration() -> None:
         "_stride_cuda_available", "_stride_cuda_registration",
         "_stride_native_registration", "_stride_native_prepared_stats",
         "_stride_native_worker_limit", "_set_stride_native_worker_limit",
+        "_stride_prepare_layout", "_stride_pack_owner_fiber", "_stride_dot_scratch_capacity", "_stride_sum_scratch_capacity", "_stride_cuda_copy_prepared_stats",
+        "_stride_cuda_update_prepared_stats", "_stride_cuda_accumulation_prepared_stats",
+        "_stride_cuda_dot_prepared_stats", "_stride_cuda_reduction_prepared_stats",
     }
     registration = _native._stride_native_registration()
     expected = {f"{operation}_{suffix}"
@@ -36,6 +39,25 @@ def test_extension_exposes_only_native_stride_registration() -> None:
     expected.update({"instantiate", "type_id", "type_info", "reduction_instantiate",
                      "dot_instantiate", "accumulation_instantiate"})
     assert set(registration) == expected
+
+
+def test_cuda_registration_exact_exports() -> None:
+    registration = _native._stride_cuda_registration()
+    if not _native._stride_cuda_available():
+        assert registration == {}
+        assert _native._stride_cuda_dot_prepared_stats() is None
+        assert _native._stride_cuda_reduction_prepared_stats() is None
+        return
+    expected = {f"{operation}_{suffix}"
+                for operation in ("copy", "update", "accumulation", "dot", "reduction")
+                for suffix in ("f32", "f64", "c64", "c128")}
+    expected.update(f"{operation}_{name}"
+                    for operation in ("copy", "update", "accumulation", "dot", "reduction")
+                    for name in ("instantiate", "type_id", "type_info"))
+    assert set(registration) == expected
+    assert len(registration) == 35
+    assert isinstance(_native._stride_cuda_dot_prepared_stats(), tuple)
+    assert isinstance(_native._stride_cuda_reduction_prepared_stats(), tuple)
 
 
 def test_availability_does_not_query_legacy_abi(monkeypatch) -> None:

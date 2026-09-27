@@ -113,8 +113,8 @@ def run_dot(mode):
                          out_shardings=result_sharding).lower(*arguments).compile()
         verify(mapped, arguments, jax.vmap(reference)(*reference_arguments), result_sharding)
 
-    records = (AffineRecord((2, 2), (1, 1), 0, (1, 1), 1),
-               AffineRecord((2, 2), (0, -1), 3, (-1, 1), 3))
+    records = (AffineRecord((2, 2), (2, 1), 0, (2, 1), 1),
+               AffineRecord((2, 2), (0, -1), 3, (-2, 1), 3))
     for dtype, coefficient_dtype in (("float32", "complex128"), ("complex64", "float64")):
         for coefficient_shape in ((), (1,), (2, 4)):
             storage_sharding = NamedSharding(mesh, P(None, "device", None))

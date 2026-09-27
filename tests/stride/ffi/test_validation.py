@@ -51,15 +51,19 @@ def test_empty_reduction_still_checks_nonempty_output_bounds():
 
 @requires_native
 @pytest.mark.parametrize("strides", [(2, 2), (0, 1)])
-def test_map_rejects_repeated_targets_but_address_accumulation_accepts_them(strides):
+def test_map_rejects_repeated_targets_but_accumulation_accepts_zero_stride(strides):
     record = AffineRecord((5, 5), (5, 1), 0, strides, 0)
     source = jnp.arange(25, dtype=jnp.float32)
     layout = encode_layout((record,), source_size=25, output_size=25)
     with pytest.raises(Exception, match="injective"):
         execute_copy(source, layout=layout, output_size=25).block_until_ready()
-    expected = np.zeros(25, dtype=np.float32)
-    np.add.at(expected, addresses(record.logical_shape, strides, 0), np.asarray(source))
-    np.testing.assert_array_equal(execute_accumulation(source, layout=layout, output_size=25), expected)
+    if strides == (2, 2):
+        with pytest.raises(Exception, match="cannot prove injective output owners"):
+            execute_accumulation(source, layout=layout, output_size=25).block_until_ready()
+    else:
+        expected = np.zeros(25, dtype=np.float32)
+        np.add.at(expected, addresses(record.logical_shape, strides, 0), np.asarray(source))
+        np.testing.assert_array_equal(execute_accumulation(source, layout=layout, output_size=25), expected)
 
 
 @requires_native

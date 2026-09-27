@@ -1,42 +1,43 @@
 #pragma once
 
-#include "../kernels/dot.cuh"
+#include "../kernels/owner_fiber.cuh"
+#include "../kernels/map_reduce_policies.cuh"
+#include "../../layout/owner_fiber.h"
 #include "../../layout/descriptor.h"
+#include "check.cuh"
 
 #include <algorithm>
-#include <stdexcept>
-#include <string>
 #include <vector>
 
 namespace tensor0::stride::cuda::dot {
 
-void Check(cudaError_t status) {
-  if (status != cudaSuccess) throw std::runtime_error(std::string("CUDA dot: ") + cudaGetErrorString(status));
-}
-
 template <typename T>
-void Execute(const T* left, const T* right, T* output, T* temporary,
-    uint64_t capacity, bool conjugate,
+void Execute(const T* left, const T* right, T* output, T* scratch, bool conjugate,
     const descriptor::DecodedLayout& decoded,
-    const std::vector<uint64_t>& counts, uint64_t batches,
-    uint64_t output_bytes, const int64_t* device_descriptor, cudaStream_t stream) {
-  // All metadata, sizes and aliases are validated before either result is written.
-  if (output_bytes != 0) Check(cudaMemsetAsync(output, 0, output_bytes, stream));
-  std::size_t cursor = 4;
-  for (std::size_t i = 0; i < counts.size(); ++i) {
-    const auto count = counts[i];
-    if (count != 0 && batches != 0) {
-      const uint64_t chunks = (count - 1) / kChunk + 1;
-      const uint64_t tasks = batches * chunks;
-      Partials<T><<<static_cast<unsigned>(std::min<uint64_t>(tasks, 65535)), kThreads, 0, stream>>>(
-          left, right,
-          temporary, device_descriptor + cursor, count, chunks, capacity, tasks,
-          decoded.source_size, decoded.output_size, conjugate != 0);
-      Check(cudaGetLastError());
-      Finish<T><<<static_cast<unsigned>(std::min<uint64_t>(batches, 65535)), kThreads, 0, stream>>>(temporary, output, chunks, capacity, batches);
-      Check(cudaGetLastError());
+    const std::vector<layout::OwnerFiberSchedule>& schedules, uint64_t capacity,
+    uint64_t batches, uint64_t output_bytes, const int64_t* device_descriptor, cudaStream_t stream) {
+  if (output_bytes != 0) CheckCuda(cudaMemsetAsync(output, 0, output_bytes, stream), "dot");
+  for (const auto schedule : schedules) {
+    if (batches != 0 && schedule.contributions != 0) {
+      const auto policy = DotFiber<T>{left, right, output, decoded.source_size, decoded.output_size, conjugate};
+      const auto chunks = layout::DotChunks(schedule.contributions);
+      if (chunks == 0) {
+        const auto blocks = static_cast<unsigned>(std::min<uint64_t>((batches - 1) / 256 + 1, 65535));
+        owner_fiber::MapReduceRecord<<<blocks, 256, 0, stream>>>(
+            policy, device_descriptor + schedule.cursor, schedule.owners, schedule.contributions, batches);
+        CheckCuda(cudaGetLastError(), "dot");
+      } else {
+        const uint64_t tasks = batches * chunks;
+        owner_fiber::PartialFibers<DotFiber<T>, true><<<static_cast<unsigned>(std::min<uint64_t>(tasks, 65535)), 256, 0, stream>>>(
+            policy, device_descriptor + schedule.cursor, scratch, schedule.contributions,
+            schedule.owners, chunks, capacity, tasks);
+        CheckCuda(cudaGetLastError(), "dot");
+        owner_fiber::FinishFibers<DotFiber<T>, true><<<static_cast<unsigned>(std::min<uint64_t>(batches, 65535)), 256, 0, stream>>>(
+            policy, scratch, device_descriptor + schedule.cursor,
+            schedule.owners, chunks, capacity, batches);
+        CheckCuda(cudaGetLastError(), "dot");
+      }
     }
-    cursor += 3 + 3 * decoded.records[i].shape.size();
   }
 }
 
