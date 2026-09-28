@@ -8,14 +8,9 @@ import numpy as np
 import pytest
 
 from tensor0 import _native
-from tests.stride.support.availability import cuda_device_or_skip
 from tensor0._stride import _jax, StridedView, dotu, dotc
 from tensor0._stride._layout import AffineRecord
 
-
-@pytest.fixture
-def cuda_device():
-    return cuda_device_or_skip()
 
 
 DTYPES = ["float32", "float64", "complex64", "complex128"]
@@ -26,6 +21,7 @@ CASES = [
     (AffineRecord((), (), 1, (), 2), 3, 4),
     (AffineRecord((1,) * 20 + (2,), (0,) * 20 + (1,), 0, (0,) * 21, 1), 2, 3),
     (AffineRecord((0,), (1,), 0, (1,), 0), 0, 0),
+    (AffineRecord((1024,), (-1,), 1023, (1,), 0), 1024, 1024),
     (AffineRecord((2051,), (-1,), 2050, (0,), 1), 2051, 3),
 ]
 

@@ -10,14 +10,9 @@ import numpy as np
 import pytest
 
 from tensor0 import _native
-from tests.stride.support.availability import cuda_device_or_skip
 from tensor0._stride import _jax
 from tensor0._stride._layout import AffineRecord
 
-
-@pytest.fixture
-def cuda_device():
-    return cuda_device_or_skip()
 
 
 def _update(source, base, alpha, beta, records):
@@ -80,6 +75,18 @@ def test_cuda_update_layouts_empty_holes(cuda_device, records, source_size, outp
     args = tuple(jax.device_put(v, cuda_device) for v in (source, base, np.array([2], np.int32), np.array(0, np.int32)))
     result = jax.jit(lambda s, b, a, c: _update(s, b, a, c, records))(*args)
     np.testing.assert_array_equal(np.asarray(result).view(np.uint32), expected.view(np.uint32))
+
+
+@pytest.mark.parametrize("reverse", (False, True))
+def test_cuda_update_full_coverage_preserves_old_values(cuda_device, reverse):
+    records = (AffineRecord((6,), (1,), 0, (-1 if reverse else 1,),
+                            5 if reverse else 0),)
+    source = np.arange(12, dtype=np.float32).reshape(2, 6) + 1
+    base = np.arange(12, dtype=np.float32).reshape(2, 6) + 20
+    args = tuple(jax.device_put(value, cuda_device) for value in (source, base))
+    result = jax.jit(lambda s, b: _update(s, b, jnp.float32(2), jnp.float32(-1), records))(*args)
+    np.testing.assert_array_equal(result, 2 * (source[:, ::-1] if reverse else source) - base)
+    np.testing.assert_array_equal(args[1], base)
 
 
 def test_cuda_update_i64_metadata_x64_disabled(cuda_device):

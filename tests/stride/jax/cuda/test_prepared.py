@@ -12,7 +12,6 @@ import numpy as np
 import pytest
 
 from tensor0 import _native
-from tests.stride.support.availability import cuda_device_or_skip
 from tensor0._stride._ffi import _calls
 from tensor0._stride._ffi._descriptor import encode_layout, encode_reduction_layout
 from tensor0._stride._layout import AffineRecord
@@ -21,10 +20,6 @@ from tensor0._stride._layout import AffineRecord
 DTYPES = ("float32", "float64", "complex64", "complex128")
 EMPTY = AffineRecord((2, 0, 3), (3, 3, 1), 0, (3, 3, 1), 0)
 
-
-@pytest.fixture
-def cuda_device():
-    return cuda_device_or_skip()
 
 
 def _interleave(values, barrier):

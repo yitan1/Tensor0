@@ -5,7 +5,6 @@ import numpy as np
 import pytest
 
 from tensor0 import _native
-from tests.stride.support.availability import cuda_device_or_skip
 from tensor0._stride import _jax
 from tensor0._stride._layout import AffineRecord
 
@@ -47,7 +46,9 @@ def test_parallel_multiowner_coefficients_records_and_zero(cuda_device, operatio
 
 
 @pytest.mark.parametrize("operation", ("reduction", "accumulation"))
-@pytest.mark.parametrize("fiber", (1023, 1024, 1025), ids=("below", "at", "above"))
+@pytest.mark.parametrize("fiber", (255, 256, 257, 1023, 1024, 1025),
+                         ids=("below_threshold", "at_threshold", "above_threshold",
+                              "below_chunk", "at_chunk", "above_chunk"))
 def test_sum_fiber_threshold_values(cuda_device, operation, fiber):
     record = AffineRecord((2, fiber), (fiber, 1), 0, (1, 0), 0)
     host = (np.arange(2 * fiber, dtype=np.int32) % 7 - 3).astype(np.float32)
@@ -66,8 +67,3 @@ def test_sum_fiber_threshold_values(cuda_device, operation, fiber):
                 coefficient_records=()))(source)
         np.testing.assert_array_equal(result, expected[None, :])
         assert result.devices() == {cuda_device}
-
-
-@pytest.fixture
-def cuda_device():
-    return cuda_device_or_skip()

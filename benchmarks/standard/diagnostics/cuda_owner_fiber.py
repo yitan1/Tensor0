@@ -22,7 +22,9 @@ from tensor0._stride._layout import AffineRecord
 
 
 # Fixed workloads exercise the owner and fiber axes without creating a tuning API.
-SUM_CASES = ((1, 64), (1, 4096), (128, 4096), (1024, 64))
+SUM_CASES = ((1, 64), (1, 127), (1, 128), (1, 255), (1, 256),
+             (1, 511), (1, 512), (1, 1023), (1, 1024), (1, 1025),
+             (1, 4096), (128, 4096), (1024, 64))
 
 
 def _measure(name, operation, host_args, expected, device, warmups, repeats):
@@ -89,7 +91,42 @@ def _workloads(device, warmups, repeats):
         results.append(_measure(f"{operation_name}/{count}", call,
                                 args, expected, device, warmups, repeats))
 
+    # A single dense record and a strided subview distinguish initialization
+    # elision from the required zero/base preservation on uncovered outputs.
+    for name, shape, source_stride, dest_stride, dest_offset, output_size in (
+        ("dense", (64,), (1,), (1,), 0, 64),
+        ("reverse", (64,), (-1,), (-1,), 63, 64),
+        ("partial", (32,), (2,), (2,), 1, 64),
+    ):
+        source_offset = 63 if name == "reverse" else 0
+        record = AffineRecord(shape, source_stride, source_offset, dest_stride, dest_offset)
+        source = ((np.arange(batch * 64) % 9 - 4) / 4).astype(np.float32).reshape(batch, 64)
+        positions = dest_offset + np.arange(shape[0]) * dest_stride[0]
+        values = source[:, source_offset + np.arange(shape[0]) * source_stride[0]]
+        for op in ("copy", "update"):
+            if op == "copy":
+                expected = np.zeros_like(source)
+                expected[:, positions] = values
+                call = lambda value, r=record, n=output_size: _jax.copy_p.bind(
+                    value, records=(r,), output_size=n, dtype=value.dtype)
+                args = (source,)
+            else:
+                base = np.full_like(source, 2)
+                expected = base.copy()
+                expected[:, positions] = 0.5 * values - 0.25 * base[:, positions]
+                call = lambda value, old, a, b, r=record: _jax.update_p.bind(
+                    value, old, a, b, records=(r,))
+                args = (source, base, np.asarray(0.5, np.float32), np.asarray(-0.25, np.float32))
+            results.append(_measure(f"{op}/{name}", call, args, expected,
+                                    device, warmups, repeats))
+
     for name, length, records, complex_input in (
+        ("dot/2", 2, (AffineRecord((2,), (1,), 0, (1,), 0),), False),
+        ("dot/64", 64, (AffineRecord((64,), (1,), 0, (1,), 0),), False),
+        ("dot/1023", 1023, (AffineRecord((1023,), (1,), 0, (1,), 0),), False),
+        ("dot/1024", 1024, (AffineRecord((1024,), (1,), 0, (1,), 0),), False),
+        ("dot/1025", 1025, (AffineRecord((1025,), (1,), 0, (1,), 0),), False),
+        ("dot/strided", 128, (AffineRecord((64,), (2,), 0, (2,), 1),), False),
         ("dot/65536", 65536, (AffineRecord((65536,), (1,), 0, (1,), 0),), False),
         ("dot/4records", 4096,
          tuple(AffineRecord((1024,), (1,), i * 1024, (1,), i * 1024) for i in range(4)), False),
@@ -106,10 +143,9 @@ def _workloads(device, warmups, repeats):
         # implementation is used to calculate the correctness reference.
         expected = np.zeros(batch, np.complex128 if complex_input else np.float64)
         for record in records:
-            begin = record.source_offset
-            end = begin + record.logical_shape[0]
-            a = left[:, begin:end].astype(expected.dtype)
-            b = right[:, begin:end].astype(expected.dtype)
+            indices = np.arange(record.logical_shape[0])
+            a = left[:, record.source_offset + indices * record.source_strides[0]].astype(expected.dtype)
+            b = right[:, record.destination_offset + indices * record.destination_strides[0]].astype(expected.dtype)
             expected += (np.conj(a) * b if complex_input else a * b).sum(axis=1)
         expected = expected.astype(left.dtype)
         call = lambda a, b, r=records, c=complex_input: _jax.dot_p.bind(

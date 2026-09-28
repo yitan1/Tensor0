@@ -27,9 +27,10 @@ struct CopyPreparedState {
   static ffi::TypeId id;
 
   CopyPreparedState(descriptor::DecodedLayout value, std::vector<uint64_t> sizes,
-                    std::vector<layout::OwnerFiberSchedule> tasks, std::size_t words)
+                    std::vector<layout::OwnerFiberSchedule> tasks, std::size_t words,
+                    bool covers_output)
       : decoded(std::move(value)), counts(std::move(sizes)),
-        schedules(std::move(tasks)), word_count(words) {
+        schedules(std::move(tasks)), word_count(words), full_coverage(covers_output) {
     copy_prepared_created_count.fetch_add(1, std::memory_order_relaxed);
   }
   CopyPreparedState(const CopyPreparedState&) = delete;
@@ -42,6 +43,7 @@ struct CopyPreparedState {
   const std::vector<uint64_t> counts;
   const std::vector<layout::OwnerFiberSchedule> schedules;
   const std::size_t word_count;
+  const bool full_coverage;
 };
 
 ffi::TypeId CopyPreparedState::id = {};
@@ -59,8 +61,10 @@ ffi::ErrorOr<std::unique_ptr<CopyPreparedState>> InstantiateCopy(
       counts.push_back(layout::ElementCount(record));
     }
     auto packed = layout::PackOwnerFiber(decoded, 0);
+    const bool full_coverage = FullyCoversOutput(decoded);
     state = std::make_unique<CopyPreparedState>(
-        std::move(decoded), std::move(counts), std::move(packed.schedules), packed.words.size());
+        std::move(decoded), std::move(counts), std::move(packed.schedules), packed.words.size(),
+        full_coverage);
   });
   if (error.failure()) return ffi::Unexpected(error);
   return state;
@@ -117,7 +121,7 @@ ffi::Error Copy(const CopyPreparedState* prepared, ffi::AnyBuffer source,
       }
     }
     ExecuteCopy<Bytes>(input, output, decoded, prepared->schedules, batches, output_bytes,
-                       descriptor.typed_data(), stream);
+                       prepared->full_coverage, descriptor.typed_data(), stream);
   });
 }
 

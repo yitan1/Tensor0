@@ -112,7 +112,6 @@ def test_cuda_lowering_uses_prepared_host_and_device_words(monkeypatch, operatio
     events, captured, metadata, results = capture_lowering(monkeypatch, operation, prepared=prepared)
     with jax.enable_x64(False):
         actual = getattr(_calls, f"_cuda_{operation}_lowering")(context, *operands, **kwargs)
-    packed = True
     assert events == (["target", "prepare", "pack", "capacity", "constant", "ffi", "lower"]
                       if operation == "dot" else
                       ["target", "prepare", "pack", "constant", "capacity", "ffi", "lower"]
@@ -123,18 +122,14 @@ def test_cuda_lowering_uses_prepared_host_and_device_words(monkeypatch, operatio
     words = captured["constant"]
     assert words.dtype == np.dtype("int64")
     np.testing.assert_array_equal(captured["attributes"]["layout"], prepared)
-    if packed:
-        assert captured["pack"][0] == operation
-        np.testing.assert_array_equal(captured["pack"][1], prepared)
-        np.testing.assert_array_equal(words, (1, 3, 5, 7))
-    else:
-        assert words is captured["attributes"]["layout"]
-        np.testing.assert_array_equal(words, prepared)
+    assert captured["pack"][0] == operation
+    np.testing.assert_array_equal(captured["pack"][1], prepared)
+    np.testing.assert_array_equal(words, (1, 3, 5, 7))
     metadata_index = 1 if operation in ("accumulation", "reduction") else len(operands)
     expected_operands = (*operands[:metadata_index], metadata, *operands[metadata_index:])
     assert captured["operands"] == expected_operands
     avals = captured["context"].avals_in
-    assert avals[metadata_index].shape == ((4,) if packed else (len(prepared),))
+    assert avals[metadata_index].shape == (4,)
     assert avals[metadata_index].dtype == np.dtype("int64")
     assert (*avals[:metadata_index], *avals[metadata_index + 1:]) == context.avals_in
     options = captured["options"]

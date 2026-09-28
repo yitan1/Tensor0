@@ -10,16 +10,11 @@ import numpy as np
 import pytest
 
 from tensor0 import _native
-from tests.stride.support.availability import cuda_device_or_skip
 from tensor0._stride._ffi import _calls, _registration
 from tensor0._stride._ffi._descriptor import encode_reduction_layout
 from tensor0._stride._layout import AffineRecord
 from tests.stride.support.paths import REPO_ROOT
 
-
-@pytest.fixture
-def cuda_device():
-    return cuda_device_or_skip()
 
 
 def _layout(role=True, reverse=False):

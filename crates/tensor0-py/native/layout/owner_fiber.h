@@ -25,7 +25,9 @@ inline uint64_t DotChunks(uint64_t contributions) {
 // allocating scratch for every possible contribution is not required.
 constexpr uint64_t kParallelScratchLimit = 1 << 20;
 inline uint64_t SumChunks(const OwnerFiberSchedule& schedule) {
-  if (schedule.owners == 0 || schedule.contributions < kDotChunk) return 0;
+  // Use the block reduction for medium fibers too: a single sequential owner
+  // becomes expensive well before a full 1024-element chunk.
+  if (schedule.owners == 0 || schedule.contributions < 256) return 0;
   const uint64_t chunks = (schedule.contributions - 1) / kDotChunk + 1;
   return chunks <= kParallelScratchLimit / schedule.owners ? chunks : 0;
 }

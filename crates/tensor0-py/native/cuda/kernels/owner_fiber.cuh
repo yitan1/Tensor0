@@ -14,6 +14,15 @@ __device__ __forceinline__ void Address(const int64_t* record, uint64_t logical,
   const auto rank = map_rank + static_cast<uint64_t>(record[1]);
   const auto begin = fiber ? map_rank : 0;
   const auto end = fiber ? rank : map_rank;
+  // The caller's logical coordinate is already within the sole axis extent.
+  // Avoid a 64-bit remainder and division for one-axis owner/fiber groups.
+  if (end - begin == 1) {
+    const auto first_stride = record[4 + rank + begin];
+    const auto second_stride = record[4 + 2 * rank + begin];
+    if (first_stride != 0) first += static_cast<int64_t>(logical) * first_stride;
+    if (second_stride != 0) second += static_cast<int64_t>(logical) * second_stride;
+    return;
+  }
   for (uint64_t axis = end; axis-- > begin;) {
     const auto coordinate = logical % static_cast<uint64_t>(record[4 + axis]);
     logical /= static_cast<uint64_t>(record[4 + axis]);
@@ -55,7 +64,7 @@ __global__ void MapReduceRecord(Policy policy, const int64_t* record,
 // Parallel fiber execution shares the same packed address lanes and static
 // contribution policy as MapReduceRecord. The output is combined only once,
 // after all chunks belonging to a record have completed on the same stream.
-template <typename Policy, bool SingleOwner = false>
+template <typename Policy, bool SingleOwner = false, bool Direct = false>
 __global__ void PartialFibers(Policy policy, const int64_t* record,
                               typename Policy::Value* scratch, uint64_t contributions,
                               uint64_t owners, uint64_t chunks, uint64_t capacity, uint64_t tasks) {
@@ -84,7 +93,13 @@ __global__ void PartialFibers(Policy policy, const int64_t* record,
           shared[threadIdx.x] = policy.Combine(shared[threadIdx.x], shared[threadIdx.x + width]);
         __syncthreads();
       }
-      if (threadIdx.x == 0) scratch[batch * capacity + owner * chunks + chunk] = shared[0];
+      if (threadIdx.x == 0) {
+        if constexpr (Direct) {
+          policy.Store(policy.Combine(policy.Initial(context, batch, base_second), shared[0]), batch, base_second);
+        } else {
+          scratch[batch * capacity + owner * chunks + chunk] = shared[0];
+        }
+      }
       __syncthreads();
     }
     if (tasks - task <= gridDim.x) break;

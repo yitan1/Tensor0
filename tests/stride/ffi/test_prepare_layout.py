@@ -14,8 +14,10 @@ from tests.stride.support.descriptors import OPERATIONS, address_words, reductio
 
 @pytest.mark.parametrize("operation", ("accumulation", "reduction"))
 @pytest.mark.parametrize("owners,fiber,capacity", [
-    pytest.param(2, 1023, 0, id="below_threshold"),
-    pytest.param(2, 1024, 2, id="at_threshold"),
+    pytest.param(2, 255, 0, id="below_threshold"),
+    pytest.param(2, 256, 2, id="at_threshold"),
+    pytest.param(2, 1023, 2, id="below_chunk"),
+    pytest.param(2, 1024, 2, id="at_chunk"),
     pytest.param(2, 1025, 4, id="above_threshold"),
     pytest.param(2, 4096, 8, id="four_chunks"),
     pytest.param(33, 4096, 132, id="many_owners"),

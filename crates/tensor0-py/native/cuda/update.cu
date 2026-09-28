@@ -30,9 +30,10 @@ struct UpdatePreparedState {
 
   UpdatePreparedState(descriptor::DecodedLayout value, std::vector<uint64_t> sizes,
                       std::vector<bool> identities, std::vector<layout::OwnerFiberSchedule> tasks,
-                      std::size_t words)
+                      std::size_t words, bool covers_output)
       : decoded(std::move(value)), counts(std::move(sizes)),
-        identity(std::move(identities)), schedules(std::move(tasks)), word_count(words) {
+        identity(std::move(identities)), schedules(std::move(tasks)), word_count(words),
+        full_coverage(covers_output) {
     update_prepared_created_count.fetch_add(1, std::memory_order_relaxed);
   }
   UpdatePreparedState(const UpdatePreparedState&) = delete;
@@ -46,6 +47,7 @@ struct UpdatePreparedState {
   const std::vector<bool> identity;
   const std::vector<layout::OwnerFiberSchedule> schedules;
   const std::size_t word_count;
+  const bool full_coverage;
 };
 
 ffi::TypeId UpdatePreparedState::id = {};
@@ -67,9 +69,10 @@ ffi::ErrorOr<std::unique_ptr<UpdatePreparedState>> InstantiateUpdate(
       identity.push_back(layout::HasIdenticalAddresses(record));
     }
     auto packed = layout::PackOwnerFiber(decoded, 1);
+    const bool full_coverage = FullyCoversOutput(decoded);
     state = std::make_unique<UpdatePreparedState>(
         std::move(decoded), std::move(counts), std::move(identity),
-        std::move(packed.schedules), packed.words.size());
+        std::move(packed.schedules), packed.words.size(), full_coverage);
   });
   if (error.failure()) return ffi::Unexpected(error);
   return state;
@@ -161,7 +164,8 @@ ffi::Error Update(const UpdatePreparedState* prepared, ffi::AnyBuffer source,
     Execute<T, Real>(input, old, output,
         {alpha.untyped_data(), alpha.element_type(), alpha_count},
         {beta.untyped_data(), beta.element_type(), beta_count},
-        decoded, prepared->schedules, batches, output_bytes, descriptor.typed_data(), stream);
+        decoded, prepared->schedules, batches, output_bytes, prepared->full_coverage,
+        descriptor.typed_data(), stream);
   });
 }
 

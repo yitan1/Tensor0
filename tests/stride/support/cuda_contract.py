@@ -25,7 +25,7 @@ def build_contract(name, tmp_path_factory):
         compiler, "-std=c++20", "-O0", "--cudart=static",
         "-arch=" + os.environ.get("TENSOR0_CUDA_ARCH", "sm_80"),
         "-I", str(native), "-I", jax.ffi.include_dir(),
-        str(REPO_ROOT / "tests" / "stride" / "cuda" / f"{name}_contract.cu"),
+        str(REPO_ROOT / "tests" / "stride" / "native" / "cuda" / f"{name}_contract.cu"),
         str(native / "layout" / "descriptor.cc"),
         str(native / "layout" / "record.cc"),
         "-o", str(executable),

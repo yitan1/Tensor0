@@ -8,14 +8,9 @@ import numpy as np
 import pytest
 
 from tensor0 import _native
-from tests.stride.support.availability import cuda_device_or_skip
 from tensor0._stride._jax import copy_p
 from tensor0._stride._layout import AffineRecord
 
-
-@pytest.fixture
-def cuda_device():
-    return cuda_device_or_skip()
 
 
 def _copy(source, records, output_size, dtype=None):

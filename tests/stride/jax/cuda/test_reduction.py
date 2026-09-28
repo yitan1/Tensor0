@@ -9,14 +9,9 @@ import numpy as np
 import pytest
 
 from tensor0 import _native
-from tests.stride.support.availability import cuda_device_or_skip
 from tensor0._stride import _jax
 from tensor0._stride._layout import AffineRecord
 
-
-@pytest.fixture
-def cuda_device():
-    return cuda_device_or_skip()
 
 
 def reduce_records(source, records, size, *coefficients, indices=()):

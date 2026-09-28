@@ -26,6 +26,11 @@ void Execute(const T* left, const T* right, T* output, T* scratch, bool conjugat
         owner_fiber::MapReduceRecord<<<blocks, 256, 0, stream>>>(
             policy, device_descriptor + schedule.cursor, schedule.owners, schedule.contributions, batches);
         CheckCuda(cudaGetLastError(), "dot");
+      } else if (chunks == 1) {
+        owner_fiber::PartialFibers<DotFiber<T>, true, true><<<static_cast<unsigned>(std::min<uint64_t>(batches, 65535)), 256, 0, stream>>>(
+            policy, device_descriptor + schedule.cursor, scratch, schedule.contributions,
+            schedule.owners, chunks, capacity, batches);
+        CheckCuda(cudaGetLastError(), "dot");
       } else {
         const uint64_t tasks = batches * chunks;
         owner_fiber::PartialFibers<DotFiber<T>, true><<<static_cast<unsigned>(std::min<uint64_t>(tasks, 65535)), 256, 0, stream>>>(
