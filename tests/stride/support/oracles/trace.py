@@ -1,4 +1,4 @@
-"""Packed trace fixtures and independent expected values."""
+"""Trace fixtures, production-call wrapper, and independent reference."""
 
 from types import SimpleNamespace
 

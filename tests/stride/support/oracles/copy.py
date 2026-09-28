@@ -1,12 +1,8 @@
-"""Copy/accumulation records, numerical reference and lowering checks."""
+"""Copy/accumulation reference and lowering checks."""
 
 import numpy as np
 
-from tensor0._stride._layout import AffineRecord
 
-
-PARTITIONS = (AffineRecord((4, 2), (4, 1), 0, (4, 1), 2),
-              AffineRecord((4, 2), (4, 1), 2, (4, 1), 0))
 
 
 def reference_map(source, records, factors, output_size):

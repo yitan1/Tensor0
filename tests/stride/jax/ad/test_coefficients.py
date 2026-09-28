@@ -16,16 +16,16 @@ from tests.stride.support.oracles.coefficients import (
     DISCRETE,
     SHARED_CASES,
     check,
-    shared_coefficient_case,
 )
 from tests.stride.support.oracles.dot import dot_functions
-from tests.stride.support.oracles.effective_factor import SINGLE
-from tests.stride.support.oracles.reduction import (
-    compare_derivatives,
-    functions as reduction_ad_functions,
+from tests.stride.support.layouts import SINGLE_FACTOR_RECORDS
+from tests.stride.support.oracles.reduction import compare_derivatives
+from tests.stride.support.layouts import PRODUCT_STAGE_PARTIAL as PARTIAL
+from tests.stride.support.oracles.scalar import assert_components
+from tests.stride.support.oracles.update import LAYOUTS, compare
+from tests.stride.support.calls import (
+    reduction_functions as reduction_ad_functions, shared_coefficient_case, update_functions,
 )
-from tests.stride.support.oracles.scalar import PARTIAL, assert_components
-from tests.stride.support.oracles.update import LAYOUTS, compare, update_functions
 from tests.stride.support.samples import values
 
 
@@ -273,7 +273,7 @@ def test_data_derivative_uses_the_composed_factor_without_source_prescaling():
     direction = jnp.asarray([65504], dtype=jnp.float16)
     operation = lambda values: update_p.bind(
         values, jnp.zeros_like(values), jnp.float16(2) * jnp.float16(.5),
-        jnp.float16(0), records=SINGLE)
+        jnp.float16(0), records=SINGLE_FACTOR_RECORDS)
     tangent = jax.jit(lambda values, delta: jax.jvp(operation, (values,), (delta,))[1])(source, direction)
     cotangent = jax.jit(lambda values, delta: jax.vjp(operation, values)[1](delta)[0])(source, direction)
     np.testing.assert_array_equal(tangent, direction)

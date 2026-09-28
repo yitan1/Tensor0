@@ -1,4 +1,4 @@
-"""Signed affine layouts and the native operation used to exercise them."""
+"""Signed affine fixtures, production-call wrapper, reference, and checks."""
 
 from math import prod
 

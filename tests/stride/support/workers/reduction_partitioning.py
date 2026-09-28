@@ -25,10 +25,10 @@ def _run_reduction_worker(mode):
     import numpy as np
     from jax.sharding import AxisType, Mesh, NamedSharding, PartitionSpec as P
     from tensor0._stride import StridedView, reduce_sum
-    from tests.stride.support.oracles.reduction import execute
+    from tests.stride.support.calls import execute_reduction as execute
     from tests.stride.support.oracles.reduction import operands
     from tests.stride.support.oracles.reduction import reference
-    from tests.stride.support.oracles.reduction import functions
+    from tests.stride.support.calls import reduction_functions as functions
     from tests.stride.support.samples import values
 
     jax.config.update("jax_enable_x64", True)
@@ -127,7 +127,7 @@ def _run_mapped_coefficients_worker(operation, mode):
     import jax.numpy as jnp
     import numpy as np
     from jax.sharding import AxisType, Mesh, NamedSharding, PartitionSpec as P
-    from tests.stride.support.oracles.reduction import functions
+    from tests.stride.support.calls import reduction_functions as functions
     from tests.stride.support.samples import values
 
     jax.config.update("jax_enable_x64", True)

@@ -15,7 +15,8 @@ from tensor0._stride._layout import AffineRecord
 
 from tests.stride.support.availability import native_available
 from tests.stride.support.ffi import REDUCTION_FIBER, _encode_reduction_records, reduction_layout
-from tests.stride.support.oracles.generic import assert_close as generic_assert_close, thread_limit
+from tests.stride.support.oracles.generic import assert_close as generic_assert_close
+from tests.stride.support.calls import thread_limit
 from tests.stride.support.oracles.reduction import (
     addresses,
     assert_close as reduction_assert_close,

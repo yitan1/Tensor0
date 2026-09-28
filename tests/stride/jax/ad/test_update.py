@@ -15,7 +15,7 @@ from tensor0._stride._layout import AffineRecord
 
 from tests.stride.support.availability import native_available
 from tests.stride.support.data import FLOAT_PAIRS, INTEGER_PAIRS
-from tests.stride.support.layouts import PARTIAL as RAW_UPDATE_PARTIAL
+from tests.stride.support.layouts import RAW_UPDATE_PARTIAL
 from tests.stride.support.oracles.affine import (
     MIXED as AFFINE_MIXED,
     assert_close as affine_assert_close,
@@ -38,26 +38,26 @@ from tests.stride.support.oracles.dtype_family import (
     assert_result,
     values as dtype_family_values,
 )
+from tests.stride.support.layouts import MAPPING_PARTITIONS as PARTITIONS
 from tests.stride.support.oracles.generic import (
     HALF_LAYOUTS,
-    PARTITIONS,
     assert_close as generic_assert_close,
     assert_native as generic_assert_native,
     blocked_record,
     cast,
     dtype_values,
-    mapped,
-    reference_map,
-)
-from tests.stride.support.oracles.product_stages import PARTIAL as PRODUCT_STAGE_PARTIAL
+    reference_map)
+from tests.stride.support.calls import mapped
+from tests.stride.support.layouts import PRODUCT_STAGE_PARTIAL
 from tests.stride.support.oracles.raw_update import reference_update
+from tests.stride.support.layouts import PRODUCT_STAGE_PARTIAL as SCALAR_PATH_PARTIAL
 from tests.stride.support.oracles.scalar_paths import (
-    PARTIAL as SCALAR_PATH_PARTIAL,
     _CASES,
     assert_close as scalar_path_assert_close,
     store,
 )
-from tests.stride.support.oracles.update import LAYOUTS as UPDATE_LAYOUTS, compare, update_functions
+from tests.stride.support.oracles.update import LAYOUTS as UPDATE_LAYOUTS, compare
+from tests.stride.support.calls import update_functions
 from tests.stride.support.samples import values as samples_values
 
 

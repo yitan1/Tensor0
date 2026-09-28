@@ -11,9 +11,9 @@ from tensor0._stride._jax import accumulation_p, copy_p
 from tensor0._stride._layout import AffineRecord
 
 from tests.stride.support.availability import native_available
-from tests.stride.support.oracles.accumulation import TWO_RECORDS
+from tests.stride.support.layouts import ACCUMULATION_RECORDS
+from tests.stride.support.layouts import MAPPING_PARTITIONS as AFFINE_AD_PARTITIONS
 from tests.stride.support.oracles.affine_ad import (
-    PARTITIONS,
     assert_close as affine_ad_assert_close,
     assert_native_calls,
     reference_transform,
@@ -32,12 +32,13 @@ from tests.stride.support.oracles.complex_kernels import (
     mapped as complex_kernel_mapped,
     values as complex_kernel_values,
 )
+from tests.stride.support.layouts import MAPPING_PARTITIONS as PARTITIONS
 from tests.stride.support.oracles.generic import (
     assert_close as generic_assert_close,
     dtype_values,
-    mapped as generic_mapped,
     reference_map,
 )
+from tests.stride.support.calls import mapped as generic_mapped
 from tests.stride.support.samples import values as samples_values
 
 
@@ -49,7 +50,7 @@ def enable_x64():
 
 def two_record_reference(source, first, second):
     result = jnp.zeros((*source.shape[:-1], 5), source.dtype)
-    for record, factor in ((TWO_RECORDS[0], first), (TWO_RECORDS[2], second)):
+    for record, factor in ((ACCUMULATION_RECORDS[0], first), (ACCUMULATION_RECORDS[2], second)):
         if factor.shape == (1,):
             factor = factor.reshape(())
         for coordinates in np.ndindex(record.logical_shape):
@@ -60,7 +61,7 @@ def two_record_reference(source, first, second):
 
 
 def two_record_accumulation(source, first, second):
-    return accumulation_p.bind(source, first, second, records=TWO_RECORDS, coefficient_records=(0, 2), output_size=5, dtype=source.dtype)
+    return accumulation_p.bind(source, first, second, records=ACCUMULATION_RECORDS, coefficient_records=(0, 2), output_size=5, dtype=source.dtype)
 
 
 @pytest.mark.usefixtures("enable_x64")
@@ -117,11 +118,11 @@ def test_unscaled_records_and_cross_kind_coefficient_derivative():
     source = jnp.arange(5, dtype=jnp.float32)
 
     def unscaled(data):
-        return accumulation_p.bind(data, records=TWO_RECORDS, coefficient_records=(), output_size=5, dtype=data.dtype)
+        return accumulation_p.bind(data, records=ACCUMULATION_RECORDS, coefficient_records=(), output_size=5, dtype=data.dtype)
     np.testing.assert_array_equal(jax.grad(lambda data: unscaled(data).sum())(source), [2, 2, 2, 2, 0])
-    np.testing.assert_array_equal(jax.grad(lambda data: accumulation_p.bind(data, jnp.int32(2), records=(TWO_RECORDS[0],), coefficient_records=(0,), output_size=5, dtype=data.dtype).sum())(source), [2, 2, 2, 2, 0])
+    np.testing.assert_array_equal(jax.grad(lambda data: accumulation_p.bind(data, jnp.int32(2), records=(ACCUMULATION_RECORDS[0],), coefficient_records=(0,), output_size=5, dtype=data.dtype).sum())(source), [2, 2, 2, 2, 0])
     with jax.enable_x64():
-        gradient = jax.grad(lambda factor: accumulation_p.bind(source, factor, records=TWO_RECORDS, coefficient_records=(0,), output_size=5, dtype=source.dtype).sum())(jnp.complex128(2))
+        gradient = jax.grad(lambda factor: accumulation_p.bind(source, factor, records=ACCUMULATION_RECORDS, coefficient_records=(0,), output_size=5, dtype=source.dtype).sum())(jnp.complex128(2))
         np.testing.assert_array_equal(gradient, 6 + 0j)
         assert gradient.dtype == jnp.complex128
 

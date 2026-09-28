@@ -9,7 +9,7 @@ import pytest
 
 from tensor0._stride._jax import accumulation_p, copy_p
 
-from tests.stride.support.layouts import PARTITIONS
+from tests.stride.support.layouts import MAPPING_PARTITIONS as PARTITIONS
 
 
 def _check_sharding(mode):

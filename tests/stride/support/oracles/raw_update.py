@@ -1,16 +1,13 @@
-"""Shared raw update fixtures and references."""
+"""Raw Update reference for beta restricted to zero or one."""
 
 import jax.numpy as jnp
 import numpy as np
 
-from tensor0._stride._layout import AffineRecord
 
-
-COMPLETE = (AffineRecord((4, 2), (4, 1), 0, (4, 1), 2),
-            AffineRecord((4, 2), (4, 1), 2, (4, 1), 0))
 
 
 def reference_update(source, base, records, alpha, beta):
+    """Reference for beta=0/1 and records without overlapping destination writes."""
     result = base
     for record in records:
         source_indices = np.full(record.logical_shape, record.source_offset, dtype=np.int32)

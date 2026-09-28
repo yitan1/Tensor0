@@ -46,10 +46,8 @@ from tests.stride.support.oracles.generic import (
     assert_close as generic_assert_close,
     blocked_record,
     complex_values,
-    mapped as generic_mapped,
-    reference_map as generic_reference_map,
-    thread_limit,
-)
+    reference_map as generic_reference_map)
+from tests.stride.support.calls import mapped as generic_mapped, thread_limit
 from tests.stride.support.oracles.raw_update import reference_update
 
 

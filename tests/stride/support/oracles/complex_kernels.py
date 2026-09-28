@@ -1,4 +1,4 @@
-"""Shared complex kernels fixtures and references."""
+"""Complex kernel fixtures, production-call wrapper, and checks."""
 
 import jax.numpy as jnp
 import numpy as np

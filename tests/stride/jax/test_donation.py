@@ -12,7 +12,7 @@ from tensor0._stride._ffi._registration import operation_target
 from tensor0._stride._jax import update_p
 
 from tests.stride.support.availability import native_available
-from tests.stride.support.layouts import PARTIAL
+from tests.stride.support.layouts import RAW_UPDATE_PARTIAL
 from tests.stride.support.oracles.raw_update import reference_update
 from tests.stride.support.oracles.scale import reference_scale
 
@@ -110,8 +110,8 @@ def test_selected_scale_dynamic_operand_and_input_reuse(donate):
 @pytest.mark.parametrize("donate", [False, True])
 def test_update_base_reuse_respects_functional_input_protection(beta, donate):
     source, base = jnp.arange(32, dtype=jnp.float32), jnp.arange(50, dtype=jnp.float32)
-    expected = reference_update(source, base, PARTIAL, .5, beta)
-    operation = jax.jit(lambda old, new: update_p.bind(new, old, jnp.float32(.5), jnp.int32(beta), records=PARTIAL),
+    expected = reference_update(source, base, RAW_UPDATE_PARTIAL, .5, beta)
+    operation = jax.jit(lambda old, new: update_p.bind(new, old, jnp.float32(.5), jnp.int32(beta), records=RAW_UPDATE_PARTIAL),
                         donate_argnums=(0,) if donate else ())
     lowered = operation.lower(base, source)
     text = lowered.as_text()

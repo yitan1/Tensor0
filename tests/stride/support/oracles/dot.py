@@ -1,4 +1,4 @@
-"""Dot layouts, operands and differentiable reference."""
+"""Dot fixtures, production-call wrappers, and differentiable references."""
 
 from math import prod
 

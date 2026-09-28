@@ -12,7 +12,8 @@ from tensor0._stride._jax import accumulation_p
 from tensor0._stride._layout import AffineRecord
 
 from tests.stride.support.availability import native_available
-from tests.stride.support.oracles.copy import PARTITIONS, assert_single_native_call, reference_map
+from tests.stride.support.layouts import MAPPING_PARTITIONS as PARTITIONS
+from tests.stride.support.oracles.copy import assert_single_native_call, reference_map
 
 
 LAYOUTS = [

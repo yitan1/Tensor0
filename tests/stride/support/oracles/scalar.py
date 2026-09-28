@@ -1,12 +1,9 @@
-"""Shared scalar fixtures and references."""
+"""Scalar result checks."""
 
 import jax.numpy as jnp
 import numpy as np
 
-from tensor0._stride._layout import AffineRecord
 
-
-PARTIAL = (AffineRecord((3,), (1,), 0, (2,), 1),)
 
 
 def assert_components(actual, expected):

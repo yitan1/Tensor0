@@ -1,11 +1,9 @@
-"""Update layouts, disjoint address checks and differentiable reference."""
+"""Update fixtures, disjoint-address checks, and references."""
 
-from functools import cache
 
 import jax.numpy as jnp
 import numpy as np
 
-from tensor0._stride._jax import update_p
 from tensor0._stride._layout import AffineRecord
 
 from tests.stride.support.ad import check_coefficient_ad
@@ -20,13 +18,9 @@ def assert_disjoint_writes(records):
     assert len(destinations) == len(set(destinations))
 
 
-@cache
-def update_functions(records):
+def update_reference(records):
     assert_disjoint_writes(records)
     indices = tuple(((np.asarray([source for source, _ in address_pairs(record)], dtype=np.int32), np.asarray([destination for _, destination in address_pairs(record)], dtype=np.int32)) for record in records))
-
-    def execute(source, base, alpha, beta):
-        return update_p.bind(source, base, alpha, beta, records=records)
 
     def reference(source, base, alpha, beta):
         factors = tuple((value.reshape(()) if value.shape == (1,) else value for value in (alpha, beta)))
@@ -38,7 +32,7 @@ def update_functions(records):
                 contribution = jnp.real(contribution)
             result = result.at[..., destination_indices].set(contribution.astype(base.dtype))
         return result
-    return (execute, reference)
+    return reference
 
 
 LAYOUTS = [

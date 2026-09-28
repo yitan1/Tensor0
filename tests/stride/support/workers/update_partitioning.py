@@ -9,7 +9,7 @@ import pytest
 
 from tensor0._stride._jax import update_p
 
-from tests.stride.support.layouts import PARTIAL
+from tests.stride.support.layouts import RAW_UPDATE_PARTIAL
 
 
 def _check_sharding(mode):
@@ -23,7 +23,7 @@ def _check_sharding(mode):
     source_host = np.arange(64, dtype=np.float32).reshape(2, 32)
     base, source = jax.device_put(base_host, batches), jax.device_put(source_host, batches)
     for beta in (0, 1):
-        operation = lambda old, new: update_p.bind(new, old, jnp.float32(.5), jnp.int32(beta), records=PARTIAL)
+        operation = lambda old, new: update_p.bind(new, old, jnp.float32(.5), jnp.int32(beta), records=RAW_UPDATE_PARTIAL)
         executable = jax.jit(operation, in_shardings=(batches, batches), out_shardings=batches).lower(base, source).compile()
         actual = executable(base, source)
         expected = base_host.copy()

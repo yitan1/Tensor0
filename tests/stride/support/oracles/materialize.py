@@ -1,4 +1,4 @@
-"""Shared materialize fixtures and references."""
+"""Materialization reference and view construction helper."""
 
 from __future__ import annotations
 

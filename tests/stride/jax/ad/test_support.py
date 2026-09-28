@@ -6,7 +6,7 @@ import pytest
 
 from tests.stride.support.ad import check_coefficient_ad
 from tests.stride.support.availability import native_available
-from tests.stride.support.oracles.coefficients import shared_coefficient_case
+from tests.stride.support.calls import shared_coefficient_case
 
 
 pytestmark = pytest.mark.skipif(not native_available(), reason='native CPU stride is unavailable')

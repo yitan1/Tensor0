@@ -1,4 +1,4 @@
-"""Shared dtype family fixtures and references."""
+"""Dtype fixtures, result checks, and lowering checks."""
 
 import jax.numpy as jnp
 import numpy as np

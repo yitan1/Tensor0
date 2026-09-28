@@ -13,8 +13,9 @@ from tensor0._stride._layout import AffineRecord
 
 from tests.stride.support.availability import native_available
 from tests.stride.support.data import PAIRS
-from tests.stride.support.layouts import PARTIAL
-from tests.stride.support.oracles.raw_update import COMPLETE, reference_update
+from tests.stride.support.layouts import RAW_UPDATE_PARTIAL
+from tests.stride.support.layouts import MAPPING_PARTITIONS as COMPLETE
+from tests.stride.support.oracles.raw_update import reference_update
 
 
 @pytest.mark.skipif(not native_available(), reason='native CPU stride is unavailable')
@@ -65,8 +66,8 @@ def test_partial_mixed_dtype_updates(source_dtype, result_dtype, beta):
     if jnp.iscomplexobj(base):
         base = base + 1j * base[::-1]
     actual = jax.jit(lambda old, new: update_p.bind(
-        new, old, jnp.float32(.5), jnp.int32(beta), records=PARTIAL))(base, source)
-    expected = reference_update(source, base, PARTIAL, .5, beta)
+        new, old, jnp.float32(.5), jnp.int32(beta), records=RAW_UPDATE_PARTIAL))(base, source)
+    expected = reference_update(source, base, RAW_UPDATE_PARTIAL, .5, beta)
     np.testing.assert_allclose(actual, expected, rtol=2e-6, atol=1e-6)
 
 
@@ -84,8 +85,8 @@ def test_complex_finite_updates(beta):
 @pytest.mark.parametrize("beta", [0, 1])
 def test_partial_update_preserves_unselected_storage_and_inputs(beta):
     base, source = jnp.arange(50, dtype=jnp.float32) + 100, jnp.arange(32, dtype=jnp.float32)
-    actual = update_p.bind(source, base, jnp.float32(.5), jnp.int32(beta), records=PARTIAL)
-    np.testing.assert_array_equal(actual, reference_update(source, base, PARTIAL, .5, beta))
+    actual = update_p.bind(source, base, jnp.float32(.5), jnp.int32(beta), records=RAW_UPDATE_PARTIAL)
+    np.testing.assert_array_equal(actual, reference_update(source, base, RAW_UPDATE_PARTIAL, .5, beta))
     untouched = np.ones(50, dtype=bool)
     untouched[2:50:3] = False
     np.testing.assert_array_equal(np.asarray(actual)[untouched].view(np.uint8), np.asarray(base)[untouched].view(np.uint8))

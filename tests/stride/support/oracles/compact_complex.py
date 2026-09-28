@@ -1,4 +1,4 @@
-"""Shared compact complex fixtures and references."""
+"""Compact complex fixtures, production-call wrapper, reference, and checks."""
 
 from math import prod
 

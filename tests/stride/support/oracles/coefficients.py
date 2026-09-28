@@ -7,22 +7,6 @@ import jax.numpy as jnp
 import numpy as np
 
 from tests.stride.support.data import PAIRS as MIXED_PAIRS
-from tests.stride.support.oracles.reduction import functions as reduction_ad_functions
-from tests.stride.support.oracles.update import LAYOUTS, update_functions
-from tests.stride.support.samples import values
-
-
-def shared_coefficient_case(source_dtype, coefficient_dtype, dtype, operation):
-    first = jnp.asarray(2, dtype=coefficient_dtype)
-    second = jnp.asarray(0.5, dtype=dtype)
-    if operation == 'update':
-        run, reference = update_functions(LAYOUTS[1])
-        arguments = (values((6,), source_dtype), values((10,), dtype), first, second)
-    else:
-        run, reference = reduction_ad_functions(operation, dtype)
-        arguments = (values((5,), source_dtype), first, second)
-    return run, reference, arguments
-
 
 DTYPES = ('float16', 'bfloat16', 'float32', 'float64', 'complex64', 'complex128')
 

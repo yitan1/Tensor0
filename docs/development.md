@@ -174,7 +174,7 @@ uv run python examples/contractions.py
 ```
 
 Native regression tests live in `tests/stride`, including the standalone C++
-sources in `tests/stride/cpp`. On Linux, `native/test_cpp.py` compiles them with a C++20
+sources in `tests/stride/native/cpp`. On Linux, `native/cpp/test_contracts.py` compiles them with a C++20
 compiler and UndefinedBehaviorSanitizer; set `CXX` to select the compiler.
 The tests cover scalar promotion, expression stages, address planning, SIMD
 tails, skipped reads, asynchronous task ownership, and validation before writes.
@@ -187,7 +187,7 @@ executables, including UBSan checks and the JAX promotion oracle. Native sources
 vendored headers, shared test headers, compiler identity, compile flags, and
 compiler search-path environment changes invalidate the cached builds. Individual
 C++ test source changes rebuild that contract. Failed builds are not cached.
-Use `uv run pytest tests/stride/native/test_cpp.py --cache-clear -q` for a clean build,
+Use `uv run pytest tests/stride/native/cpp/test_contracts.py --cache-clear -q` for a clean build,
 including after changes to system headers or libraries outside the checkout.
 
 ### Stride coverage policy
@@ -245,15 +245,34 @@ or complex representative, including both local and all-reduce gradients.
 Stride tests separate metadata (`tests/stride/metadata/`), native arithmetic and
 execution (`native/`), FFI boundaries (`ffi/`), JAX transformations (`jax/`), public view algebra (`api/`), packed tensor
 adapters (`tensor_ops/`) and build infrastructure (`build_checks/`). The latter
-paths are also relative to `tests/stride/`. JAX AD and partitioning checks have
-their own subdirectories; abstract evaluation, lowering, batching and donation
-checks are at the JAX test root. Root TensorMap integration tests remain separate
-from the packed-adapter fixtures. `build_checks` avoids pytest's default exclusion
-of directories named `build`. All these directories are part of the normal
-`pytest tests/stride` collection.
+paths are also relative to `tests/stride/`. JAX AD, partitioning and CUDA GPU
+integration checks have their own `jax/ad/`, `jax/partitioning/` and `jax/cuda/`
+subdirectories; abstract evaluation, lowering, batching and donation checks
+remain at the JAX test root. `ffi/test_cuda_lowering.py` checks the host-to-MLIR
+boundary without running a GPU kernel; `native/cuda/` owns standalone CUDA
+contract sources and binaries, separate from the JAX GPU integration tests.
+Root TensorMap integration tests remain separate from the packed-adapter fixtures.
+`jax/ad/test_support.py` owns the coefficient AD harness trace-reuse regression.
+`build_checks/` covers production `build.rs` object caching, optimization,
+jobserver concurrency and CUDA linkage; the standalone C++ test executable cache;
+and vendored FFI header/license and runtime-version integrity. Most build-script
+cases compile a small real Cargo harness but use synthetic native sources and a
+mock compiler/NVCC to inspect invalidation and scheduling. Selected cases actually
+compile/link small C++ and Cargo fixtures (including CUDA-linkage simulation with
+C++ stubs), not the production CUDA kernels. `test_cpp_cache.py` uses a mock
+compiler; `test_vendor.py` checks files and declarations without compilation.
+`build_checks` avoids pytest's default exclusion of directories named `build`.
+All these directories are part of the normal `pytest tests/stride` collection.
 
 Shared test helpers live under `tests/stride/support/`; test modules do not
-import one another. Dtype-only tables in `support/data.py` do not initialize JAX,
+import one another. Directory ownership follows the contract being asserted, not
+which helper, compiler, primitive or execution API the test happens to call:
+standalone native C++/CUDA executables belong under `native/`, host-side FFI
+contracts under `ffi/`, and device execution under `jax/cuda/`. Device tests
+request the local `cuda_device` fixture explicitly so CPU-only checks in that
+directory still run without a GPU.
+
+Dtype-only tables in `support/data.py` do not initialize JAX,
 while differentiable sample arrays and operation-specific references have separate
 modules. Isolated probes live under `support/workers/`; their launching tests set
 the subprocess environment before the child imports JAX.
@@ -278,8 +297,25 @@ uv run pytest tests/stride/jax/ad/test_update.py -q
 uv run pytest tests/stride -q
 ```
 
-A selected subset is not equivalent to the full suite. Run complete affected
-owners as needed, and run `uv run pytest tests -q` before merging. A faster subset
+Select the layer and environment that matches the contract:
+
+| Contract | Prerequisite | Focused command |
+| --- | --- | --- |
+| Host metadata, FFI lowering and CPU native execution | Built CPU extension and project test environment; no GPU required | `uv run pytest tests/stride/metadata tests/stride/ffi/test_cuda_lowering.py tests/stride/native -q` |
+| Standalone C++ executable contracts | Linux C++20 compiler and UBSan; selected binaries execute even when cached | `uv run pytest tests/stride/native/cpp/test_contracts.py -q` |
+| CUDA native executable contracts | CUDA toolkit/NVCC and compatible GPU | `uv run pytest tests/stride/native/cuda -q` |
+| JAX GPU primitives and lifecycle | CUDA-enabled extension, compatible driver/GPU and JAX GPU backend | `uv run pytest tests/stride/jax/cuda -q` |
+| Isolated JAX workers | Required devices (two for partitioning) and subprocess-accessible environment | `uv run pytest tests/stride/jax/partitioning -q` |
+| Coefficient AD harness trace reuse | Built CPU extension and JAX test environment; no GPU required (skips without native extension) | `uv run pytest tests/stride/jax/ad/test_support.py -q` |
+| Build-script cache, jobserver and CUDA-linkage checks | Linux, Cargo with cached offline `jobserver` dependency (`cargo fetch` first if needed); C++20 compiler and `ar` for real compile/link cases; no CUDA toolkit/GPU required | `uv run pytest tests/stride/build_checks/test_native_build.py -q` |
+| Standalone C++ test cache and vendor integrity | Linux for cache simulations (Python mock compiler); repository vendored files for integrity checks; no native extension/toolkit/GPU required | `uv run pytest tests/stride/build_checks/test_cpp_cache.py tests/stride/build_checks/test_vendor.py -q` |
+
+GPU tests use explicit device fixtures and may skip when unavailable; successful
+CPU-only collection or a skipped run is not evidence of GPU execution. Some host
+and C++ tests require a built extension or compiler even without CUDA. Partitioning
+workers set their own subprocess environment before importing JAX; do not replace
+them with in-process checks. A selected subset is not equivalent to the full suite.
+Run complete affected owners as needed, and run `uv run pytest tests -q` before merging. A faster subset
 shortens feedback by doing less work; it does not demonstrate a speedup at equal
 coverage. All selected C++ executables still execute, even with a warm build cache.
 
@@ -288,8 +324,8 @@ groups below. Neither group alone covers the entire Stride suite, and together
 they still omit external TensorMap and other project tests:
 
 ```bash
-uv run pytest tests/stride/native/test_cpp.py tests/stride/build_checks/test_native_build.py -q
-uv run pytest tests/stride -q --ignore=tests/stride/native/test_cpp.py --ignore=tests/stride/build_checks/test_native_build.py
+uv run pytest tests/stride/native/cpp/test_contracts.py tests/stride/build_checks/test_native_build.py -q
+uv run pytest tests/stride -q --ignore=tests/stride/native/cpp/test_contracts.py --ignore=tests/stride/build_checks/test_native_build.py
 ```
 
 ## Documentation Site

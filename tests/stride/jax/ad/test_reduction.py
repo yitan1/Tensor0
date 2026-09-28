@@ -17,12 +17,10 @@ from tests.stride.support.oracles.reduction import (
     CROSS_SHAPE_TYPES,
     assert_close,
     compare_derivatives,
-    execute,
-    functions,
     operands,
     reference,
-    reference_sum,
-)
+    reference_sum)
+from tests.stride.support.calls import execute_reduction as execute, reduction_functions as functions
 from tests.stride.support.samples import values
 
 

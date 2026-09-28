@@ -1,4 +1,8 @@
-"""Native build cache invalidation and optimization profiles."""
+"""Production build.rs cache, jobserver, CUDA linkage and optimization checks.
+
+Most cases use a compiled build script with synthetic sources and mock compilers;
+selected cases compile/link small real C++ and Cargo fixtures (offline).
+"""
 
 import json
 import os

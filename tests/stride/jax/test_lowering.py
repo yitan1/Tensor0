@@ -15,7 +15,7 @@ from tensor0._stride._jax import accumulation_p, copy_p, reduction_p, update_p
 from tensor0._stride._layout import AffineRecord
 
 from tests.stride.support.availability import native_available
-from tests.stride.support.layouts import PARTITIONS as MAPPING_PARTITIONS
+from tests.stride.support.layouts import MAPPING_PARTITIONS
 from tests.stride.support.oracles.compact_complex import (
     assert_close,
     assert_native as compact_assert_native,
@@ -24,9 +24,10 @@ from tests.stride.support.oracles.compact_complex import (
     mapped,
     reference,
 )
-from tests.stride.support.oracles.copy import PARTITIONS as COPY_PARTITIONS, reference_map
+from tests.stride.support.layouts import MAPPING_PARTITIONS as COPY_PARTITIONS
+from tests.stride.support.oracles.copy import reference_map
 from tests.stride.support.oracles.generic import assert_native as generic_assert_native
-from tests.stride.support.oracles.raw_update import COMPLETE
+from tests.stride.support.layouts import MAPPING_PARTITIONS as COMPLETE
 from tests.stride.support.views import _dense, _pitched
 
 

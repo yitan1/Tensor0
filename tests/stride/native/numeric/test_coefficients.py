@@ -17,8 +17,9 @@ from tests.stride.support.availability import native_available
 from tests.stride.support.data import PAIRS
 from tests.stride.support.ffi import REDUCTION_FIBER, _encode_reduction_records
 from tests.stride.support.oracles.affine import broadcast_record, native
-from tests.stride.support.oracles.coefficients import SHARED_CASES, shared_coefficient_case
-from tests.stride.support.oracles.effective_factor import SINGLE
+from tests.stride.support.oracles.coefficients import SHARED_CASES
+from tests.stride.support.calls import shared_coefficient_case
+from tests.stride.support.layouts import SINGLE_FACTOR_RECORDS
 from tests.stride.support.oracles.update_storage import MIXED_RECORDS, mixed_operands, reference
 
 
@@ -158,10 +159,10 @@ def test_effective_factor_short_circuits_after_coefficient_product(first, second
 @pytest.mark.skipif(not native_available(), reason='native CPU stride is unavailable')
 def test_mapping_and_update_receive_independent_coefficients():
     source = jnp.asarray([30000], dtype=jnp.float16)
-    fresh = accumulation_p.bind(source, jnp.float16(2), records=SINGLE,
+    fresh = accumulation_p.bind(source, jnp.float16(2), records=SINGLE_FACTOR_RECORDS,
                                 coefficient_records=(0,), output_size=1, dtype=source.dtype)
     updated = update_p.bind(source, jnp.zeros_like(source), jnp.float16(2) * jnp.float16(.5),
-                            jnp.float16(0), records=SINGLE)
+                            jnp.float16(0), records=SINGLE_FACTOR_RECORDS)
     np.testing.assert_allclose(fresh, source * jnp.float16(2), rtol=1e-3, atol=0)
     np.testing.assert_array_equal(updated, source)
 
@@ -176,7 +177,7 @@ def test_coefficient_product_precedes_weak_normalization(strong):
 
         def operation(values, factor):
             effective = normalize_coefficient(values.dtype, jnp.asarray(first) * factor)
-            return update_p.bind(values, jnp.zeros_like(values), effective, jnp.float16(0), records=SINGLE)
+            return update_p.bind(values, jnp.zeros_like(values), effective, jnp.float16(0), records=SINGLE_FACTOR_RECORDS)
 
         product = jnp.asarray(first) * jnp.asarray(second)
         coefficient = product if strong else product.astype(source.dtype)
@@ -203,7 +204,7 @@ def test_integer_coefficient_product_precedes_source_promotion(dtype):
 def test_boolean_coefficient_product_selects_zero_without_reading_source():
     source = jnp.asarray([jnp.nan], dtype=jnp.float32)
     actual = jax.jit(lambda values, factor: update_p.bind(
-        values, jnp.zeros_like(values), jnp.asarray(False) * factor, jnp.float32(0), records=SINGLE))(
+        values, jnp.zeros_like(values), jnp.asarray(False) * factor, jnp.float32(0), records=SINGLE_FACTOR_RECORDS))(
             source, jnp.float32(3.5))
     np.testing.assert_array_equal(actual, jnp.zeros_like(actual))
 

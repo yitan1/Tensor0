@@ -12,19 +12,17 @@ from tensor0._stride._jax import accumulation_p, copy_p, update_p
 from tensor0._stride._layout import AffineRecord, contiguous_strides
 
 from tests.stride.support.availability import native_available
+from tests.stride.support.layouts import MAPPING_PARTITIONS as PARTITIONS
 from tests.stride.support.oracles.generic import (
     HALF_LAYOUTS,
-    PARTITIONS,
     addresses,
     assert_close,
     assert_native,
     blocked_record,
     complex_values,
     dtype_values,
-    mapped,
-    reference_map,
-    thread_limit,
-)
+    reference_map)
+from tests.stride.support.calls import mapped, thread_limit
 
 
 pytestmark = pytest.mark.skipif(not native_available(), reason='native CPU stride unavailable')

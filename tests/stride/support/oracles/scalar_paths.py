@@ -1,12 +1,9 @@
-"""Shared scalar paths fixtures and references."""
+"""Scalar path fixtures, reference storage, and result checks."""
 
 import jax.numpy as jnp
 import numpy as np
 
-from tensor0._stride._layout import AffineRecord
 
-
-PARTIAL = (AffineRecord((3,), (1,), 0, (2,), 1),)
 
 
 _CASES = [

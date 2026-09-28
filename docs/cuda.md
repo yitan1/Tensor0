@@ -103,9 +103,9 @@ Empty selections return arithmetic positive zero.
 
 Dot uses one output owner per batch. Single-contribution records use the
 common sequential owner/fiber kernel. Longer fibers use 1024-contribution
-chunks with a 256-thread tree per chunk, followed by a second kernel combining
-chunk partials with the previous output once. Records complete in order on the
-XLA stream. The internal partial buffer is an XLA-owned second result; it is
+chunks with a 256-thread tree per chunk. A single chunk writes directly to the
+output; multiple chunks use a second kernel to combine their partials with the
+previous output once. Records complete in order on the XLA stream. The internal partial buffer is an XLA-owned second result; it is
 not returned to the caller. Both strategies share the packed owner/fiber
 address representation and static Dot calculation policy with the common
 map/reduce kernel used by the other operations. No atomics, native per-call
@@ -128,9 +128,10 @@ Independent output is zero-initialized, including holes. Each output map
 coordinate has one owner. Short or resource-limited fibers run sequentially;
 selected long fibers use shared chunk partials and an XLA-owned internal
 buffer. For Accumulation and Reduction, parallel execution requires at least
-1024 contributions per owner and at most 2^20 partial slots per batch
-(`owners * ceil(contributions / 1024)`). This static threshold is based on
-limited A100 measurements, not a universal performance guarantee. A finish task combines each owner's existing output exactly once.
+256 contributions per owner and at most 2^20 partial slots per batch
+(`owners * ceil(contributions / 1024)`); chunks remain 1024 contributions.
+This static threshold is based on limited A100 measurements, not a universal
+performance guarantee. A finish task combines each owner's existing output exactly once.
 Every contribution is multiplied before addition, with the same zero/one and
 real/full-complex branches as Accumulation. No atomics are used, and changed
 sum grouping does not imply bitwise equality. Unsigned 64-bit descriptor extents retain their full protocol range even
@@ -307,12 +308,15 @@ checked on every call before any writes. No native device cache is introduced.
 Every layout transform must update the authoritative preparation result
 before host and device encoding; changing host records alone is insufficient.
 
-After validating host metadata and buffer relationships, Copy, Dot,
-Accumulation and Reduction zero output; Update copies base to output when they
-differ. Copy and Update launch specializations of the common owner/fiber kernel.
+After validating host metadata and buffer relationships, Dot,
+Accumulation and Reduction zero output. Copy skips zeroing when one injective
+record fully covers output; Update skips copying base to a distinct output in
+that case. Otherwise Copy zeroes output and Update copies base when needed.
+Copy and Update launch specializations of the common owner/fiber kernel.
 Accumulation and Reduction choose sequential owner or shared parallel
 partial/finish execution per record. Dot uses the same sequential kernel for
-a single contribution, and the parallel fiber strategy for longer records.
+a single contribution, and the parallel fiber strategy for longer records;
+single-chunk fibers write directly to output.
 All launches occur in record order on the XLA-provided stream.
 Update, Accumulation and Reduction read coefficients on device. No handler reads device data on host or allocates
 device memory per
@@ -347,12 +351,13 @@ It has explicit CPU/CUDA parametrization, so CPU-only runs execute substantive
 CPU cases rather than skipping the entire module. The matrix fixes JAX matmul
 precision to `highest` without changing Tensor0 runtime defaults.
 
-Primitive GPU integration tests are in `tests/stride/jax/test_cuda_copy.py`,
-`tests/stride/jax/test_cuda_update.py`,
-`tests/stride/jax/test_cuda_accumulation.py`, `tests/stride/jax/test_cuda_dot.py`,
-`tests/stride/jax/test_cuda_reduction.py`, and `tests/stride/cuda/`. Tests requiring
+Primitive GPU integration tests are in `tests/stride/jax/cuda/test_copy.py`,
+`tests/stride/jax/cuda/test_update.py`,
+`tests/stride/jax/cuda/test_accumulation.py`, `tests/stride/jax/cuda/test_dot.py`,
+`tests/stride/jax/cuda/test_reduction.py`. Standalone native CUDA contracts live
+in `tests/stride/native/cuda/`, separate from JAX GPU integration. Tests requiring
 native GPU support skip without a CUDA-enabled extension/device. The standalone
-Update/Accumulation/Dot/Reduction boundary tests instead need an existing toolkit/device, accept
+Copy/Update/Accumulation/Dot/Reduction contracts instead need an existing toolkit/device, accept
 `NVCC`,
 `CUDA_HOME` and `TENSOR0_CUDA_ARCH` (default `sm_80`), and exercise actual buffer
 alias rejection and stream dependency ordering. A skip is not a validation pass.

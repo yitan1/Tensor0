@@ -9,19 +9,21 @@ from tensor0._stride._jax import accumulation_p, copy_p, reduction_p, update_p
 from tensor0._stride._layout import AffineRecord
 
 from tests.stride.support.availability import native_available
-from tests.stride.support.layouts import PARTIAL
+from tests.stride.support.layouts import RAW_UPDATE_PARTIAL
+from tests.stride.support.layouts import MAPPING_PARTITIONS as AFFINE_AD_PARTITIONS
 from tests.stride.support.oracles.affine_ad import (
-    PARTITIONS as AFFINE_AD_PARTITIONS,
     assert_close,
     assert_native_calls,
     reference_transform,
 )
+from tests.stride.support.layouts import MAPPING_PARTITIONS as COPY_PARTITIONS
 from tests.stride.support.oracles.copy import (
-    PARTITIONS as COPY_PARTITIONS,
     assert_single_native_call,
 )
-from tests.stride.support.oracles.raw_update import COMPLETE, reference_update
-from tests.stride.support.oracles.reduction import execute, reference
+from tests.stride.support.layouts import MAPPING_PARTITIONS as COMPLETE
+from tests.stride.support.oracles.raw_update import reference_update
+from tests.stride.support.oracles.reduction import reference
+from tests.stride.support.calls import execute_reduction as execute
 
 
 @pytest.mark.skipif(not native_available(), reason='native CPU stride is unavailable')
@@ -171,7 +173,7 @@ def test_empty_and_nested_batches(operation, batch_count, row_batch):
     import jax
     import jax.numpy as jnp
     import numpy as np
-    from tests.stride.support.oracles.reduction import functions
+    from tests.stride.support.calls import reduction_functions as functions
 
     execute, reference = functions(operation, "float32")
     host = (jnp.ones((batch_count, *row_batch, 5)),
@@ -193,7 +195,7 @@ def test_empty_and_nested_batches(operation, batch_count, row_batch):
 def test_invalid_slice_shapes(operation, invalid):
     import jax
     import jax.numpy as jnp
-    from tests.stride.support.oracles.reduction import functions
+    from tests.stride.support.calls import reduction_functions as functions
 
     run, _ = functions(operation, "float32")
     source = jnp.ones((2,)) if invalid == "source" else jnp.ones((2, 5))
@@ -207,7 +209,7 @@ def test_zero_mapped_coefficients_skip_nonfinite_rows(operation):
     import jax
     import jax.numpy as jnp
     import numpy as np
-    from tests.stride.support.oracles.reduction import functions
+    from tests.stride.support.calls import reduction_functions as functions
 
     execute, reference = functions(operation, "float32")
     finite = jnp.arange(4 * 3 * 5, dtype=jnp.float32).reshape(4, 3, 5)
@@ -219,7 +221,7 @@ def test_zero_mapped_coefficients_skip_nonfinite_rows(operation):
 
 
 @pytest.mark.parametrize("beta", [0, 1])
-@pytest.mark.parametrize("records,source_size,output_size", [(PARTIAL, 32, 50), (COMPLETE, 16, 16)])
+@pytest.mark.parametrize("records,source_size,output_size", [(RAW_UPDATE_PARTIAL, 32, 50), (COMPLETE, 16, 16)])
 @pytest.mark.parametrize("in_axes", [(0, 0), (0, None), (None, 0)])
 def test_update_vmap_operand_combinations(beta, records, source_size, output_size, in_axes):
     base, source = jnp.arange(output_size, dtype=jnp.float32), jnp.arange(source_size, dtype=jnp.float32)

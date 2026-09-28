@@ -11,10 +11,11 @@ from tensor0._stride._layout import AffineRecord
 
 from tests.stride.support.availability import native_available
 from tests.stride.support.oracles.dtype_family import assert_native, assert_result, values
-from tests.stride.support.oracles.product_stages import PARTIAL as PRODUCT_STAGES_PARTIAL
-from tests.stride.support.oracles.scalar import PARTIAL as SCALAR_PARTIAL, assert_components
+from tests.stride.support.layouts import PRODUCT_STAGE_PARTIAL
+from tests.stride.support.layouts import PRODUCT_STAGE_PARTIAL as SCALAR_PARTIAL
+from tests.stride.support.oracles.scalar import assert_components
+from tests.stride.support.layouts import PRODUCT_STAGE_PARTIAL as SCALAR_PATHS_PARTIAL
 from tests.stride.support.oracles.scalar_paths import (
-    PARTIAL as SCALAR_PATHS_PARTIAL,
     _CASES,
     assert_close,
     store,
@@ -341,7 +342,7 @@ def test_update_preserves_each_product_rounding(source_is_narrow):
         base = jnp.full((7,), -.5 if source_is_narrow else narrow_value, dtype=jnp.float32)
         alpha, beta = (narrow_factor, wide_factor) if source_is_narrow else (wide_factor, narrow_factor)
         function = jax.jit(lambda old, values, first, second: update_p.bind(
-            values, old, first, second, records=PRODUCT_STAGES_PARTIAL,
+            values, old, first, second, records=PRODUCT_STAGE_PARTIAL,
         ))
         source_term, base_term = alpha * source, beta * base[1::2]
         assert (source_term.dtype, base_term.dtype) == (
@@ -367,7 +368,7 @@ def test_weak_storage_uses_concrete_dtype_at_native_boundary(promotion):
         alpha = jnp.asarray(1, dtype=jnp.float16)
         beta = jnp.asarray(.3, dtype=jnp.float16)
         actual = jax.jit(lambda old, values, first, second: update_p.bind(
-            values, old, first, second, records=PRODUCT_STAGES_PARTIAL,
+            values, old, first, second, records=PRODUCT_STAGE_PARTIAL,
         ))(base, source, alpha, beta)
         expected = np.asarray(base).copy()
         expected[1::2] = np.asarray(source) + np.float32(beta) * np.asarray(base)[1::2]

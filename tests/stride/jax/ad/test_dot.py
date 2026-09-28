@@ -9,7 +9,7 @@ from tensor0._stride import StridedView, dotc, dotu
 from tensor0._stride._jax import dot_p
 
 from tests.stride.support.availability import native_available
-from tests.stride.support.oracles.accumulation import TWO_RECORDS
+from tests.stride.support.layouts import ACCUMULATION_RECORDS
 from tests.stride.support.oracles.dot import LAYOUTS, dot_functions, operands
 
 
@@ -25,7 +25,7 @@ def accumulation_enable_x64():
 @pytest.mark.usefixtures("accumulation_enable_x64")
 def test_multirecord_dot_transpose():
     source = jnp.arange(5, dtype=jnp.float32)
-    records = (TWO_RECORDS[0], TWO_RECORDS[0], TWO_RECORDS[1], TWO_RECORDS[2])
+    records = (ACCUMULATION_RECORDS[0], ACCUMULATION_RECORDS[0], ACCUMULATION_RECORDS[1], ACCUMULATION_RECORDS[2])
 
     def function(left, right):
         return dot_p.bind(left, right, records=records, conjugate_left=False)

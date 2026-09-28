@@ -1,18 +1,13 @@
-"""Shared affine ad fixtures and references."""
+"""Affine transform fixtures, disjoint-write reference, and lowering checks."""
 
 import jax.numpy as jnp
 import numpy as np
 
-from tensor0._stride._layout import AffineRecord
 
-
-PARTITIONS = (
-    AffineRecord((4, 2), (4, 1), 0, (4, 1), 2),
-    AffineRecord((4, 2), (4, 1), 2, (4, 1), 0),
-)
 
 
 def reference_transform(source, records, factors, output_size, dtype):
+    """Reference for records with non-overlapping destination addresses."""
     result = jnp.zeros(source.shape[:-1] + (output_size,), dtype=dtype)
     for record, factor in zip(records, factors, strict=True):
         source_indices = np.full(record.logical_shape, record.source_offset, dtype=np.int32)

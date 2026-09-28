@@ -1,13 +1,11 @@
-"""Record-wise Reduction references and derivative checks."""
+"""Reduction fixtures, references, and derivative checks."""
 
-from functools import cache
 from itertools import product
 from math import prod
 
 import jax.numpy as jnp
 import numpy as np
 
-from tensor0._stride._jax import accumulation_p, reduction_p
 from tensor0._stride._layout import AffineRecord
 
 from tests.stride.support.ad import check_coefficient_ad
@@ -23,18 +21,13 @@ def assert_close(actual, expected):
                                    rtol=tolerance, atol=tolerance)
 
 
-@cache
-def functions(operation, dtype):
-    records = (AffineRecord((2, 2), (2, 1), 0, (1, 0), 1),
+AD_RECORDS = (AffineRecord((2, 2), (2, 1), 0, (1, 0), 1),
                AffineRecord((2, 2), (0, -1), 3, (-1, 0), 3),
                AffineRecord((0,), (1,), 5, (1,), 5))
-    def run(source, first, second):
-        if operation == "accumulation":
-            return accumulation_p.bind(source, first, second, records=records,
-                coefficient_records=(0, 1), output_size=6, dtype=jnp.dtype(dtype))
-        return reduction_p.bind(source, first, second, records=records,
-            output_shapes=((2, 1), (2, 1), (1,)), reduction_axes=((False, True), (False, True), (True,)),
-            coefficient_records=(0, 1), output_size=6, dtype=jnp.dtype(dtype))
+
+
+def reference_functions(operation, dtype):
+    records = AD_RECORDS
     # Gather each record at once. Cast each mapped contribution before the
     # scatter-add, retaining repeated destinations and record ordering.
     indices = []
@@ -56,7 +49,7 @@ def functions(operation, dtype):
                 contribution = jnp.real(contribution)
             result = result.at[..., outputs].add(contribution.astype(dtype))
         return result
-    return run, reference
+    return reference
 
 
 def compare_derivatives(run, reference, arguments):
@@ -79,13 +72,6 @@ AXES = ((False, True), (False, True), (True, False), (False, True))
 
 
 COEFFICIENT_RECORDS = (0, 2, 3)
-
-
-def execute(source, empty, first, second):
-    return reduction_p.bind(
-        source, empty, first, second, records=RECORDS, output_shapes=OUTPUT_SHAPES,
-        reduction_axes=AXES, coefficient_records=COEFFICIENT_RECORDS, output_size=7, dtype=source.dtype,
-    )
 
 
 def reference(source, empty, first, second):

@@ -1,18 +1,13 @@
-"""Shared generic fixtures and references."""
+"""Generic fixtures, reference, and lowering checks."""
 
-from contextlib import contextmanager
 from math import prod
 
 import jax.numpy as jnp
 import numpy as np
 
-from tensor0._stride import enable_threads, get_num_threads, set_num_threads
-from tensor0._stride._jax import update_p
 from tensor0._stride._layout import AffineRecord, contiguous_strides
 
-
-PARTITIONS = (AffineRecord((4, 2), (4, 1), 0, (4, 1), 2),
-              AffineRecord((4, 2), (4, 1), 2, (4, 1), 0))
+from tests.stride.support.oracles.addresses import record_addresses as addresses
 
 
 def blocked_record(shape):
@@ -20,16 +15,6 @@ def blocked_record(shape):
     source_strides = (-strides[0], *strides[1:]) if shape else ()
     offset = (shape[0] - 1) * strides[0] if shape else 0
     return AffineRecord(shape, source_strides, offset, tuple(prod(shape[:axis]) for axis in range(len(shape))), 0)
-
-
-def addresses(record):
-    source = np.full(record.logical_shape, record.source_offset, dtype=np.int64)
-    destination = np.full(record.logical_shape, record.destination_offset, dtype=np.int64)
-    for axis, extent in enumerate(record.logical_shape):
-        coordinate = np.arange(extent).reshape((1,) * axis + (extent,) + (1,) * (len(record.logical_shape) - axis - 1))
-        source += coordinate * record.source_strides[axis]
-        destination += coordinate * record.destination_strides[axis]
-    return source.ravel(), destination.ravel()
 
 
 def dtype_values(dtype, size):
@@ -44,11 +29,6 @@ def cast(value, dtype):
     if not jnp.issubdtype(jnp.dtype(dtype), jnp.complexfloating):
         value = jnp.real(value)
     return value.astype(dtype)
-
-
-def mapped(source, record, coefficient, dtype, output_size):
-    base = jnp.zeros((*source.shape[:-1], output_size), dtype=dtype)
-    return update_p.bind(source, base, coefficient, jnp.int32(0), records=(record,))
 
 
 def reference_map(source, record, coefficient, dtype, output_size):
@@ -84,19 +64,6 @@ HALF_LAYOUTS = [
     (AffineRecord((512, 512), (1, 512), 0, (512, 1), 0), 262144),
     (AffineRecord((512, 512), (512, 1), 0, (1, 512), 0), 262144),
 ]
-
-
-@contextmanager
-def thread_limit(limit):
-    previous = get_num_threads()
-    set_num_threads(limit)
-    try:
-        yield
-    finally:
-        if previous is None:
-            enable_threads()
-        else:
-            set_num_threads(previous)
 
 
 def complex_values(size):

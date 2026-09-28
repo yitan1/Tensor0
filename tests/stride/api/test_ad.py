@@ -22,7 +22,8 @@ from tests.stride.support.oracles.materialize import _view, reference_materializ
 from tests.stride.support.oracles.reduction import addresses, assert_close
 from tests.stride.support.oracles.scalar import assert_components
 from tests.stride.support.oracles.scale import reference_scale
-from tests.stride.support.oracles.update import compare, update_functions
+from tests.stride.support.oracles.update import compare
+from tests.stride.support.calls import update_functions
 from tests.stride.support.samples import values
 from tests.stride.support.views import _dense, _pitched
 

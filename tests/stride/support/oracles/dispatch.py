@@ -1,19 +1,11 @@
-"""Shared dispatch fixtures and references."""
+"""Dispatch production-call wrapper, reference, and lowering checks."""
 
 import jax.numpy as jnp
 import numpy as np
 
 from tensor0._stride._jax import accumulation_p, copy_p
 
-
-def addresses(record):
-    source = np.full(record.logical_shape, record.source_offset, dtype=np.int64)
-    destination = np.full(record.logical_shape, record.destination_offset, dtype=np.int64)
-    for axis, extent in enumerate(record.logical_shape):
-        coordinate = np.arange(extent).reshape((1,) * axis + (extent,) + (1,) * (len(record.logical_shape) - axis - 1))
-        source += coordinate * record.source_strides[axis]
-        destination += coordinate * record.destination_strides[axis]
-    return source.ravel(), destination.ravel()
+from tests.stride.support.oracles.addresses import record_addresses as addresses
 
 
 def fresh(source, record, factor, output_size, dtype):
