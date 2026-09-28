@@ -48,6 +48,7 @@ inline ffi::Error CompletedError(ffi::Future future) {
   bool ready = false;
   ffi::Error result = ffi::Error::Success();
   future.OnReady([&](const std::optional<ffi::Error>& error) {
+    assert(!ready);
     ready = true;
     if (error) result = *error;
   });
@@ -55,4 +56,11 @@ inline ffi::Error CompletedError(ffi::Future future) {
   return result;
 }
 
+inline void ObserveCompletion(ffi::Future future, bool& ready, bool failure = false) {
+  future.OnReady([&ready, failure](const std::optional<ffi::Error>& error) {
+    assert((error && error->failure()) == failure);
+    assert(!ready);
+    ready = true;
+  });
+}
 }

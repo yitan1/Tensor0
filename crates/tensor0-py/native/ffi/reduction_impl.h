@@ -145,6 +145,8 @@ ffi::Future Accumulation(
 
 }
 
+#ifndef TENSOR0_STRIDE_TEST_NO_HANDLERS
+
 #define TENSOR0_STRIDE_DEFINE_REDUCTION(Suffix, Dtype) \
 XLA_FFI_DEFINE_HANDLER_SYMBOL( \
     Tensor0StrideReduction##Suffix##V1, tensor0::stride::Reduction<ffi::Dtype>, \
@@ -168,3 +170,5 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL( \
 extern "C" void* Tensor0StrideAccumulation##Suffix##V1Handler() { \
   return reinterpret_cast<void*>(&Tensor0StrideAccumulation##Suffix##V1); \
 }
+
+#endif  // TENSOR0_STRIDE_TEST_NO_HANDLERS

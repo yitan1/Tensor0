@@ -194,6 +194,8 @@ ffi::Future Update(ffi::Span<const int64_t>, const PreparedState* prepared,
 
 }
 
+#ifndef TENSOR0_STRIDE_TEST_NO_HANDLERS
+
 #define TENSOR0_STRIDE_DEFINE_UPDATE(Suffix, Dtype) \
 XLA_FFI_DEFINE_HANDLER_SYMBOL( \
     Tensor0StrideUpdate##Suffix##V1, tensor0::stride::Update<ffi::Dtype>, \
@@ -205,3 +207,5 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL( \
 extern "C" void* Tensor0StrideUpdate##Suffix##V1Handler() { \
   return reinterpret_cast<void*>(&Tensor0StrideUpdate##Suffix##V1); \
 }
+
+#endif  // TENSOR0_STRIDE_TEST_NO_HANDLERS

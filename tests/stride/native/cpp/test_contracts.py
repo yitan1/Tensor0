@@ -19,7 +19,7 @@ from tests.stride.support.paths import REPO_ROOT
 pytestmark = pytest.mark.skipif(sys.platform != 'linux', reason='native CPU contracts require Linux')
 
 
-SOURCES = REPO_ROOT / "tests/stride/cpp"
+SOURCES = REPO_ROOT / "tests/stride/native/cpp"
 
 
 @pytest.fixture(scope="session")
@@ -41,11 +41,11 @@ def native_build(pytestconfig):
             "SOURCE_DATE_EPOCH",
         )},
     }
-    # Conservatively invalidate on any native or vendored change. Test translation
-    # units are tracked individually; shared test headers invalidate all contracts.
-    dependencies = [path for directory in (native, vendor, SOURCES)
-                    for path in directory.rglob("*") if path.is_file()
-                    and (directory != SOURCES or path.suffix != ".cc")]
+    # Production objects do not depend on contract-only headers.
+    dependencies = [path for directory in (native, vendor)
+                    for path in directory.rglob("*") if path.is_file()]
+    test_headers = [path for path in SOURCES.rglob("*") if path.is_file()
+                    and path.suffix != ".cc"]
     flags = ["-std=c++20", "-Wall", "-Wextra", "-Wpedantic", "-Werror",
              "-fsanitize=undefined", "-fno-sanitize-recover=undefined", "-pthread",
              "-I", str(native), "-isystem", str(vendor)]
@@ -57,7 +57,7 @@ def native_build(pytestconfig):
         compile_cached([compiler, "-O1", *flags, "-c", str(source)], obj,
                        inputs=dependencies, identity=identity, timeout=60)
         objects.append(str(obj))
-    return compiler, native, output, flags, objects, dependencies, identity
+    return compiler, native, output, flags, objects, dependencies, test_headers, identity
 
 
 def test_semantic_descriptor_standalone(tmp_path):
@@ -83,19 +83,7 @@ def test_semantic_descriptor_standalone(tmp_path):
 def test_cpp_contract(source, native_build):
     native, output = native_build[1:3]
     executable = output / Path(source).stem
-    if source == "ffi_boundary_test.cc":
-        import fcntl
-
-        units = [(native / "ffi" / name).read_text()
-                 for name in ("copy.cc", "update_impl.h", "reduction_impl.h", "dot_impl.h")]
-        header = "\n".join(unit.split("\n#define TENSOR0_STRIDE_DEFINE_", 1)[0] for unit in units)
-        # Serialize header generation with this contract's compilation.
-        with (output / "ffi-header.lock").open("w") as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX)
-            (output / "ffi_under_test.h").write_text(header)
-            _compile_contract(source, native_build, executable)
-    else:
-        _compile_contract(source, native_build, executable)
+    _compile_contract(source, native_build, executable)
     completed = subprocess.run([str(executable)], capture_output=True, text=True, timeout=120)
     assert completed.returncode == 0, completed.stdout + completed.stderr
     if source == "promotion_test.cc":
@@ -103,12 +91,12 @@ def test_cpp_contract(source, native_build):
 
 
 def _compile_contract(source, native_build, executable):
-    compiler, native, output, flags, objects, dependencies, identity = native_build
+    compiler, native, output, flags, objects, dependencies, test_headers, identity = native_build
     compile_cached([
         compiler, "-O0" if source == "ffi_boundary_test.cc" else "-O1", *flags,
         "-I", str(output), "-iquote", str(native / "ffi"),
         str(SOURCES / source), *objects,
-    ], executable, inputs=[*dependencies, SOURCES / source, *objects,
+    ], executable, inputs=[*dependencies, *test_headers, SOURCES / source, *objects,
                            Path(__file__), REPO_ROOT / "tests/stride/support/cpp_cache.py"],
         identity=identity, timeout=300)
 

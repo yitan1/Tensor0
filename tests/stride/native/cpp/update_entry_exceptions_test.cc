@@ -51,7 +51,7 @@ void CheckQueuedOwnership() {
     auto future = native::ExecuteUpdate<scalar::F32, scalar::F32, scalar::F32>(
         pool.get(), {record}, source.data(), base.data(), result.data(), size, size, batches,
         &alpha, 1, &beta, 1, map, map);
-    future.OnReady([&](const std::optional<ffi::Error>& error) { assert(!error); ready = true; });
+    testing::ObserveCompletion(std::move(future), ready);
     assert(!ready);
   }
   assert(!lifetime.expired());
@@ -77,13 +77,13 @@ void CheckQueuedCoefficientEntries() {
         pool.get(), {record}, source.data(), base.data(), first.data(), size, size, batches,
         &real_alpha, 1, &complex_beta, 1, map, map);
     first_future.OnReady([&](const std::optional<ffi::Error>& error) {
-      assert(!error); first_ready = true;
+      assert(!error); assert(!first_ready); first_ready = true;
     });
     auto second_future = native::ExecuteUpdate<scalar::C64, scalar::C64, scalar::F32>(
         pool.get(), {record}, source.data(), base.data(), second.data(), size, size, batches,
         &complex_alpha, 1, &real_beta, 1, map, map);
     second_future.OnReady([&](const std::optional<ffi::Error>& error) {
-      assert(!error); second_ready = true;
+      assert(!error); assert(!second_ready); second_ready = true;
     });
     assert(!first_ready && !second_ready);
   }
@@ -110,9 +110,33 @@ void CheckCopyFailure() {
   }
 }
 
+struct Control {bool fail=false;bool unknown=false;};
+struct Map : native::expression::Identity<scalar::F32> {
+  std::shared_ptr<Control> control=std::make_shared<Control>();
+  Map()=default;
+  Map(const Map& other):control(other.control) {
+    if(control->fail){if(control->unknown)throw 42;throw std::runtime_error("late map copy");}
+  }
+};
+
+void CheckWorkerCopyFailure() {
+  constexpr uint64_t size=65536,batches=4;
+  for(bool unknown:{false,true}) {
+    testing::ThreadPool pool(4);Map map;map.control->unknown=unknown;
+    std::vector<float> source(size*batches,2),base(size*batches,3),result(size*batches,-7);
+    float alpha=2,beta=3;bool ready=false;
+    auto record=native::layout::BuildLayout({1},{1},0,{1},0,size,size,0);
+    auto future=native::ExecuteUpdate<scalar::F32,scalar::F32,scalar::F32>(pool.get(),{record},source.data(),base.data(),result.data(),size,size,batches,&alpha,1,&beta,1,map,native::expression::Identity<scalar::F32>{});
+    testing::ObserveCompletion(std::move(future), ready, true);
+    assert(!ready);map.control->fail=true;pool.run_parallel();assert(ready);
+    for(float value:result)assert(value==-7);
+  }
+}
+
 int main() {
   CheckEmptyAndSynchronous();
   CheckQueuedOwnership();
   CheckQueuedCoefficientEntries();
   CheckCopyFailure();
+  CheckWorkerCopyFailure();
 }

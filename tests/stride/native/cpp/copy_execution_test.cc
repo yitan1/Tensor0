@@ -22,7 +22,7 @@ void CheckCopy() {
           {2}, 0, size, size, 0);
       auto future = n::ExecuteCopy<Source, Result>(pool.get(), {record}, source.data(),
           result.data(), size, size, batches);
-      future.OnReady([&](const std::optional<ffi::Error>& error) { assert(!error); ready = true; });
+      testing::ObserveCompletion(std::move(future), ready);
     }
     if (!ready) pool.run_parallel();
     assert(ready);

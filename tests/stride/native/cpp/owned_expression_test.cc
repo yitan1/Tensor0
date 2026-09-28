@@ -4,7 +4,7 @@ namespace ffi=xla::ffi;
 namespace n=tensor0::stride;
 namespace s=n::scalar;
 void Finish(testing::ThreadPool& pool,ffi::Future future) {
-  bool ready=false;future.OnReady([&](const std::optional<ffi::Error>& error){assert(!error);ready=true;});
+  bool ready=false;testing::ObserveCompletion(std::move(future), ready);
   if(!ready)pool.run_parallel();
   assert(ready);
 }

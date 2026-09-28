@@ -63,6 +63,8 @@ ffi::Future Copy(ffi::Span<const int64_t>, const PreparedState* prepared,
 
 }
 
+#ifndef TENSOR0_STRIDE_TEST_NO_HANDLERS
+
 #define TENSOR0_STRIDE_DEFINE_COPY(Suffix, Dtype) \
 XLA_FFI_DEFINE_HANDLER_SYMBOL( \
     Tensor0StrideCopy##Suffix##V1, tensor0::stride::Copy<ffi::Dtype>, \
@@ -77,3 +79,5 @@ extern "C" void* Tensor0StrideCopy##Suffix##V1Handler() { \
 TENSOR0_STRIDE_FOR_EACH_DTYPE(TENSOR0_STRIDE_DEFINE_COPY)
 
 #undef TENSOR0_STRIDE_DEFINE_COPY
+
+#endif  // TENSOR0_STRIDE_TEST_NO_HANDLERS

@@ -1,4 +1,10 @@
-#include "ffi_under_test.h"
+// Exercise the internal FFI entry templates without registering handler symbols.
+#define TENSOR0_STRIDE_TEST_NO_HANDLERS
+#include "ffi/copy.cc"
+#include "ffi/update_impl.h"
+#include "ffi/reduction_impl.h"
+#include "ffi/dot_impl.h"
+#undef TENSOR0_STRIDE_TEST_NO_HANDLERS
 #include "ffi_test_support.h"
 
 #include <cassert>

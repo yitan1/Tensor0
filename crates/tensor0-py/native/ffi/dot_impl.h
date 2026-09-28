@@ -108,6 +108,8 @@ ffi::Future Dot(
 
 }
 
+#ifndef TENSOR0_STRIDE_TEST_NO_HANDLERS
+
 #define TENSOR0_STRIDE_DEFINE_DOT(Suffix, Dtype) \
 XLA_FFI_DEFINE_HANDLER_SYMBOL( \
     Tensor0StrideDot##Suffix##V1, tensor0::stride::Dot<ffi::Dtype>, \
@@ -119,3 +121,5 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL( \
 extern "C" void* Tensor0StrideDot##Suffix##V1Handler() { \
   return reinterpret_cast<void*>(&Tensor0StrideDot##Suffix##V1); \
 }
+
+#endif  // TENSOR0_STRIDE_TEST_NO_HANDLERS
