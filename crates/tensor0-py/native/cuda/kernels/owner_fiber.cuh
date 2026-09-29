@@ -61,6 +61,82 @@ __global__ void MapReduceRecord(Policy policy, const int64_t* record,
   }
 }
 
+// Prefix-map blocks to records using the existing XLA-owned packed operand.
+// Each record receives its original number of blocks, without a rectangular
+// grid's empty blocks for heterogeneous record sizes.
+template <typename Policy>
+__global__ void CopyRecordBlocks(Policy policy, const int64_t* packed, uint64_t batches) {
+  uint64_t block = blockIdx.x;
+  const int64_t* record = packed + 4;
+  for (uint64_t i = 0; i < static_cast<uint64_t>(packed[3]); ++i) {
+    const uint64_t rank = static_cast<uint64_t>(record[0]) + static_cast<uint64_t>(record[1]);
+    uint64_t owners = 1;
+    for (uint64_t axis = 0; axis < static_cast<uint64_t>(record[0]); ++axis)
+      owners *= static_cast<uint64_t>(record[4 + axis]);
+    const uint64_t total = batches * owners;
+    const uint64_t blocks = total == 0 ? 0 : min((total - 1) / 256 + 1, uint64_t{65535});
+    if (block < blocks) {
+      const uint64_t step = blocks * blockDim.x;
+      for (uint64_t index = block * blockDim.x + threadIdx.x; index < total;) {
+        const uint64_t batch = index / owners;
+        int64_t first = record[2], second = record[3];
+        Address(record, index % owners, false, first, second);
+        policy.Store(policy.Term(batch, batch, first, second), batch, second);
+        if (total - index <= step) break;
+        index += step;
+      }
+      return;
+    }
+    block -= blocks;
+    record += 4 + 3 * rank;
+  }
+}
+
+// Private Update-only control: resolve a packed record once per block.
+// Every thread reaches the barrier, including blocks with no selected record.
+template <typename Policy>
+__global__ void UpdateBroadcastBlocks(Policy policy, const int64_t* packed, uint64_t batches) {
+  __shared__ const int64_t* selected_record;
+  __shared__ uint64_t selected_block, selected_owners, selected_blocks;
+  if (threadIdx.x == 0) {
+    uint64_t block = blockIdx.x;
+    const int64_t* record = packed + 4;
+    selected_record = nullptr;
+    for (uint64_t i = 0; i < static_cast<uint64_t>(packed[3]); ++i) {
+      const uint64_t rank = static_cast<uint64_t>(record[0]) + static_cast<uint64_t>(record[1]);
+      uint64_t owners = 1;
+      for (uint64_t axis = 0; axis < static_cast<uint64_t>(record[0]); ++axis)
+        owners *= static_cast<uint64_t>(record[4 + axis]);
+      const uint64_t total = batches * owners;
+      const uint64_t blocks = total == 0 ? 0 : min((total - 1) / 256 + 1, uint64_t{65535});
+      if (block < blocks) {
+        selected_record = record;
+        selected_block = block;
+        selected_owners = owners;
+        selected_blocks = blocks;
+        break;
+      }
+      block -= blocks;
+      record += 4 + 3 * rank;
+    }
+  }
+  __syncthreads();
+  if (selected_record == nullptr) return;
+  const int64_t* record = selected_record;
+  const uint64_t owners = selected_owners;
+  const uint64_t total = batches * owners;
+  const uint64_t step = selected_blocks * blockDim.x;
+  for (uint64_t index = selected_block * blockDim.x + threadIdx.x; index < total;) {
+    const uint64_t batch = index / owners;
+    int64_t first = record[2], second = record[3];
+    Address(record, index % owners, false, first, second);
+    const auto context = policy.Begin(batch);
+    policy.Store(policy.Term(context, batch, first, second), batch, second);
+    if (total - index <= step) break;
+    index += step;
+  }
+}
+
 // Parallel fiber execution shares the same packed address lanes and static
 // contribution policy as MapReduceRecord. The output is combined only once,
 // after all chunks belonging to a record have completed on the same stream.

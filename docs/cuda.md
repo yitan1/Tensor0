@@ -161,7 +161,10 @@ TensorMap GPU support. Primitive restrictions do not automatically apply to
 high-level operations that use only JAX arithmetic.
 Existing complex AD conventions are retained without extra conjugation.
 **Full GPU reverse AD/grad/VJP support is not provided.** Multi-GPU execution,
-CUDA Graph support and performance improvements are not claimed.
+general CUDA Graph support and performance improvements are not claimed. Native
+Copy and Update capture/replay contracts and an explicitly forced JAX Update
+CUDA Graph path have been tested; default JAX execution is not asserted to use
+CUDA Graphs.
 
 ## Tested high-level TensorMap subset
 
@@ -231,9 +234,9 @@ fails; the restriction is on the coefficient types actually produced by a plan.
 
 Other sector families/products, broader duality/braiding/network cases, additional
 batching/AD combinations, decomposition AD and mixed storage/result dtypes remain
-outside this high-level acceptance matrix. Multi-GPU, CUDA Graph, sanitizer,
-other toolchains/architectures and performance remain unverified, not silently
-classified as passing.
+outside this high-level acceptance matrix. Multi-GPU, high-level TensorMap CUDA
+Graph integration, sanitizer, other toolchains/architectures and performance remain
+unverified, not silently classified as passing.
 
 ## Execution and ownership
 
@@ -312,12 +315,22 @@ After validating host metadata and buffer relationships, Dot,
 Accumulation and Reduction zero output. Copy skips zeroing when one injective
 record fully covers output; Update skips copying base to a distinct output in
 that case. Otherwise Copy zeroes output and Update copies base when needed.
-Copy and Update launch specializations of the common owner/fiber kernel.
-Accumulation and Reduction choose sequential owner or shared parallel
-partial/finish execution per record. Dot uses the same sequential kernel for
-a single contribution, and the parallel fiber strategy for longer records;
-single-chunk fibers write directly to output.
-All launches occur in record order on the XLA-provided stream.
+For multiple Copy or Update records, the executor can launch their packed owner
+blocks in one grid (up to 65535 blocks); a larger combined grid, one record,
+zero batches or no work retains the original per-record route. Copy threads
+scan the packed block-to-record mapping; Update resolves it once per block and
+broadcasts the selected record to its threads. Both use the existing XLA-owned
+descriptor, without an additional device allocation or host-to-device operand.
+This grouping requires disjoint destinations across Copy/Update records, as
+specified by the producer contract; native does not validate cross-record
+disjointness. Update still copies the base before writes when needed and retains
+its typed per-batch coefficient and zero/no-read semantics. Accumulation and
+Reduction choose sequential owner or shared parallel partial/finish execution
+per record. Dot uses the same sequential kernel for a single contribution, and
+the parallel fiber strategy for longer records; single-chunk fibers write
+directly to output. Accumulation, Reduction and Dot retain ordered per-record
+launches; Copy/Update's grouped blocks need no ordering across disjoint records.
+All launches use the XLA-provided stream.
 Update, Accumulation and Reduction read coefficients on device. No handler reads device data on host or allocates
 device memory per
 call, and none synchronizes. Immediate launch errors are reported by the handler;

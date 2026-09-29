@@ -385,6 +385,12 @@ tile-divisibility conditions remain; generated blocks that no longer satisfy
 them use the general path. Identity tiles preserve their input bits.
 Other SIMD specializations remain to be migrated.
 
+Native Copy avoids zero-filling a nonempty output only when one record proves dense,
+complete destination coverage, including signed-stride permutations and scalar
+records. Sparse or multiple records retain the prefill. The generic CPU affine-row
+traversal avoids a coordinate vector for rank-zero and rank-one records; higher
+ranks still track outer coordinates. Neither change alters the CPU batch scheduler.
+
 Native Copy, Update, Dot, Reduction and address accumulation can schedule independent
 storage batches on XLA's CPU FFI thread pool. Copy and Update can also partition
 a single batch into disjoint layout subdomains after initializing its output

@@ -50,7 +50,7 @@ XLA_FFI_Api Api() {
   return api;
 }
 struct Harness {
-  static constexpr size_t bytes = 4096;
+  static constexpr size_t bytes = 8192;
   unsigned char* arena = nullptr;
   cudaStream_t stream = nullptr;
   std::array<int64_t, 2> source_shape{1, 8}, result_shape{1, 8};
@@ -298,6 +298,85 @@ void AddressPairContract() {
   Cuda(cudaFree(device_record));
 }
 
+void GraphReplay() {
+  // Prepared state and device operands stay alive until graph destruction.
+  const std::vector<int64_t> words{1, 265, 550, 3,
+      1, 2, 1, 3, -1, 1, 1, 259, 10, 257, -1, 2,
+      1, 260, 530, 5, 1, 1};
+  auto state = Prepare(words);
+  Harness h;
+  h.source_shape = {2, 265};
+  h.result_shape = {2, 550};
+  h.source = h.Buffer(0, XLA_FFI_DataType_F32, 2, h.source_shape.data());
+  h.result = h.Buffer(2400, XLA_FFI_DataType_F32, 2, h.result_shape.data());
+  h.descriptor = h.Buffer(7000, XLA_FFI_DataType_S64, 1, &h.descriptor_count);
+  h.Upload(words);
+  cudaGraph_t graph = nullptr;
+  cudaGraphExec_t executable = nullptr;
+  Cuda(cudaStreamBeginCapture(h.stream, cudaStreamCaptureModeGlobal));
+  const auto error = h.Invoke(state.get());
+  Require(!error.failure(), error.message());
+  Cuda(cudaStreamEndCapture(h.stream, &graph));
+  Cuda(cudaGraphInstantiate(&executable, graph, nullptr, nullptr, 0));
+  for (int replay = 0; replay < 3; ++replay) {
+    std::vector<float> source(2 * 265), output(2 * 550), expected(2 * 550, 0);
+    for (size_t i = 0; i < source.size(); ++i) source[i] = float(i + 1 + replay * 1000);
+    Cuda(cudaMemcpyAsync(h.source.data, source.data(), source.size() * sizeof(float),
+                         cudaMemcpyHostToDevice, h.stream));
+    Cuda(cudaGraphLaunch(executable, h.stream));
+    Cuda(cudaMemcpyAsync(output.data(), h.result.data, output.size() * sizeof(float),
+                         cudaMemcpyDeviceToHost, h.stream));
+    Cuda(cudaStreamSynchronize(h.stream));
+    for (int b = 0; b < 2; ++b) {
+      for (int i = 0; i < 3; ++i) expected[b * 550 + 1 + i] = source[b * 265 + 2 - i];
+      for (int i = 0; i < 257; ++i) expected[b * 550 + 10 + 2 * i] = source[b * 265 + 259 - i];
+      for (int i = 0; i < 5; ++i) expected[b * 550 + 530 + i] = source[b * 265 + 260 + i];
+    }
+    Require(output == expected, "captured Copy replay or zero-fill mismatch");
+  }
+  Cuda(cudaGraphExecDestroy(executable));
+  Cuda(cudaGraphDestroy(graph));
+}
+
+void GridFallback() {
+  constexpr int64_t owners = 32768 * 256;
+  // Two records each need 32768 blocks; the combined grid exceeds 65535.
+  const std::vector<int64_t> words{1, 1, 2 * owners, 2,
+      1, 0, 0, owners, 0, 1, 1, 0, owners, owners, 0, 1};
+  auto state = Prepare(words);
+  const auto packed = layout::PackOwnerFiber(descriptor::DecodeLayout(words.data(), words.size()), 0);
+  float *source = nullptr, *result = nullptr;
+  int64_t* metadata = nullptr;
+  cudaStream_t stream = nullptr;
+  Cuda(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
+  Cuda(cudaMalloc(reinterpret_cast<void**>(&source), sizeof(float)));
+  Cuda(cudaMalloc(reinterpret_cast<void**>(&result), 2 * owners * sizeof(float)));
+  Cuda(cudaMalloc(reinterpret_cast<void**>(&metadata), packed.words.size() * sizeof(int64_t)));
+  const float value = 7.5f;
+  Cuda(cudaMemcpyAsync(source, &value, sizeof(value), cudaMemcpyHostToDevice, stream));
+  Cuda(cudaMemcpyAsync(metadata, packed.words.data(), packed.words.size() * sizeof(int64_t),
+                       cudaMemcpyHostToDevice, stream));
+  std::array<int64_t, 2> source_shape{1, 1}, result_shape{1, 2 * owners};
+  int64_t metadata_length = packed.words.size();
+  XLA_FFI_Buffer input{XLA_FFI_Buffer_STRUCT_SIZE, nullptr, XLA_FFI_DataType_F32,
+                       source, 2, source_shape.data()};
+  XLA_FFI_Buffer output{XLA_FFI_Buffer_STRUCT_SIZE, nullptr, XLA_FFI_DataType_F32,
+                        result, 2, result_shape.data()};
+  XLA_FFI_Buffer descriptor_buffer{XLA_FFI_Buffer_STRUCT_SIZE, nullptr, XLA_FFI_DataType_S64,
+                                   metadata, 1, &metadata_length};
+  const auto error = native::Copy<ffi::F32, 4>(state.get(), ffi::AnyBuffer(&input),
+      ffi::BufferR1<ffi::S64>(&descriptor_buffer), ffi::BufferR2<ffi::F32>(&output), stream);
+  Require(!error.failure(), error.message());
+  Cuda(cudaStreamSynchronize(stream));
+  std::vector<float> observed(2 * owners);
+  Cuda(cudaMemcpy(observed.data(), result, observed.size() * sizeof(float), cudaMemcpyDeviceToHost));
+  Require(std::all_of(observed.begin(), observed.end(),
+                      [value](float item) { return item == value; }),
+          "grid fallback output mismatch");
+  Cuda(cudaFree(metadata)); Cuda(cudaFree(result)); Cuda(cudaFree(source));
+  Cuda(cudaStreamDestroy(stream));
+}
+
 void StreamAndStateLifetime() {
   Harness h;
   auto state = Prepare(kWords);
@@ -328,7 +407,7 @@ void StreamAndStateLifetime() {
 }
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
   int devices = 0;
   const auto status = cudaGetDeviceCount(&devices);
   if (status == cudaErrorNoDevice || status == cudaErrorInsufficientDriver ||
@@ -345,6 +424,8 @@ int main() {
     ReuseAndHostLifetime();
     Rejections();
     StreamAndStateLifetime();
+    GraphReplay();
+    if (argc > 1 && std::strcmp(argv[1], "--fallback") == 0) GridFallback();
     Require(Tensor0StrideCudaCopyPreparedCreatedCount() - created ==
             Tensor0StrideCudaCopyPreparedDestroyedCount() - destroyed,
             "Copy prepared state leaked");

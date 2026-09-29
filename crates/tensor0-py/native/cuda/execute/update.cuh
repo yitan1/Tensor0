@@ -28,6 +28,27 @@ void Execute(const T* input, const T* old, T* output,
       if (output_bytes != 0 && old != output && !full_coverage) {
         CheckCuda(cudaMemcpyAsync(output, old, output_bytes, cudaMemcpyDeviceToDevice, stream), "update");
       }
+      // Preserve the base copy before any writes. Reuse the packed block-to-record
+      // mapping only when every record fits into one combined grid.
+      uint64_t block_count = 0;
+      if (schedules.size() > 1 && batches != 0) {
+        for (const auto& schedule : schedules) {
+          const auto total = batches * schedule.owners;
+          if (total != 0)
+            block_count += std::min<uint64_t>((total - 1) / 256 + 1, 65535);
+          if (block_count > 65535) break;
+        }
+        if (block_count != 0 && block_count <= 65535) {
+          owner_fiber::UpdateBroadcastBlocks<<<static_cast<unsigned>(block_count), 256, 0, stream>>>(
+              UpdateMap<T, Real, Alpha, Beta>{input, old, output,
+                  reinterpret_cast<const Alpha*>(alpha.data), alpha.count,
+                  reinterpret_cast<const Beta*>(beta.data), beta.count,
+                  decoded.source_size, decoded.output_size},
+              device_descriptor, batches);
+          CheckCuda(cudaGetLastError(), "update");
+          return;
+        }
+      }
       for (const auto schedule : schedules) {
         const auto total = batches * schedule.owners;
         if (total != 0) {

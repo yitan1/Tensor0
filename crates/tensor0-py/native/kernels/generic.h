@@ -18,7 +18,8 @@ void ForEachAffineRow(
   if (element_count == 0) return;
   const uint64_t inner_count = record.shape.empty() ? 1 : record.shape[0];
   const uint64_t row_count = element_count / inner_count;
-  std::vector<uint64_t> coordinates(record.shape.size());
+  std::vector<uint64_t> coordinates;
+  if (record.shape.size() > 1) coordinates.resize(record.shape.size());
   for (uint64_t row = 0; row < row_count; ++row) {
     row_op(offsets, inner_count);
     if (row + 1 == row_count) break;

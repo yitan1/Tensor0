@@ -191,6 +191,21 @@ def test_cuda_copy_multiple_blocks_and_batch_tails(cuda_device, dtype):
         np.testing.assert_array_equal(result, expected)
 
 
+@pytest.mark.parametrize("sizes", [(257, 513, 3), (65536, 16, 16, 16),
+                                    (1048576 - 48, 16, 16, 16)])
+def test_cuda_copy_multirecord_block_boundaries(cuda_device, sizes):
+    total = sum(sizes)
+    offsets = np.cumsum([0, *sizes[:-1]])
+    records = tuple(AffineRecord((size,), (-1,), int(start + size - 1), (1,), int(start))
+                    for size, start in zip(sizes, offsets))
+    values = (np.arange(3 * total, dtype=np.int32) % 117).astype(np.float32).reshape(3, total)
+    expected = np.concatenate([values[:, start:start + size][:, ::-1]
+                               for size, start in zip(sizes, offsets)], axis=1)
+    source = jax.device_put(values, cuda_device)
+    result = jax.jit(lambda value: _copy(value, records, total))(source)
+    np.testing.assert_array_equal(result, expected)
+
+
 def test_cuda_copy_grid_stride_second_iteration(cuda_device):
     size = 65535 * 256 + 17
     records = (AffineRecord((size,), (0,), 0, (1,), 0),)

@@ -45,11 +45,48 @@ void ExecuteCopyBatch(const std::vector<layout::GeneratedRecordProgram>& program
   }
 }
 
+// A single dense destination permutation needs no prefill. Check the affine
+// span directly, including negative strides; do not assume the direct native
+// caller supplied a DecodeLayout-validated record.
+inline bool CopyCoversOutput(const std::vector<layout::Record>& records, uint64_t size) {
+  if (records.size() != 1 || size == 0) return false;
+  const auto& record = records.front();
+  if (record.destination_strides.size() != record.shape.size() ||
+      record.destination_offset < 0) return false;
+  uint64_t span = 1;
+  uint64_t minimum = static_cast<uint64_t>(record.destination_offset);
+  std::size_t remaining = 0;
+  for (auto extent : record.shape) {
+    if (extent == 0) return false;
+    remaining += extent > 1;
+  }
+  while (remaining-- != 0) {
+    std::size_t axis = record.shape.size();
+    for (std::size_t i = 0; i < record.shape.size(); ++i) {
+      if (record.shape[i] > 1 && layout::AbsoluteStride(record.destination_strides[i]) == span) {
+        axis = i;
+        break;
+      }
+    }
+    if (axis == record.shape.size() || record.shape[axis] > size / span) return false;
+    const uint64_t width = (record.shape[axis] - 1) * span;
+    if (record.destination_strides[axis] < 0) {
+      if (minimum < width) return false;
+      minimum -= width;
+    }
+    span *= record.shape[axis];
+  }
+  return minimum == 0 && span == size;
+}
+
 template <typename Result>
 struct CopyInit {
   scalar::Value<Result>* result;
   uint64_t size;
-  void operator()(uint64_t batch) const { InitializeCopyOutput<Result>(result + batch * size, size); }
+  bool covers_output;
+  void operator()(uint64_t batch) const {
+    if (!covers_output) InitializeCopyOutput<Result>(result + batch * size, size);
+  }
 };
 
 template <typename Source>
@@ -86,7 +123,7 @@ ffi::Future ExecuteCopy(
     uint64_t source_size, uint64_t output_size, uint64_t batch_count) {
   try {
     auto state = MakeProgramState<CopyProgram<Source, Result>>(
-        CopyInit<Result>{result, output_size}, source, source_size);
+        CopyInit<Result>{result, output_size, CopyCoversOutput(records, output_size)}, source, source_size);
     return ExecuteOwnedMapProgram(thread_pool, records, sizeof(*source), sizeof(*result),
         output_size, batch_count, {std::move(state), &CopyProgramEntry<Source, Result>()});
   } catch (const std::exception& error) {
