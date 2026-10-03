@@ -152,7 +152,7 @@ GeneratedRecordProgram CompileGeneratedRecord(const Record& source,
   std::vector<std::size_t> axes(rank);
   std::iota(axes.begin(), axes.end(), 0);
   if (reorder_axes) {
-    axes = ComputeLocalityOrder(source);
+    axes = ComputeLocalityOrder(source, destination_order, source_order);
   }
 
   std::vector<uint64_t> dims(rank);

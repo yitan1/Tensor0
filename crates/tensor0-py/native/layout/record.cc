@@ -152,8 +152,13 @@ std::vector<uint64_t> GeneratedIndexOrder(
 }
 
 std::vector<std::size_t> ComputeLocalityOrder(const Record& record) {
-  const auto destination_order = GeneratedIndexOrder(record.destination_strides);
-  const auto source_order = GeneratedIndexOrder(record.source_strides);
+  return ComputeLocalityOrder(record, GeneratedIndexOrder(record.destination_strides),
+                              GeneratedIndexOrder(record.source_strides));
+}
+
+std::vector<std::size_t> ComputeLocalityOrder(
+    const Record& record, const std::vector<uint64_t>& destination_order,
+    const std::vector<uint64_t>& source_order) {
   std::vector<std::size_t> axes(record.shape.size());
   std::iota(axes.begin(), axes.end(), 0);
   const auto importance_key = [&](std::size_t axis) {

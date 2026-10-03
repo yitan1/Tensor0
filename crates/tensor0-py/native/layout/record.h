@@ -38,6 +38,9 @@ void FuseAdjacentAxes(ReductionRecord& record);
 // Only validated, nonempty records are normalized; reduction roles move with axes.
 std::vector<uint64_t> GeneratedIndexOrder(const std::vector<int64_t>& strides);
 std::vector<std::size_t> ComputeLocalityOrder(const Record& record);
+std::vector<std::size_t> ComputeLocalityOrder(
+    const Record& record, const std::vector<uint64_t>& destination_order,
+    const std::vector<uint64_t>& source_order);
 void SortRecordDimensions(Record* record);
 void OptimizeRecordForPreparation(Record& record);
 void OptimizeRecordForPreparation(ReductionRecord& record);

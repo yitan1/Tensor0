@@ -2685,3 +2685,62 @@ def test_trivial_validated_tensortrace_jaxpr_has_no_generic_packing_primitives()
     }
 
     assert not primitives & {"broadcast_in_dim", "mul", "slice", "scatter-add"}
+
+@pytest.mark.parametrize("order", [(1, 2, 3, 4), (4, 3, 2, 1), (2, 4, 1, 3)])
+def test_u1_intermediate_layout_four_node_tree_matches_dense_and_ad(order):
+    factor = space(U1Irrep, {-1: 1, 0: 2, 1: 1})
+    labels = ((-1, 1, 2), (1, -2, 3), (2, 4, -3), (3, 4, -4))
+    seen = set()
+    tensors = []
+    for group in labels:
+        legs = []
+        for label in group:
+            legs.append(factor.dual() if label > 0 and label in seen else factor)
+            seen.add(label)
+        tensors.append(_tensor(hom(tuple(legs), ()), jnp.complex64))
+
+    output = ((-4, -1), (-3, -2))
+
+    def run(data):
+        first = TensorMap(tensors[0].space, data)
+        return ncon((first, *tensors[1:]), labels, order=order, output=output)
+
+    result = jax.jit(run)(tensors[0].storage.data)
+    assert result.space == hom(
+        (factor, factor), (factor.dual(), factor.dual()),
+    )
+    # All legs are represented in codomain at the leaves; the output's domain
+    # has the dual orientation of its corresponding visible dense indices.
+    dense_inputs = [np.asarray(to_dense(tensor)) for tensor in tensors]
+
+    def dense_oracle(first):
+        return np.einsum(
+            first, [0, 4, 5], dense_inputs[1], [4, 1, 6],
+            dense_inputs[2], [5, 7, 2], dense_inputs[3], [6, 7, 3],
+            [3, 0, 2, 1], optimize=True,
+        )
+
+    assert_allclose(to_dense(result), dense_oracle(dense_inputs[0]))
+    tangent = jnp.ones_like(tensors[0].storage.data)
+    value, derivative = jax.jit(jax.jvp, static_argnums=0)(
+        lambda data: run(data).storage.data,
+        (tensors[0].storage.data,), (tangent,),
+    )
+    assert_allclose(value, result.storage.data)
+    tangent_dense = to_dense(TensorMap(tensors[0].space, tangent))
+    assert_allclose(
+        to_dense(TensorMap(result.space, derivative)),
+        dense_oracle(np.asarray(tangent_dense)),
+    )
+    gradient = jax.jit(jax.grad(lambda data: jnp.real(jnp.sum(to_dense(run(data))))))(
+        tensors[0].storage.data,
+    )
+    # A complex JAX gradient of real(sum(dense linear_map(data))) contains the
+    # unconjugated coefficient of each packed input basis vector.
+    expected_gradient = []
+    for axis in range(tensors[0].storage.data.size):
+        basis = np.zeros(tensors[0].storage.data.shape, dtype=np.complex64)
+        basis[axis] = 1
+        dense_basis = to_dense(TensorMap(tensors[0].space, jnp.asarray(basis)))
+        expected_gradient.append(np.sum(dense_oracle(np.asarray(dense_basis))))
+    assert_allclose(gradient, np.asarray(expected_gradient))

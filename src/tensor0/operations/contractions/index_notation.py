@@ -160,6 +160,38 @@ def _contract_network(
         order,
     )
 
+    # Only U1 has the established basis-independent internal regrouping here.
+    # Other sector families retain their existing intermediate orientations.
+    targets: dict[_LeafIds, _LabelGroups] = {}
+    if operands[0].tensor.space.sector_spec == _native.U1Irrep:
+        parent: dict[_LeafIds, tuple[_LeafIds, bool]] = {}
+        for left_ids, right_ids in steps:
+            parent[left_ids] = (right_ids, True)
+            parent[right_ids] = (left_ids, False)
+        planned: dict[_LeafIds, _LabelGroups] = dict(planning_nodes)
+        leaf_labels = tuple(set(_flatten_labels(plan.open_labels)) for plan in trace_plans)
+        for left_ids, right_ids in steps:
+            left_labels = planned.pop(left_ids)
+            right_labels = planned.pop(right_ids)
+            _, next_labels = _merge_labels(left_labels, right_labels)
+            merged_ids = _merge_leaf_ids(left_ids, right_ids)
+            if merged_ids in parent:
+                sibling, is_left = parent[merged_ids]
+                sibling_labels = set().union(*(leaf_labels[i] for i in sibling))
+                flat = _flatten_labels(next_labels)
+                shared = set(flat) & sibling_labels
+                if shared:
+                    open_labels = tuple(label for label in flat if label not in shared)
+                    contracted = tuple(label for label in flat if label in shared)
+                    target = (
+                        (open_labels, contracted) if is_left
+                        else (contracted, open_labels)
+                    )
+                    if target != next_labels:
+                        targets[merged_ids] = target
+                        next_labels = target
+            planned[merged_ids] = next_labels
+
     active_values: dict[_LeafIds, _NodeValue] = {}
     for position, (operand, plan) in enumerate(
         zip(operands, trace_plans, strict=True)
@@ -178,7 +210,9 @@ def _contract_network(
         left = active_values.pop(left_ids)
         right = active_values.pop(right_ids)
         merged_ids = _merge_leaf_ids(left_ids, right_ids)
-        active_values[merged_ids] = _contract_values(left, right)
+        active_values[merged_ids] = _contract_values(
+            left, right, targets.get(merged_ids),
+        )
 
     result, result_labels = next(iter(active_values.values()))
     flattened_result = result_labels[0] + result_labels[1]
@@ -330,12 +364,18 @@ def _merge_labels(
     return shared, next_labels
 
 
-def _contract_values(left: _NodeValue, right: _NodeValue) -> _NodeValue:
+def _contract_values(
+    left: _NodeValue,
+    right: _NodeValue,
+    target: _LabelGroups | None = None,
+) -> _NodeValue:
     left_tensor, left_labels = left
     right_tensor, right_labels = right
     left_flat = _flatten_labels(left_labels)
     right_flat = _flatten_labels(right_labels)
     shared, next_labels = _merge_labels(left_labels, right_labels)
+    if target is not None:
+        next_labels = target
     shared_set = set(shared)
     right_positions = {
         label: axis for axis, label in enumerate(right_flat)

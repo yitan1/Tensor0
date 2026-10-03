@@ -122,6 +122,16 @@ ffi::Future ExecuteMapTasks(
     const auto workers = std::min(
         AvailableWorkerCount(thread_pool),
         std::max<uint64_t>(1, elements / (UINT64_C(1) << 15)));
+    if (workers == 1) {
+      // ExecuteTasks is synchronous with one worker; prepared remains alive.
+      initialize();
+      return ExecuteTasks(thread_pool, prepared.size(), workers,
+          [&prepared, execute = std::move(execute)](uint64_t begin, uint64_t count) {
+            for (uint64_t index = begin; index < begin + count; ++index) {
+              layout::ForEachGeneratedBlock(prepared[index], execute);
+            }
+          });
+    }
     std::vector<layout::GeneratedRecordProgram> programs;
     for (const auto& program : prepared) {
       layout::AppendGeneratedSubdomains(program, workers, &programs);

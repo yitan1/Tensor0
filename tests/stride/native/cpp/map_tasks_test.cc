@@ -277,6 +277,30 @@ void CheckWorkerLimit() {
   native::worker_limit.store(UINT64_MAX);
 }
 
+void CheckSingleWorkerFailures() {
+  testing::ThreadPool pool(1);
+  const auto record = layout::BuildLayout({2}, {1}, 0, {1}, 0, 2, 2, 0);
+  const auto prepared = layout::PrepareGeneratedRecords({record}, 4, 4);
+  for (bool fail_initialization : {false, true}) {
+    int initialized = 0, executed = 0;
+    auto future = native::ExecuteMapTasks(pool.get(), prepared,
+        [&] {
+          ++initialized;
+          if (fail_initialization) throw std::runtime_error("initialization failure");
+        },
+        [&](const auto&) {
+          ++executed;
+          throw std::runtime_error("execution failure");
+        });
+    bool failed = false;
+    future.OnReady([&](const std::optional<ffi::Error>& error) {
+      failed = error && error->failure();
+    });
+    assert(failed && pool.tasks.empty());
+    assert(initialized == 1 && executed == (fail_initialization ? 0 : 1));
+  }
+}
+
 void CheckPreparedLifetimeAndFailure() {
   constexpr uint64_t size = 65536, batches = 7;
   testing::ThreadPool pool(4);
@@ -320,6 +344,7 @@ void CheckPreparedLifetimeAndFailure() {
 }
 
 int main() {
+  CheckSingleWorkerFailures();
   CheckMixedCoefficientBatches();
   CheckPreparedLifetimeAndFailure();
   CheckWorkerLimit();
