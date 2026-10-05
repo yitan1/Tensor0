@@ -1,12 +1,16 @@
 #pragma once
 
 #include "../layout/descriptor.h"
+#include "../layout/blocking.h"
 #include "buffers.h"
 #include "xla/ffi/api/ffi.h"
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <map>
+#include <mutex>
+#include <utility>
 #include <vector>
 
 namespace tensor0::stride {
@@ -26,6 +30,14 @@ struct PreparedState {
   const std::vector<layout::Record> records;
   const uint64_t source_size;
   const uint64_t output_size;
+
+  std::shared_ptr<const std::vector<layout::GeneratedRecordProgram>> AccumulationPrograms(
+      uint64_t source_item_size, uint64_t result_item_size) const;
+
+ private:
+  mutable std::mutex accumulation_mutex;
+  mutable std::map<std::pair<uint64_t, uint64_t>,
+                   std::shared_ptr<const std::vector<layout::GeneratedRecordProgram>>> accumulation_programs;
 };
 
 extern const ffi::TypeInfo kPreparedTypeInfo;

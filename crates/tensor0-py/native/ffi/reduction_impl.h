@@ -30,7 +30,7 @@ ffi::Future Reduce(
     ffi::Span<const int64_t> coefficient_records,
     const PreparedState* prepared, ffi::AnyBuffer source,
     ffi::RemainingArgs coefficients, ffi::ResultBufferR2<Dtype> result,
-    ffi::ThreadPool thread_pool) {
+    ffi::ThreadPool thread_pool, bool accumulation = false) {
   using Accumulator = ScalarDtype<Dtype>;
   std::function<ffi::Future()> execute;
   uint64_t batch_count = 0;
@@ -96,10 +96,7 @@ ffi::Future Reduce(
       execute = [=, result_data = result->typed_data(),
                  record_parameters = std::move(record_parameters),
                  buffers = std::move(buffers)] {
-        return ExecuteReduction<Source, Accumulator>(
-          thread_pool, prepared->records, source_data, result_data,
-          source_size, output_size, batch_count,
-          [record_parameters, buffers](std::size_t record, uint64_t batch, auto apply) {
+        auto bind = [record_parameters, buffers](std::size_t record, uint64_t batch, auto apply) {
             const auto parameter = record_parameters[record];
             if (parameter == buffers.size()) {
               apply(expression::Identity<Source>{});
@@ -117,7 +114,28 @@ ffi::Future Reduce(
                 apply(expression::Scale<Coefficient, expression::Identity<Source>>{factor, {}});
               });
             }
-          });
+          };
+        if (accumulation && AvailableWorkerCount(thread_pool) == 1) {
+          try {
+            ValidateReductionStorage(source_size, output_size, batch_count,
+                                     sizeof(*source_data), sizeof(*result_data));
+            auto programs = prepared->AccumulationPrograms(sizeof(*source_data), sizeof(*result_data));
+            for (uint64_t batch = 0; batch < batch_count; ++batch) {
+              ExecuteReductionBatch<Source, Accumulator>(
+                  *programs, source_data == nullptr ? nullptr : source_data + batch * source_size,
+                  result_data == nullptr ? nullptr : result_data + batch * output_size, output_size,
+                  [&](std::size_t record, auto apply) { bind(record, batch, apply); });
+            }
+            return CompletedFuture();
+          } catch (const std::exception& exception) {
+            return CompletedFuture(ffi::Error::Internal(std::string("tensor0-native: ") + exception.what()));
+          } catch (...) {
+            return CompletedFuture(ffi::Error::Internal("tensor0-native: unknown reduction task exception"));
+          }
+        }
+        return ExecuteReduction<Source, Accumulator>(
+            thread_pool, prepared->records, source_data, result_data,
+            source_size, output_size, batch_count, std::move(bind));
       };
     });
   });
@@ -140,7 +158,7 @@ ffi::Future Accumulation(
     const PreparedState* prepared, ffi::AnyBuffer source,
     ffi::RemainingArgs coefficients, ffi::ResultBufferR2<Dtype> result,
     ffi::ThreadPool thread_pool) {
-  return Reduce<Dtype>(coefficient_records, prepared, source, coefficients, result, thread_pool);
+  return Reduce<Dtype>(coefficient_records, prepared, source, coefficients, result, thread_pool, true);
 }
 
 }

@@ -71,6 +71,19 @@ ffi::ErrorOr<std::unique_ptr<PreparedState>> InstantiateAccumulation(
   return state;
 }
 
+std::shared_ptr<const std::vector<layout::GeneratedRecordProgram>> PreparedState::AccumulationPrograms(
+    uint64_t source_item_size, uint64_t result_item_size) const {
+  std::lock_guard lock(accumulation_mutex);
+  const auto key = std::make_pair(source_item_size, result_item_size);
+  if (auto found = accumulation_programs.find(key); found != accumulation_programs.end()) {
+    return found->second;
+  }
+  auto programs = std::make_shared<const std::vector<layout::GeneratedRecordProgram>>(
+      layout::PrepareGeneratedRecords(records, source_item_size, result_item_size, false));
+  accumulation_programs.emplace(key, programs);
+  return programs;
+}
+
 void ValidatePreparedDimensions(const PreparedState& prepared, uint64_t source_size, uint64_t output_size) {
   if (prepared.source_size != source_size || prepared.output_size != output_size) {
     throw std::invalid_argument("buffer dimensions do not match layout");
