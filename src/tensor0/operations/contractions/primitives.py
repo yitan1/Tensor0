@@ -15,7 +15,9 @@ from ...tensor.linalg import _compose
 from ...tensor.storage import _require_jax_storage_data
 from ...tensor.tensor_map import TensorMap
 from ..transforms import (
+    _has_shared_permute,
     _is_identity_permutation,
+    _permute_to_adjoint_destination,
     _treepermuter,
     permute,
     twist,
@@ -34,6 +36,8 @@ class _ContractionPlan:
     left_permutation: TraceOutput
     right_permutation: TraceOutput
     copy_cost: int
+    reversed_operands: bool = False
+    output_permutation: TraceOutput = ((), ())
 
 
 def _normalize_axis_tuple(
@@ -144,7 +148,7 @@ def _permutation_copy_cost(
     space: _native.HomSpace,
     permutation: TraceOutput,
 ) -> int:
-    if _is_identity_permutation(space, *permutation):
+    if _has_shared_permute(space, *permutation):
         return 0
     return storage_dim(space)
 
@@ -154,6 +158,8 @@ def _contraction_candidate(
     contracted_axes: tuple[tuple[int, ...], tuple[int, ...]],
     open_axes: tuple[tuple[int, ...], tuple[int, ...]],
     sort_position: int,
+    output_permutation: TraceOutput | None = None,
+    reversed_operands: bool = False,
 ) -> _ContractionPlan:
     pairs = tuple(
         zip(
@@ -166,18 +172,41 @@ def _contraction_candidate(
     left_contracted = tuple(pair[0] for pair in ordered_pairs)
     right_contracted = tuple(pair[1] for pair in ordered_pairs)
 
-    left_permutation = (open_axes[0], left_contracted)
-    right_permutation = (right_contracted, open_axes[1])
+    if reversed_operands:
+        left_permutation = (open_axes[1], right_contracted)
+        right_permutation = (left_contracted, open_axes[0])
+        left_space, right_space = spaces[1], spaces[0]
+    else:
+        left_permutation = (open_axes[0], left_contracted)
+        right_permutation = (right_contracted, open_axes[1])
+        left_space, right_space = spaces
 
-    left_space, right_space = spaces
     copy_cost = (
         _permutation_copy_cost(left_space, left_permutation)
         + _permutation_copy_cost(right_space, right_permutation)
     )
+    if output_permutation is None:
+        output_permutation = (
+            tuple(range(len(open_axes[0]))),
+            tuple(range(len(open_axes[0]), len(open_axes[0]) + len(open_axes[1]))),
+        )
+    if reversed_operands:
+        nleft, nright = map(len, open_axes)
+        output_permutation = tuple(
+            tuple(axis + nright if axis < nleft else axis - nleft for axis in group)
+            for group in output_permutation
+        )  # type: ignore[assignment]
+    canonical_space = hom(
+        left_space.permute(*left_permutation).codomain,
+        right_space.permute(*right_permutation).domain,
+    )
+    copy_cost += _permutation_copy_cost(canonical_space, output_permutation)
     return _ContractionPlan(
         left_permutation,
         right_permutation,
         copy_cost,
+        reversed_operands,
+        output_permutation,
     )
 
 
@@ -185,15 +214,9 @@ def _select_contraction_plan(
     spaces: tuple[_native.HomSpace, _native.HomSpace],
     contracted_axes: tuple[tuple[int, ...], tuple[int, ...]],
     open_axes: tuple[tuple[int, ...], tuple[int, ...]],
+    output_permutation: TraceOutput | None = None,
+    allow_reversal: bool = False,
 ) -> _ContractionPlan:
-    if len(contracted_axes[0]) <= 1:
-        return _contraction_candidate(
-            spaces,
-            contracted_axes,
-            open_axes,
-            0,
-        )
-
     return min(
         (
             _contraction_candidate(
@@ -201,8 +224,11 @@ def _select_contraction_plan(
                 contracted_axes,
                 open_axes,
                 sort_position,
+                output_permutation,
+                reversed_operands,
             )
-            for sort_position in (0, 1)
+            for reversed_operands in ((False, True) if allow_reversal else (False,))
+            for sort_position in ((0, 1) if len(contracted_axes[0]) > 1 else (0,))
         ),
         key=lambda candidate: candidate.copy_cost,
     )
@@ -257,6 +283,25 @@ def _validate_trace_coverage(
     partition = axes[0] + axes[1] + output[0] + output[1]
     if len(partition) != rank or len(set(partition)) != rank:
         raise ValueError("each original axis must appear exactly once")
+
+
+def _prepare_contraction_operand(
+    value: TensorMap,
+    permutation: TraceOutput,
+    conjugate: bool,
+    symmetric_boson: bool,
+) -> TensorMap:
+    if not conjugate:
+        return permute(value, permutation)
+    if not symmetric_boson or value.space.sector_spec == _native.Trivial:
+        return permute(value.adjoint(), permutation)
+
+    adjoint_space = hom(value.space.domain, value.space.codomain)
+    parent_permutation = (
+        tuple(_adjoint_axis(adjoint_space, axis) for axis in permutation[1]),
+        tuple(_adjoint_axis(adjoint_space, axis) for axis in permutation[0]),
+    )
+    return _permute_to_adjoint_destination(value, *parent_permutation)
 
 
 def tensorcontract(
@@ -349,15 +394,30 @@ def tensorcontract(
             conjugate_flags,
         )
 
+    symmetric_boson = sector_spec(left_space) in (
+        _native.U1Irrep,
+        _native.Z2Irrep,
+        _native.Z3Irrep,
+        _native.Z4Irrep,
+        _native.SU2Irrep,
+        _native.U1SU2Irrep,
+    )
     plan = _select_contraction_plan(
         (left_space, right_space),
         (mapped_left_axes, mapped_right_axes),
         (mapped_open_left, mapped_open_right),
+        output_permutation,
+        symmetric_boson,
     )
-    left_value = left.adjoint() if conjugate_flags[0] else left
-    right_value = right.adjoint() if conjugate_flags[1] else right
-    left_canonical = permute(left_value, plan.left_permutation)
-    right_canonical = permute(right_value, plan.right_permutation)
+    if plan.reversed_operands:
+        left, right = right, left
+        conjugate_flags = conjugate_flags[::-1]
+    left_canonical = _prepare_contraction_operand(
+        left, plan.left_permutation, conjugate_flags[0], symmetric_boson
+    )
+    right_canonical = _prepare_contraction_operand(
+        right, plan.right_permutation, conjugate_flags[1], symmetric_boson
+    )
     right_twist_indices = tuple(
         axis
         for axis in range(len(plan.right_permutation[0]))
@@ -365,7 +425,7 @@ def tensorcontract(
     )
     right_canonical = twist(right_canonical, right_twist_indices)
     canonical_result = _compose(left_canonical, right_canonical)
-    return permute(canonical_result, output_permutation)
+    return permute(canonical_result, plan.output_permutation)
 
 
 def _trivial_tensorcontract_validated(

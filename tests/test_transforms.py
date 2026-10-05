@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 
 import tensor0.operations.transforms as transforms
+import tensor0.operations.contractions.primitives as contraction_primitives
 from tensor0 import (
     ComplexSpace,
     FermionNumber,
@@ -1496,6 +1497,110 @@ def test_trivial_index_transforms_match_direct_dense_oracle_with_dual_legs(
     assert result.numout == result.numin == 2
     assert result.storage.data.dtype == tensor.storage.data.dtype
     assert jnp.array_equal(to_dense(result), jnp.transpose(dense, (1, 3, 0, 2)))
+
+
+@pytest.mark.parametrize("dims", [(2, 1, 3, 1), (0, 1, 3, 1), (1, 1, 1, 1)])
+def test_trivial_permute_shares_canonical_storage_for_singleton_moves(dims):
+    target = hom(
+        (ComplexSpace(dims[0]), ComplexSpace(dims[1], dual=True)),
+        (ComplexSpace(dims[2]), ComplexSpace(dims[3], dual=True)),
+    )
+    permutation = ((1, 0, 3), (2,))
+    data = jnp.arange(math.prod(dims), dtype=jnp.float32).astype(jnp.complex64)
+    data = data * (1 + 0.5j) + (data ** 2) * (0.2 - 0.3j)
+    tensor = TensorMap(target, data)
+    result = permute(tensor, permutation)
+
+    assert result is not tensor
+    assert result.space == target.permute(*permutation)
+    assert result.storage is tensor.storage
+    assert result.storage.data is tensor.storage.data
+    assert contraction_primitives._permutation_copy_cost(target, permutation) == 0
+    np.testing.assert_array_equal(
+        to_dense(result), np.transpose(np.asarray(data).reshape(dims), (1, 0, 3, 2))
+    )
+    # The lowering has no transform operation; JAX may wrap its result in a new Array.
+    def run(value):
+        return permute(TensorMap(target, value), permutation).storage.data
+
+    assert not jax.make_jaxpr(run)(data).jaxpr.eqns
+    assert run(data) is data
+    lowered = str(jax.jit(run).lower(data).compiler_ir(dialect="stablehlo"))
+    assert "return %arg0" in lowered
+    assert "stablehlo.transpose" not in lowered
+    assert "stablehlo.copy" not in lowered
+
+    weights = jnp.arange(data.size, dtype=jnp.float32).reshape(
+        tuple(dims[axis] for axis in (1, 0, 3, 2))
+    ).astype(jnp.complex64) * (0.7 + 0.2j)
+
+    def objective(value):
+        mapped = to_dense(permute(TensorMap(target, value), permutation))
+        return jnp.real(jnp.vdot(weights, mapped))
+
+    def reference(value):
+        mapped = jnp.transpose(value.reshape(dims), (1, 0, 3, 2))
+        return jnp.real(jnp.vdot(weights, mapped))
+
+    np.testing.assert_allclose(jax.grad(objective)(data), jax.grad(reference)(data))
+
+
+def test_shared_trivial_permute_compose_and_both_input_gradients():
+    target = hom(
+        (ComplexSpace(2), ComplexSpace(1, dual=True)),
+        (ComplexSpace(3), ComplexSpace(1, dual=True)),
+    )
+    permutation = ((1, 0, 3), (2,))
+    right_space = hom((ComplexSpace(3),), (ComplexSpace(4),))
+    left_data = jnp.arange(6, dtype=jnp.float32).astype(jnp.complex64) * (0.5 + 0.2j)
+    right_data = jnp.arange(12, dtype=jnp.float32).astype(jnp.complex64) * (0.3 - 0.4j)
+
+    def actual(a, b):
+        left = permute(TensorMap(target, a), permutation)
+        return to_dense(left @ TensorMap(right_space, b))
+
+    def expected(a, b):
+        return (a.reshape(2, 3) @ b.reshape(3, 4)).reshape(1, 2, 1, 4)
+
+    np.testing.assert_allclose(actual(left_data, right_data), expected(left_data, right_data))
+    weights = jnp.arange(8, dtype=jnp.float32).reshape(1, 2, 1, 4) * (1 + 0.1j)
+    loss = lambda fn, a, b: jnp.real(jnp.vdot(weights, fn(a, b)))
+    actual_grads = jax.grad(lambda a, b: loss(actual, a, b), argnums=(0, 1))(
+        left_data, right_data
+    )
+    expected_grads = jax.grad(lambda a, b: loss(expected, a, b), argnums=(0, 1))(
+        left_data, right_data
+    )
+    for got, want in zip(actual_grads, expected_grads, strict=True):
+        np.testing.assert_allclose(got, want, rtol=1e-6, atol=1e-6)
+
+
+def test_singleton_degeneracies_do_not_make_nontrivial_permute_shared():
+    factor = space(U1Irrep, {0: 1, 1: 1})
+    target = hom((factor, factor), ())
+    data = _data_for(target).astype(jnp.asarray(1 + 0.3j).dtype) * (1 + 0.3j)
+    tensor = TensorMap(target, data)
+    permutation = ((1, 0), ())
+    result = permute(tensor, permutation)
+    assert not transforms._has_shared_permute(target, *permutation)
+    assert contraction_primitives._permutation_copy_cost(target, permutation) == tensor.dim
+    assert result.storage.data is not tensor.storage.data
+    np.testing.assert_allclose(
+        to_dense(result), jnp.transpose(to_dense(tensor), (1, 0)), rtol=1e-6, atol=1e-6
+    )
+
+
+def test_trivial_permute_does_not_share_when_non_singleton_order_changes():
+    dims = (2, 1, 3, 1)
+    target = hom((ComplexSpace(2), ComplexSpace(1)), (ComplexSpace(3), ComplexSpace(1)))
+    data = jnp.arange(6, dtype=jnp.float32) * (1 + 0.4j)
+    tensor = TensorMap(target, data)
+    result = permute(tensor, ((2, 1), (0, 3)))
+    assert result.storage.data is not data
+    assert contraction_primitives._permutation_copy_cost(target, ((2, 1), (0, 3))) == 6
+    np.testing.assert_array_equal(
+        to_dense(result), np.transpose(np.asarray(data).reshape(dims), (2, 1, 0, 3))
+    )
 
 
 def test_trivial_index_transforms_preserve_identity_and_rank_zero_storage_reuse():

@@ -2686,6 +2686,177 @@ def test_trivial_validated_tensortrace_jaxpr_has_no_generic_packing_primitives()
 
     assert not primitives & {"broadcast_in_dim", "mul", "slice", "scatter-add"}
 
+@pytest.mark.parametrize(
+    ("family", "sectors"),
+    [
+        (Trivial, {(): 2}),
+        (Z2Irrep, {0: 1, 1: 1}),
+        (Z3Irrep, {0: 1, 1: 1}),
+        (Z4Irrep, {0: 1, 1: 1}),
+        (U1Irrep, {-1: 1, 0: 1, 1: 1}),
+        (SU2Irrep, {0: 1, 1: 1}),
+        (U1SU2Irrep, {(0, 0): 1, (0, 1): 1}),
+        (FermionParity, {0: 1, 1: 1}),
+    ],
+)
+@pytest.mark.parametrize("order", [(1, 2, 3), (3, 2, 1)])
+def test_consumer_layout_matches_original_tree_and_all_input_gradients(
+    monkeypatch, family, sectors, order,
+):
+    import tensor0.operations.contractions.index_notation as notation
+
+    factor = space(family, sectors)
+    labels = ((-1, 1, 2), (1, -2, 3), (2, 3, -3))
+    seen = set()
+    tensors = []
+    for group in labels:
+        legs = []
+        for label in group:
+            legs.append(factor.dual() if label > 0 and label in seen else factor)
+            seen.add(label)
+        tensors.append(_tensor(hom(tuple(legs), ()), jnp.complex64))
+
+    output = ((-3, -1), (-2,))
+    original = notation._contract_values
+    targets = []
+    intermediates = []
+    use_targets = True
+
+    def recording(left, right, target=None):
+        if target is not None:
+            targets.append(target)
+        value = original(left, right, target if use_targets else None)
+        intermediates.append(value)
+        return value
+
+    monkeypatch.setattr(notation, "_contract_values", recording)
+
+    def run(*data):
+        values = tuple(TensorMap(tensor.space, item) for tensor, item in zip(tensors, data))
+        return ncon(values, labels, order=order, output=output).storage.data
+
+    inputs = tuple(tensor.storage.data for tensor in tensors)
+    optimized = jax.jit(run)(*inputs)
+    expected_target = family not in (Trivial, FermionParity)
+    assert bool(targets) == expected_target
+    use_targets = False
+    reference = jax.jit(run)(*inputs)
+    assert_allclose(optimized, reference)
+    if expected_target:
+        intermediates.clear()
+        run(*inputs)
+        reference_map, reference_labels = intermediates[0].tensor, intermediates[0].labels
+        use_targets = True
+        intermediates.clear()
+        run(*inputs)
+        planned_map, planned_labels = intermediates[0].tensor, intermediates[0].labels
+        positions = {
+            label: axis for axis, label in enumerate(planned_labels[0] + planned_labels[1])
+        }
+        mapped = permute(planned_map, (
+            tuple(positions[label] for label in reference_labels[0]),
+            tuple(positions[label] for label in reference_labels[1]),
+        ))
+        assert mapped.space == reference_map.space
+        assert_allclose(mapped.storage.data, reference_map.storage.data)
+    else:
+        use_targets = True
+
+    def objective(*data):
+        return jnp.real(jnp.sum(run(*data)))
+
+    use_targets = False
+    original_gradients = jax.jit(jax.grad(objective, argnums=(0, 1, 2)))(*inputs)
+    use_targets = True
+    planned_gradients = jax.jit(jax.grad(objective, argnums=(0, 1, 2)))(*inputs)
+    for actual, expected in zip(planned_gradients, original_gradients):
+        assert_allclose(actual, expected)
+
+
+@pytest.mark.parametrize(
+    ("family", "sectors"),
+    [
+        (SU2Irrep, {0: 1, 1: 1}),
+        (U1SU2Irrep, {(0, 0): 1, (0, 1): 1}),
+    ],
+)
+def test_nonabelian_consecutive_consumer_layouts_match_unplanned_tree_and_ad(
+    monkeypatch, family, sectors,
+):
+    import tensor0.operations.contractions.index_notation as notation
+
+    factor = space(family, sectors)
+    labels = ((-1, 1, 2), (1, -2, 3), (2, 4, -3), (3, 4, -4))
+    seen = set()
+    tensors = []
+    for group in labels:
+        legs = tuple(
+            factor.dual() if label > 0 and label in seen else factor
+            for label in group
+        )
+        seen.update(label for label in group if label > 0)
+        tensors.append(_tensor(hom(legs, ()), jnp.complex64))
+
+    original = notation._contract_values
+    use_targets = False
+    stages = []
+
+    def recording(left, right, target=None):
+        result = original(left, right, target if use_targets else None)
+        stages.append(result)
+        return result
+
+    monkeypatch.setattr(notation, "_contract_values", recording)
+    inputs = tuple(tensor.storage.data for tensor in tensors)
+
+    def run(*data):
+        values = tuple(
+            TensorMap(tensor.space, item)
+            for tensor, item in zip(tensors, data, strict=True)
+        )
+        return ncon(values, labels, order=(1, 2, 3, 4),
+                    output=((-4, -1), (-3, -2))).storage.data
+
+    reference = jax.jit(run)(*inputs)
+    stages.clear()
+    run(*inputs)
+    baseline_stages = tuple(stages)
+    assert len(baseline_stages) == 3
+    stages.clear()
+    use_targets = True
+    planned = jax.jit(run)(*inputs)
+    stages.clear()
+    run(*inputs)
+    planned_stages = tuple(stages)
+    assert_allclose(planned, reference)
+    for baseline_node, planned_node in zip(
+        baseline_stages[:2], planned_stages[:2], strict=True,
+    ):
+        baseline_map, baseline_labels = baseline_node.tensor, baseline_node.labels
+        planned_map, planned_labels = planned_node.tensor, planned_node.labels
+        assert planned_labels != baseline_labels
+        positions = {
+            label: axis
+            for axis, label in enumerate(planned_labels[0] + planned_labels[1])
+        }
+        mapped = permute(planned_map, (
+            tuple(positions[label] for label in baseline_labels[0]),
+            tuple(positions[label] for label in baseline_labels[1]),
+        ))
+        assert mapped.space == baseline_map.space
+        assert_allclose(mapped.storage.data, baseline_map.storage.data)
+
+    def objective(*data):
+        return jnp.real(jnp.sum(run(*data)))
+
+    use_targets = False
+    baseline_grads = jax.jit(jax.grad(objective, argnums=(0, 1, 2, 3)))(*inputs)
+    use_targets = True
+    planned_grads = jax.jit(jax.grad(objective, argnums=(0, 1, 2, 3)))(*inputs)
+    for actual, expected in zip(planned_grads, baseline_grads, strict=True):
+        assert_allclose(actual, expected)
+
+
 @pytest.mark.parametrize("order", [(1, 2, 3, 4), (4, 3, 2, 1), (2, 4, 1, 3)])
 def test_u1_intermediate_layout_four_node_tree_matches_dense_and_ad(order):
     factor = space(U1Irrep, {-1: 1, 0: 2, 1: 1})

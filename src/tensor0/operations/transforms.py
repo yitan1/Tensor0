@@ -10,6 +10,7 @@ import jax.numpy as jnp
 
 from .. import _native
 from .._stride._tensor_ops import _strided_affine_transform, _strided_tree_transform
+from ..structure.spaces import hom
 from ..structure.layout import (
     _sectorstructure_key,
     get_degeneracystructure,
@@ -37,6 +38,8 @@ def permute(tensor: TensorMap, p: Permutation) -> TensorMap:
         return tensor
 
     dst_space = tensor.space.permute(p_codomain, p_domain)
+    if _has_shared_permute(tensor.space, p_codomain, p_domain):
+        return TensorMap(dst_space, tensor.storage)
     if tensor.space.sector_spec == _native.Trivial:
         return _apply_trivial_index_transform(
             tensor,
@@ -179,6 +182,76 @@ def _apply_tree_transform(
         transformer=transformer,
     )
     return TensorMap(dst_space, dst_data)
+
+
+def _permute_to_adjoint_destination(
+    tensor: TensorMap,
+    p_codomain: tuple[int, ...],
+    p_domain: tuple[int, ...],
+) -> TensorMap:
+    """Compose a bosonic tree permutation with its canonical adjoint layout."""
+    source_space = tensor.space
+    if _is_identity_permutation(source_space, p_codomain, p_domain):
+        return tensor.adjoint()
+    parent_space = source_space.permute(p_codomain, p_domain)
+    transformer = _treepermuter(source_space, parent_space, p_codomain, p_domain)
+    if transformer.kind == "generic" and any(
+        entry.transform.shape != (1, 1) for entry in transformer.generic_data
+    ):
+        # A mixed group needs pack/matrix/unpack, not quadratic affine
+        # descriptors. Keep the established eager consumer preparation.
+        return permute(tensor, (p_codomain, p_domain)).adjoint()
+    destination_space = hom(parent_space.domain, parent_space.codomain)
+    source_layout = get_degeneracystructure(source_space)
+    parent_layout = get_degeneracystructure(parent_space)
+    destination_layout = get_degeneracystructure(destination_space)
+    if destination_layout.total_dim == 0:
+        # The established grouped transform determines the dtype of an empty
+        # output even when its transformer has no numeric contributions.
+        return permute(tensor, (p_codomain, p_domain)).adjoint()
+    parent_sectors = get_sectorstructure(parent_space)
+    destination_sectors = get_sectorstructure(destination_space)
+    source = jnp.conj(_require_jax_storage_data(tensor.storage.data, "tree transform"))
+    result_dtype = _transform_result_dtype(source, transformer)
+    axes = p_codomain + p_domain
+    axes = axes[parent_space.numout:] + axes[:parent_space.numout]
+
+    # Group matrices index parent fusion-tree pairs by destination row and
+    # source column. Swap the pair to locate the exact adjoint destination;
+    # do not assume either group's tree ordering or packed offsets survive.
+    destination_subblocks = []
+    for index in range(len(parent_layout.subblockstructure)):
+        row_tree, column_tree = parent_sectors.fusiontree_pair_at(index)
+        destination_index = destination_sectors.fusiontree_pair_index(column_tree, row_tree)
+        if destination_index is None:
+            raise ValueError("adjoint destination fusion-tree pair is missing")
+        destination_subblocks.append(destination_layout.subblockstructure[destination_index])
+
+    if transformer.kind == "abelian":
+        entries = (
+            (entry.src, entry.dst, jnp.conj(entry.coeff))
+            for entry in transformer.abelian_data
+        )
+    elif transformer.kind == "generic":
+        entries = (
+            (entry.src_indices[0], entry.dst_indices[0],
+             jnp.conj(jnp.asarray(entry.transform, dtype=result_dtype).reshape(())))
+            for entry in transformer.generic_data
+        )
+    else:
+        raise ValueError(f"unsupported tree transformer kind {transformer.kind!r}")
+
+    output = _strided_affine_transform(
+        source,
+        source_subblocks=source_layout.subblockstructure,
+        destination_subblocks=tuple(destination_subblocks),
+        entries=entries,
+        permutation=axes,
+        output_size=destination_layout.total_dim,
+        result_dtype=result_dtype,
+        shape_error="adjoint destination subblock shape is inconsistent",
+    )
+    return TensorMap(destination_space, output)
 
 
 def repartition(
@@ -593,4 +666,21 @@ def _is_identity_permutation(
 ) -> bool:
     return p_codomain == tuple(range(space.numout)) and p_domain == tuple(
         range(space.numout, space.numind),
+    )
+
+
+def _has_shared_permute(
+    space: _native.HomSpace,
+    p_codomain: tuple[int, ...],
+    p_domain: tuple[int, ...],
+) -> bool:
+    if _is_identity_permutation(space, p_codomain, p_domain):
+        return True
+    if space.sector_spec != _native.Trivial:
+        return False
+    # Trivial storage is a C-ordered flat dense tensor. Moving singleton axes
+    # cannot change any address; non-singleton axes must retain their order.
+    dims = space.dims
+    return tuple(axis for axis in p_codomain + p_domain if dims[axis] != 1) == tuple(
+        axis for axis, dim in enumerate(dims) if dim != 1
     )

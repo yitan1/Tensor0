@@ -15,7 +15,6 @@ _Occurrence: TypeAlias = tuple[int, int, _native.ElementarySpace]
 _LeafIds: TypeAlias = tuple[int, ...]
 _TraceAxes: TypeAlias = tuple[tuple[int, ...], tuple[int, ...]]
 _MetadataNode: TypeAlias = tuple[_LeafIds, _LabelGroups]
-_NodeValue: TypeAlias = tuple[TensorMap, _LabelGroups]
 _ContractionStep: TypeAlias = tuple[_LeafIds, _LeafIds]
 _StringSequence: TypeAlias = tuple[str, ...] | list[str]
 _IntSequence: TypeAlias = tuple[int, ...] | list[int]
@@ -35,6 +34,14 @@ class _TracePlan:
     trace_axes: _TraceAxes
     output_axes: _TraceAxes
     open_labels: _LabelGroups
+
+
+@dataclass(frozen=True)
+class _NodeValue:
+    tensor: TensorMap
+    labels: _LabelGroups
+    axes: tuple[int, ...]
+    conjugate: bool = False
 
 
 _OperandInput: TypeAlias = (
@@ -160,10 +167,19 @@ def _contract_network(
         order,
     )
 
-    # Only U1 has the established basis-independent internal regrouping here.
-    # Other sector families retain their existing intermediate orientations.
+    # Symmetric bosonic sectors use the same permutation/compose route, so an
+    # intermediate can be written in its sole consumer's matrix orientation.
+    # Trivial uses dense contraction; fermionic braiding/twists keep the
+    # established orientation rather than assuming ordinary interchange.
     targets: dict[_LeafIds, _LabelGroups] = {}
-    if operands[0].tensor.space.sector_spec == _native.U1Irrep:
+    if operands[0].tensor.space.sector_spec in (
+        _native.U1Irrep,
+        _native.Z2Irrep,
+        _native.Z3Irrep,
+        _native.Z4Irrep,
+        _native.SU2Irrep,
+        _native.U1SU2Irrep,
+    ):
         parent: dict[_LeafIds, tuple[_LeafIds, bool]] = {}
         for left_ids, right_ids in steps:
             parent[left_ids] = (right_ids, True)
@@ -196,15 +212,36 @@ def _contract_network(
     for position, (operand, plan) in enumerate(
         zip(operands, trace_plans, strict=True)
     ):
-        active_values[(position,)] = (
-            tensortrace(
+        # The primitive accepts parent axes even when its conjugate flag exposes
+        # adjoint-visible spaces. Keep labels in the trace plan's logical order.
+        defer = (
+            bool(steps)
+            and operand.conjugate
+            and not plan.trace_axes[0]
+            and operand.tensor.space.sector_spec in (
+                _native.U1Irrep,
+                _native.Z2Irrep,
+                _native.Z3Irrep,
+                _native.Z4Irrep,
+                _native.SU2Irrep,
+                _native.U1SU2Irrep,
+            )
+        )
+        if defer:
+            active_values[(position,)] = _NodeValue(
+                operand.tensor, plan.open_labels,
+                plan.output_axes[0] + plan.output_axes[1], True,
+            )
+        else:
+            tensor = tensortrace(
                 operand.tensor,
                 axes=plan.trace_axes,
                 output=plan.output_axes,
                 conjugate=operand.conjugate,
-            ),
-            plan.open_labels,
-        )
+            )
+            active_values[(position,)] = _NodeValue(
+                tensor, plan.open_labels, tuple(range(tensor.numind)),
+            )
 
     for left_ids, right_ids in steps:
         left = active_values.pop(left_ids)
@@ -214,7 +251,8 @@ def _contract_network(
             left, right, targets.get(merged_ids),
         )
 
-    result, result_labels = next(iter(active_values.values()))
+    result_node = next(iter(active_values.values()))
+    result, result_labels = result_node.tensor, result_node.labels
     flattened_result = result_labels[0] + result_labels[1]
     result_positions = {
         label: axis for axis, label in enumerate(flattened_result)
@@ -369,8 +407,8 @@ def _contract_values(
     right: _NodeValue,
     target: _LabelGroups | None = None,
 ) -> _NodeValue:
-    left_tensor, left_labels = left
-    right_tensor, right_labels = right
+    left_tensor, left_labels = left.tensor, left.labels
+    right_tensor, right_labels = right.tensor, right.labels
     left_flat = _flatten_labels(left_labels)
     right_flat = _flatten_labels(right_labels)
     shared, next_labels = _merge_labels(left_labels, right_labels)
@@ -380,16 +418,16 @@ def _contract_values(
     right_positions = {
         label: axis for axis, label in enumerate(right_flat)
     }
-    left_axes = tuple(left_flat.index(label) for label in shared)
-    right_axes = tuple(right_positions[label] for label in shared)
+    left_axes = tuple(left.axes[left_flat.index(label)] for label in shared)
+    right_axes = tuple(right.axes[right_positions[label]] for label in shared)
     open_positions: dict[_Label, tuple[int, int]] = {
-        label: (0, axis)
+        label: (0, left.axes[axis])
         for axis, label in enumerate(left_flat)
         if label not in shared_set
     }
     open_positions.update(
         {
-            label: (1, axis)
+            label: (1, right.axes[axis])
             for axis, label in enumerate(right_flat)
             if label not in shared_set
         }
@@ -398,15 +436,14 @@ def _contract_values(
         tuple(open_positions[label] for label in next_labels[0]),
         tuple(open_positions[label] for label in next_labels[1]),
     )
-    return (
-        tensorcontract(
-            left_tensor,
-            right_tensor,
-            axes=(left_axes, right_axes),
-            output=output_refs,
-        ),
-        next_labels,
+    tensor = tensorcontract(
+        left_tensor,
+        right_tensor,
+        axes=(left_axes, right_axes),
+        output=output_refs,
+        conjugate=(left.conjugate, right.conjugate),
     )
+    return _NodeValue(tensor, next_labels, tuple(range(tensor.numind)))
 
 
 def _flatten_labels(labels: _LabelGroups) -> tuple[_Label, ...]:
