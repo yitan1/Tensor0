@@ -379,6 +379,17 @@ void CheckOutputPlanning() {
   auto interleaved = first;
   interleaved.destination_offset = 3;
   assert(layout::BuildReductionOutputTasks(layout::PrepareGeneratedRecords({first, interleaved}, 4, 4, false), 4).empty());
+  // A later group sharing an interval endpoint still rejects all tasks.
+  auto last = layout::BuildLayout({5}, {1}, 0, {2}, 30, 5, 64, 17);
+  assert(layout::BuildReductionOutputTasks(layout::PrepareGeneratedRecords(
+      {first, third, second, last}, 4, 4, false), 4).empty());
+  last.destination_offset = 31;
+  const auto groups = layout::BuildReductionOutputTasks(layout::PrepareGeneratedRecords(
+      {first, third, second, last}, 4, 4, false), 1);
+  assert(groups.size() == 3 && groups[0].size() == 2);
+  assert(groups[0][0].record.semantic_index == 9 && groups[0][1].record.semantic_index == 3);
+  assert(groups[1][0].record.semantic_index == 4 && groups[2][0].record.semantic_index == 17);
+  assert(layout::BuildReductionOutputTasks({}, 4).empty());
   auto overlap = layout::BuildLayout({2, 2, 40000}, {0, 0, 1}, 0,
                                     {1, 1, 0}, 0, 40000, 4, 1);
   assert(layout::BuildReductionOutputTasks(layout::PrepareGeneratedRecords({overlap}, 4, 4, false), 4).empty());

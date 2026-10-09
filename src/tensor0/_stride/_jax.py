@@ -122,38 +122,42 @@ def _storage_abstract(source, *coefficients, output_size, dtype, **parameters):
     return source.update(shape=(*source.shape[:-1], output_size), dtype=dtype, weak_type=False)
 
 
-def _accumulation(source, *coefficients, records, output_size, dtype, coefficient_records=(), platform="cpu"):
+def _accumulation(source, *coefficients, records, output_size, dtype, coefficient_records=(),
+                  outputs_disjoint=False, platform="cpu"):
     layout = encode_layout(records, source_size=source.shape[-1], output_size=output_size)
     return execute_accumulation(
         source, coefficients, coefficient_records=coefficient_records,
         layout=layout, output_size=output_size, dtype=dtype, platform=platform,
+        outputs_disjoint=outputs_disjoint,
     )
 
 
-@partial(custom_partitioning, static_argnums=(0, 1, 2, 3, 4))
-def _partitioned_accumulation(records, output_size, dtype, coefficient_records, platform, source, *coefficients):
+@partial(custom_partitioning, static_argnums=(0, 1, 2, 3, 4, 5))
+def _partitioned_accumulation(records, output_size, dtype, coefficient_records, outputs_disjoint, platform, source, *coefficients):
     return _accumulation(source, *coefficients, records=records, output_size=output_size,
-                         dtype=dtype, coefficient_records=coefficient_records, platform=platform)
+                         dtype=dtype, coefficient_records=coefficient_records,
+                         outputs_disjoint=outputs_disjoint, platform=platform)
 
 
-def _partition_accumulation(records, output_size, dtype, coefficient_records, platform, mesh, argument_shapes, result_shape):
+def _partition_accumulation(records, output_size, dtype, coefficient_records, outputs_disjoint, platform, mesh, argument_shapes, result_shape):
     source_sharding = _batch_storage_sharding(argument_shapes[0])
     _batch_storage_sharding(result_shape)
     coefficient_shardings = _coefficient_shardings(mesh, source_sharding, argument_shapes[1:])
     return (mesh, partial(_accumulation, records=records, output_size=output_size,
-                          dtype=dtype, coefficient_records=coefficient_records, platform=platform),
+                          dtype=dtype, coefficient_records=coefficient_records,
+                          outputs_disjoint=outputs_disjoint, platform=platform),
             source_sharding, (source_sharding, *coefficient_shardings))
 
 
-def _infer_accumulation_sharding(records, output_size, dtype, coefficient_records, platform, mesh, argument_shapes, result_shape):
+def _infer_accumulation_sharding(records, output_size, dtype, coefficient_records, outputs_disjoint, platform, mesh, argument_shapes, result_shape):
     return _batch_storage_sharding(argument_shapes[0])
 
 
-def _propagate_accumulation_sharding(records, output_size, dtype, coefficient_records, platform, mesh, user_shape):
+def _propagate_accumulation_sharding(records, output_size, dtype, coefficient_records, outputs_disjoint, platform, mesh, user_shape):
     return _batch_storage_sharding(user_shape)
 
 
-def _accumulation_sharding_rule(records, output_size, dtype, coefficient_records, platform, mesh, value_types, result_types):
+def _accumulation_sharding_rule(records, output_size, dtype, coefficient_records, outputs_disjoint, platform, mesh, value_types, result_types):
     return _coefficient_sharding_rule(value_types)
 
 
@@ -181,11 +185,12 @@ def _require_inexact_ad_dtypes(*dtypes):
         raise NotImplementedError("native AD supports F16/BF16/F32/F64/C64/C128 differentiated operands")
 
 
-def _accumulation_jvp(primals, tangents, *, records, output_size, dtype, coefficient_records=()):
+def _accumulation_jvp(primals, tangents, *, records, output_size, dtype, coefficient_records=(),
+                      outputs_disjoint=False):
     source, *coefficients = primals
     source_tangent, *coefficient_tangents = tangents
     parameters = dict(records=records, output_size=output_size, dtype=dtype,
-                      coefficient_records=coefficient_records)
+                      coefficient_records=coefficient_records, outputs_disjoint=outputs_disjoint)
     primal = accumulation_p.bind(*primals, **parameters)
     if not jnp.issubdtype(primal.dtype, jnp.inexact):
         return primal, ad.Zero(jax.typeof(primal).to_tangent_aval())
@@ -204,6 +209,7 @@ def _accumulation_jvp(primals, tangents, *, records, output_size, dtype, coeffic
         contribution = accumulation_p.bind(
             source, *(value for _, value in active), records=tuple(records[index] for index, _ in active),
             coefficient_records=tuple(range(len(active))), output_size=output_size, dtype=dtype,
+            outputs_disjoint=outputs_disjoint,
         )
         tangent = contribution if tangent is None else tangent + contribution
     if tangent is None:
@@ -212,7 +218,9 @@ def _accumulation_jvp(primals, tangents, *, records, output_size, dtype, coeffic
 
 
 def _accumulation_transpose(cotangent, source, *coefficients, records, output_size, dtype,
-                            coefficient_records=()):
+                            coefficient_records=(), outputs_disjoint=False):
+    # Swapping source/destination can introduce shared gradient writes even
+    # when the primal output maps are independent. Do not forward the proof.
     source_active = ad.is_undefined_primal(source)
     active = tuple(ad.is_undefined_primal(value) for value in coefficients)
     source_aval = source.aval if source_active else jax.typeof(source)
@@ -664,8 +672,10 @@ def _lower_copy(context, source, *, platform="cpu", **parameters):
     return _lower(function, context, source)
 
 
-def _lower_accumulation(context, *arguments, records, output_size, dtype, coefficient_records=(), platform="cpu"):
-    function = partial(_partitioned_accumulation, records, output_size, dtype, coefficient_records, platform)
+def _lower_accumulation(context, *arguments, records, output_size, dtype, coefficient_records=(),
+                        outputs_disjoint=False, platform="cpu"):
+    function = partial(_partitioned_accumulation, records, output_size, dtype, coefficient_records,
+                       outputs_disjoint, platform)
     return _lower(function, context, *arguments)
 
 

@@ -101,6 +101,30 @@ removing singleton/fused axes can change locality ranks. CPU and CUDA both consu
 this canonical layout; CPU execution may still choose different row/block/partial-
 sum schedules, so shared metadata does not imply bitwise-identical arithmetic.
 
+CPU Accumulation caches immutable generated traversal programs in its prepared
+state, keyed by source and result item sizes, independently of the worker count.
+Both serial and parallel execution reuse these programs. Parallel task planning
+remains per invocation; output-task planning checks group intervals before copying
+programs, so rejected layouts do not allocate unused task programs. Partial-reduction
+plans copy the programs before rewriting or splitting them. Asynchronous batch tasks retain shared ownership of the cached
+programs. Input/output buffers, coefficients, output initialization and partial
+results are not cached. Reuse therefore benefits repeated execution of the same
+prepared instance even when tensor values change, but does not eliminate first-use
+preparation or parallel scheduling costs.
+
+Weighted affine producers also preserve an internal `outputs_disjoint` guarantee
+when selected destination subblocks from their disjoint layout are unique.
+Repeated destination selections and raw calls remain generic accumulations.
+The CPU executor skips global output-geometry planning for these injective maps:
+workers process ranges of shared immutable traversal programs, while independent
+batches retain batch scheduling. A single large record uses the existing map
+subdomain splitter; multiple records are not individually split or load-balanced
+by work in this initial path. Output initialization, scaling, mixed arithmetic,
+and writeback still use the accumulation kernel. Source and coefficient JVP keep the proof;
+transpose drops it because repeated source reads can become gradient write
+conflicts. CUDA ignores this CPU scheduling metadata and retains generic sums.
+The worker granularity remains 32K; this is not a GPU performance optimization.
+
 ## Optional CUDA stride build
 
 Linux builds are CPU-only by default and do not discover or link CUDA. To enable

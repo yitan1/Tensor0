@@ -115,18 +115,29 @@ ffi::Future Reduce(
               });
             }
           };
-        if (accumulation && AvailableWorkerCount(thread_pool) == 1) {
+        if (accumulation) {
           try {
             ValidateReductionStorage(source_size, output_size, batch_count,
                                      sizeof(*source_data), sizeof(*result_data));
             auto programs = prepared->AccumulationPrograms(sizeof(*source_data), sizeof(*result_data));
-            for (uint64_t batch = 0; batch < batch_count; ++batch) {
-              ExecuteReductionBatch<Source, Accumulator>(
-                  *programs, source_data == nullptr ? nullptr : source_data + batch * source_size,
-                  result_data == nullptr ? nullptr : result_data + batch * output_size, output_size,
-                  [&](std::size_t record, auto apply) { bind(record, batch, apply); });
+            // Cache reuse is independent of scheduling; keep the synchronous fast path.
+            if (AvailableWorkerCount(thread_pool) == 1) {
+              for (uint64_t batch = 0; batch < batch_count; ++batch) {
+                ExecuteReductionBatch<Source, Accumulator>(
+                    *programs, source_data == nullptr ? nullptr : source_data + batch * source_size,
+                    result_data == nullptr ? nullptr : result_data + batch * output_size, output_size,
+                    [&](std::size_t record, auto apply) { bind(record, batch, apply); });
+              }
+              return CompletedFuture();
             }
-            return CompletedFuture();
+            if (prepared->outputs_disjoint) {
+              return ExecuteDisjointReduction<Source, Accumulator>(
+                  thread_pool, std::move(programs), prepared->disjoint_work,
+                  source_data, result_data, source_size, output_size, batch_count, std::move(bind));
+            }
+            return ExecuteReduction<Source, Accumulator>(
+                thread_pool, prepared->records, source_data, result_data,
+                source_size, output_size, batch_count, std::move(bind), std::move(programs));
           } catch (const std::exception& exception) {
             return CompletedFuture(ffi::Error::Internal(std::string("tensor0-native: ") + exception.what()));
           } catch (...) {
@@ -157,7 +168,7 @@ ffi::Future Accumulation(
     ffi::Span<const int64_t>, ffi::Span<const int64_t> coefficient_records,
     const PreparedState* prepared, ffi::AnyBuffer source,
     ffi::RemainingArgs coefficients, ffi::ResultBufferR2<Dtype> result,
-    ffi::ThreadPool thread_pool) {
+    ffi::ThreadPool thread_pool, int64_t = 0) {
   return Reduce<Dtype>(coefficient_records, prepared, source, coefficients, result, thread_pool, true);
 }
 
@@ -184,7 +195,7 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL( \
         .Attr<ffi::Span<const int64_t>>("coefficient_records") \
         .Ctx<ffi::State<tensor0::stride::PreparedState>>() \
         .Arg<ffi::AnyBuffer>().RemainingArgs().Ret<ffi::BufferR2<ffi::Dtype>>() \
-        .Ctx<ffi::ThreadPool>()); \
+        .Ctx<ffi::ThreadPool>().Attr<int64_t>("outputs_disjoint")); \
 extern "C" void* Tensor0StrideAccumulation##Suffix##V1Handler() { \
   return reinterpret_cast<void*>(&Tensor0StrideAccumulation##Suffix##V1); \
 }

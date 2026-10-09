@@ -9,8 +9,22 @@ namespace tensor0::stride {
 std::atomic<uint64_t> prepared_created_count{0};
 std::atomic<uint64_t> prepared_destroyed_count{0};
 
-PreparedState::PreparedState(descriptor::DecodedLayout value)
-    : records(std::move(value.records)), source_size(value.source_size), output_size(value.output_size) {
+namespace {
+uint64_t DisjointWork(const std::vector<layout::Record>& records, bool outputs_disjoint) {
+  if (!outputs_disjoint) return 0;
+  uint64_t work = 0;
+  for (const auto& record : records) {
+    if (!layout::CheckedAdd(work, layout::ElementCount(record), &work)) {
+      throw std::invalid_argument("disjoint accumulation work size overflows");
+    }
+  }
+  return work;
+}
+}
+
+PreparedState::PreparedState(descriptor::DecodedLayout value, bool outputs_disjoint)
+    : records(std::move(value.records)), source_size(value.source_size), output_size(value.output_size),
+      outputs_disjoint(outputs_disjoint), disjoint_work(DisjointWork(records, outputs_disjoint)) {
   prepared_created_count.fetch_add(1, std::memory_order_relaxed);
 }
 
@@ -61,11 +75,14 @@ ffi::ErrorOr<std::unique_ptr<PreparedState>> InstantiateDot(
 }
 
 ffi::ErrorOr<std::unique_ptr<PreparedState>> InstantiateAccumulation(
-    ffi::Span<const int64_t> words, ffi::Span<const int64_t>) {
+    ffi::Span<const int64_t> words, ffi::Span<const int64_t>, int64_t outputs_disjoint) {
   std::unique_ptr<PreparedState> state;
   const auto error = ContainErrors([&] {
+    if (outputs_disjoint != 0 && outputs_disjoint != 1) {
+      throw std::invalid_argument("outputs_disjoint must be zero or one");
+    }
     auto layout = descriptor::PrepareAccumulationLayout(words.begin(), words.size());
-    state = std::make_unique<PreparedState>(std::move(layout));
+    state = std::make_unique<PreparedState>(std::move(layout), outputs_disjoint != 0);
   });
   if (error.failure()) return ffi::Unexpected(error);
   return state;
@@ -155,7 +172,8 @@ extern "C" void* Tensor0StrideReductionInstantiateV1Handler() {
 XLA_FFI_DEFINE_HANDLER_SYMBOL(
     Tensor0StrideAccumulationInstantiateV1, tensor0::stride::InstantiateAccumulation,
     ffi::Ffi::BindInstantiate().Attr<ffi::Span<const int64_t>>("layout")
-        .Attr<ffi::Span<const int64_t>>("coefficient_records"));
+        .Attr<ffi::Span<const int64_t>>("coefficient_records")
+        .Attr<int64_t>("outputs_disjoint"));
 
 extern "C" void* Tensor0StrideAccumulationInstantiateV1Handler() {
   return reinterpret_cast<void*>(&Tensor0StrideAccumulationInstantiateV1);

@@ -42,6 +42,8 @@ def _strided_affine_transform(
                         or sorted(permutation) != list(range(len(permutation)))):
         raise ValueError("affine transform permutation must contain each source axis once")
     records = []
+    destination_indices = set()
+    outputs_disjoint = True
     coefficients = []
     coefficient_records = []
     for record_index, (source_index, destination_index, coefficient) in enumerate(entries):
@@ -51,6 +53,11 @@ def _strided_affine_transform(
             raise ValueError("affine transform subblock index is out of bounds")
         source_subblock = source_subblocks[source_index]
         destination_subblock = destination_subblocks[destination_index]
+        # Destination subblocks partition the producer's layout. Repeated
+        # selections remain legal weighted sums, but cannot run independently.
+        if destination_index in destination_indices:
+            outputs_disjoint = False
+        destination_indices.add(destination_index)
         logical_shape = tuple(source_subblock.sizes)
         source_strides = tuple(source_subblock.strides)
         if permutation:
@@ -75,7 +82,8 @@ def _strided_affine_transform(
     if not coefficients:
         return copy_p.bind(source, **parameters)
     return accumulation_p.bind(
-        source, *coefficients, coefficient_records=tuple(coefficient_records), **parameters,
+        source, *coefficients, coefficient_records=tuple(coefficient_records),
+        outputs_disjoint=outputs_disjoint, **parameters,
     )
 
 

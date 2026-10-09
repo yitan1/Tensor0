@@ -136,6 +136,25 @@ def _run_mapped_coefficients_worker(operation, mode):
     assert len(jax.devices()) == 2
 
 
+    if operation == "accumulation":
+        from tensor0._stride._jax import accumulation_p
+        from tensor0._stride._layout import AffineRecord
+
+        records = tuple(AffineRecord((4,), (1,), 0, (2,), offset) for offset in (0, 1))
+        run = lambda data, alpha: accumulation_p.bind(data, alpha, records=records,
+            coefficient_records=(0,), output_size=8, dtype=data.dtype, outputs_disjoint=True)
+        oracle = lambda data, alpha: jnp.stack((data * alpha[..., None], data), axis=-1).reshape(4, 8)
+        storage = NamedSharding(mesh, P("device", None))
+        batch = NamedSharding(mesh, P("device"))
+        host = (jnp.arange(16, dtype=jnp.float32).reshape(4, 4),
+                jnp.asarray([0., 1., -1.25, 2.], dtype=jnp.float32))
+        arguments = tuple(jax.device_put(value, sharding)
+                          for value, sharding in zip(host, (storage, batch), strict=True))
+        compiled = jax.jit(run, in_shardings=(storage, batch),
+                           out_shardings=storage).lower(*arguments).compile()
+        _verify_sharded_result(compiled, arguments, oracle(*host), storage)
+        assert "outputs_disjoint = 1" in compiled.as_text()
+
     # Every mapped/shared axis pattern runs in both mesh modes and operations.
     # Both numeric kinds have local gradients and gradients needing all-reduce.
     cases = (

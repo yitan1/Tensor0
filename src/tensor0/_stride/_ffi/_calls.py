@@ -155,24 +155,29 @@ def execute_reduction(
 def execute_accumulation(
     source: Array, coefficients: tuple[Array, ...] = (), *,
     coefficient_records: tuple[int, ...] = (), layout: np.ndarray,
-    output_size: int, dtype=None, platform="cpu",
+    output_size: int, dtype=None, platform="cpu", outputs_disjoint=False,
 ) -> Array:
     """Fresh address sum with independent output owners and zero-stride fibers.
 
     Coefficients and writeback follow execute_reduction. Native clears the whole
     output once and sums records in order. Cross-record overlap is legal; within
     each record, nonzero destination-stride map axes must pass the injectivity
-    check. This raw FFI call has no AD rule and no old-backend fallback.
+    check. Internal producers may set outputs_disjoint only for injective maps
+    with mutually disjoint destination address sets. It affects CPU scheduling,
+    not arithmetic; CUDA deliberately retains its generic implementation.
+    This raw FFI call has no AD rule and no old-backend fallback.
     """
     return _execute_reduction(
         "accumulation", source, coefficients, coefficient_records=coefficient_records,
         layout=layout, output_size=output_size, dtype=dtype, platform=platform,
+        outputs_disjoint=outputs_disjoint,
     )
 
 
 def _execute_reduction(
     operation: str, source: Array, coefficients: tuple[Array, ...], *,
     coefficient_records: tuple[int, ...], layout: np.ndarray, output_size: int, dtype, platform="cpu",
+    outputs_disjoint=False,
 ) -> Array:
     if not isinstance(source, (Array, jax.core.Tracer)):
         raise TypeError("reduction source must be a JAX Array or Tracer")
@@ -189,6 +194,7 @@ def _execute_reduction(
         raise ValueError("coefficient record indices must fit nonnegative int64")
     result_dtype = source.dtype if dtype is None else jax.dtypes.canonicalize_dtype(dtype)
     if platform == "cuda":
+        # Producer scheduling metadata is CPU-only; CUDA keeps generic sums.
         primitive = _cuda_accumulation_p if operation == "accumulation" else _cuda_reduction_p
         # Preserve every unsigned protocol bit, including with JAX x64 disabled.
         if operation == "reduction":
@@ -207,10 +213,12 @@ def _execute_reduction(
         jax.ShapeDtypeStruct((prod(batch_shape), output_size), result_dtype),
         vmap_method="sequential",
     )
+    attributes = {"outputs_disjoint": np.int64(outputs_disjoint)} if operation == "accumulation" else {}
     result = execute(
         source.reshape((prod(batch_shape), source.shape[-1])),
         *(value if value.ndim == 0 else value.reshape((value.size,)) for value in coefficients),
         layout=layout, coefficient_records=np.asarray(coefficient_records, dtype=np.int64),
+        **attributes,
     )
     return result.reshape((*batch_shape, output_size))
 

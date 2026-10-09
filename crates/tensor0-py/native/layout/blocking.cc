@@ -289,21 +289,29 @@ std::vector<std::vector<GeneratedRecordProgram>> BuildReductionOutputTasks(
     }
     return left.output_axes < right.output_axes;
   });
-  std::vector<std::vector<GeneratedRecordProgram>> tasks;
   std::vector<std::pair<int64_t, int64_t>> intervals;
   for (std::size_t index = 0; index < candidates.size(); ++index) {
     const auto& candidate = candidates[index];
     if (index == 0 ||
         candidate.program->record.destination_offset != candidates[index - 1].program->record.destination_offset ||
         candidate.output_axes != candidates[index - 1].output_axes) {
-      tasks.emplace_back();
       intervals.emplace_back(candidate.minimum, candidate.maximum);
     }
-    tasks.back().push_back(*candidate.program);
   }
   std::sort(intervals.begin(), intervals.end());
   for (std::size_t index = 1; index < intervals.size(); ++index) {
     if (intervals[index - 1].second >= intervals[index].first) return {};
+  }
+  // Reject overlapping groups before copying their programs into tasks.
+  std::vector<std::vector<GeneratedRecordProgram>> tasks;
+  for (std::size_t index = 0; index < candidates.size(); ++index) {
+    const auto& candidate = candidates[index];
+    if (index == 0 ||
+        candidate.program->record.destination_offset != candidates[index - 1].program->record.destination_offset ||
+        candidate.output_axes != candidates[index - 1].output_axes) {
+      tasks.emplace_back();
+    }
+    tasks.back().push_back(*candidate.program);
   }
   while (tasks.size() < desired_tasks) {
     std::size_t split_task = tasks.size();

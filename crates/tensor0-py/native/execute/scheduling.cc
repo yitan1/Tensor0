@@ -232,7 +232,8 @@ ReductionPlan PrepareReductionPlan(
     ffi::ThreadPool thread_pool, const std::vector<layout::Record>& records,
     ReductionKind kind, bool parallel_accumulator, uint64_t source_size,
     uint64_t right_size, uint64_t output_size, uint64_t batch_count,
-    uint64_t source_item_size, uint64_t right_item_size, uint64_t result_item_size) {
+    uint64_t source_item_size, uint64_t right_item_size, uint64_t result_item_size,
+    std::shared_ptr<const std::vector<layout::GeneratedRecordProgram>> shared_programs) {
   const bool dot = kind == ReductionKind::Dot;
   if (dot) {
     ValidateDotStorage(source_size, right_size, batch_count,
@@ -242,8 +243,11 @@ ReductionPlan PrepareReductionPlan(
                              source_item_size, result_item_size);
   }
   ReductionPlan plan;
-  plan.programs = layout::PrepareGeneratedRecords(
-      records, source_item_size, dot ? right_item_size : result_item_size, false);
+  plan.shared_programs = std::move(shared_programs);
+  if (!plan.shared_programs) {
+    plan.programs = layout::PrepareGeneratedRecords(
+        records, source_item_size, dot ? right_item_size : result_item_size, false);
+  }
   plan.work = dot ? std::max({source_size, right_size, UINT64_C(1)})
                   : output_size == 0 ? 0 : std::max(source_size, output_size);
   if (batch_count != 1 || output_size == 0 || (dot && !parallel_accumulator)) return plan;
@@ -253,7 +257,7 @@ ReductionPlan PrepareReductionPlan(
   bool single_destination = true;
   if (parallel_accumulator) {
     if (!dot) {
-      for (const auto& program : plan.programs) {
+      for (const auto& program : plan.Programs()) {
         const auto& record = program.record;
         if (destination == -1) destination = record.destination_offset;
         single_destination &= destination == record.destination_offset;
@@ -263,6 +267,11 @@ ReductionPlan PrepareReductionPlan(
       }
     }
     if (single_destination && destination != -1) {
+      // Only partials rewrite and split the base programs; never mutate the cache.
+      if (plan.shared_programs) {
+        plan.programs = *plan.shared_programs;
+        plan.shared_programs.reset();
+      }
       if (!dot) {
         for (auto& program : plan.programs) program.record.destination_offset = 0;
       }
@@ -278,7 +287,7 @@ ReductionPlan PrepareReductionPlan(
     }
   }
   if (!dot) {
-    plan.tasks = layout::BuildReductionOutputTasks(plan.programs, plan.workers);
+    plan.tasks = layout::BuildReductionOutputTasks(plan.Programs(), plan.workers);
     if (plan.tasks.size() > 1) plan.mode = ReductionMode::Outputs;
   }
   return plan;
@@ -330,12 +339,14 @@ ffi::Future ExecuteOwnedReductionProgram(
         });
   }
   return ExecuteBatchTasks(thread_pool, batch_count, plan.work,
-      [records = std::move(plan.programs), program = std::move(program), result, output_size]
+      [records = std::move(plan.programs), shared_records = std::move(plan.shared_programs),
+       program = std::move(program), result, output_size]
       (uint64_t begin, uint64_t count) {
+        const auto& programs = shared_records ? *shared_records : records;
         for (uint64_t batch = begin; batch < begin + count; ++batch) {
           auto* target = result + batch * output_size;
           program.entry->initialize(program.state.get(), target, output_size);
-          for (const auto& record : records) {
+          for (const auto& record : programs) {
             program.entry->execute(program.state.get(), record, batch, target);
           }
         }

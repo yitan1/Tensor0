@@ -56,7 +56,7 @@ def test_accumulation_rejects_unproven_output_owners(strides, factor, batches):
 
 
 def raw_call(source, layout, *, coefficients=(), indices=(), shape=(1, 5), dtype=jnp.float32, aliases=None):
-    return jax.ffi.ffi_call(operation_target('accumulation', jnp.dtype(dtype)), jax.ShapeDtypeStruct(shape, dtype), vmap_method='sequential', input_output_aliases=aliases)(source, *coefficients, layout=layout, coefficient_records=np.asarray(indices, dtype=np.int64))
+    return jax.ffi.ffi_call(operation_target('accumulation', jnp.dtype(dtype)), jax.ShapeDtypeStruct(shape, dtype), vmap_method='sequential', input_output_aliases=aliases)(source, *coefficients, layout=layout, coefficient_records=np.asarray(indices, dtype=np.int64), outputs_disjoint=np.int64(0))
 
 
 @pytest.mark.usefixtures("enable_x64")

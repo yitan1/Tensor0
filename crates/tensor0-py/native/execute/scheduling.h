@@ -118,6 +118,10 @@ struct ReductionPlan {
 
   ReductionMode mode = ReductionMode::Batches;
   std::vector<layout::GeneratedRecordProgram> programs;
+  std::shared_ptr<const std::vector<layout::GeneratedRecordProgram>> shared_programs;
+  const std::vector<layout::GeneratedRecordProgram>& Programs() const {
+    return shared_programs ? *shared_programs : programs;
+  }
   std::vector<std::vector<layout::GeneratedRecordProgram>> tasks;
   uint64_t workers = 1;
   uint64_t output_index = 0;
@@ -128,7 +132,8 @@ ReductionPlan PrepareReductionPlan(
     ffi::ThreadPool thread_pool, const std::vector<layout::Record>& records,
     ReductionKind kind, bool parallel_accumulator, uint64_t source_size,
     uint64_t right_size, uint64_t output_size, uint64_t batch_count,
-    uint64_t source_item_size, uint64_t right_item_size, uint64_t result_item_size);
+    uint64_t source_item_size, uint64_t right_item_size, uint64_t result_item_size,
+    std::shared_ptr<const std::vector<layout::GeneratedRecordProgram>> shared_programs = {});
 
 }
 

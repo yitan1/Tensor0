@@ -22,7 +22,7 @@ extern std::atomic<uint64_t> prepared_destroyed_count;
 
 struct PreparedState {
   static ffi::TypeId id;
-  explicit PreparedState(descriptor::DecodedLayout value);
+  explicit PreparedState(descriptor::DecodedLayout value, bool outputs_disjoint = false);
   PreparedState(const PreparedState&) = delete;
   PreparedState& operator=(const PreparedState&) = delete;
   ~PreparedState();
@@ -30,6 +30,8 @@ struct PreparedState {
   const std::vector<layout::Record> records;
   const uint64_t source_size;
   const uint64_t output_size;
+  const bool outputs_disjoint;
+  const uint64_t disjoint_work;
 
   std::shared_ptr<const std::vector<layout::GeneratedRecordProgram>> AccumulationPrograms(
       uint64_t source_item_size, uint64_t result_item_size) const;
@@ -51,7 +53,7 @@ ffi::ErrorOr<std::unique_ptr<PreparedState>> InstantiateDot(
     ffi::Span<const int64_t> words, int64_t);
 
 ffi::ErrorOr<std::unique_ptr<PreparedState>> InstantiateAccumulation(
-    ffi::Span<const int64_t> words, ffi::Span<const int64_t>);
+    ffi::Span<const int64_t> words, ffi::Span<const int64_t>, int64_t outputs_disjoint = 0);
 
 void ValidatePreparedDimensions(const PreparedState& prepared, uint64_t source_size, uint64_t output_size);
 
