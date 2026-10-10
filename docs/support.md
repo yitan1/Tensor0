@@ -9,8 +9,8 @@ performance and exhaustive coverage are not promised.
 | Area | Policy |
 | --- | --- |
 | Numerical runtime | Linux CPU with JAX **0.10.1** and JAXLIB **0.10.1** |
-| Python | **3.11** numerical baseline; **CPython 3.11–3.14** candidate wheel target, pending matrix verification |
-| Candidate wheels | **0.1.0**, Linux **x86_64 CPU**; no published wheels or PyPI release announced |
+| Python | **CPython 3.11–3.14** tested CPU wheel matrix; **3.11** numerical baseline |
+| Published wheels | [**0.1.0** on PyPI](https://pypi.org/project/tensor0/0.1.0/), released **2026-10-10**; Linux **x86_64 CPU**, **glibc >=2.28**; no Rust/C++ compiler needed |
 | Native source build | Rust **>=1.87**, C++20 compiler; see [Installation](installation.md) |
 | CUDA | Experimental opt-in build with a bounded [operation/dtype/AD matrix](cuda.md); not full API support |
 | Other platforms/backends or JAX versions | Not supported numerical execution targets |

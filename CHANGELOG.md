@@ -6,10 +6,10 @@ notes. See [Support and compatibility](docs/support.md).
 
 ## Unreleased
 
-## 0.1.0 — Release candidate (not published)
+## 0.1.0 — 2026-10-10
 
-This entry summarizes the initial public feature set, not a published release
-or a dated release announcement.
+Initial public release, available on [PyPI](https://pypi.org/project/tensor0/0.1.0/)
+and as [GitHub Release v0.1.0](https://github.com/yitan1/Tensor0/releases/tag/v0.1.0).
 
 ### Features
 
@@ -28,9 +28,10 @@ or a dated release announcement.
 ### Packaging and compatibility
 
 - Set Python, Rust workspace and citation versions to **0.1.0**.
-- Target Linux x86_64 CPU wheels for **CPython 3.11–3.14**, pending successful
-  candidate matrix verification. Source installation remains the documented
-  route; no available wheels or PyPI publication are announced.
+- Publish tested Linux x86_64 CPU wheels for **CPython 3.11–3.14**,
+  **glibc >=2.28** (manylinux_2_28). Wheel installation requires no Rust/C++
+  compiler. All five PyPI distribution files (four wheels and one sdist) have
+  hashes matching the accepted candidate.
 - Pin JAX/JAXLIB to **0.10.1**; source builds require Rust **>=1.87** and C++20.
 - Provide CPU CI, typing checks, sdist-to-wheel inspection and isolated installed
   checks, with a manually approved, exact-artifact publication policy.

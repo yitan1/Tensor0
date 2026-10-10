@@ -1,28 +1,41 @@
 # Installation
 
-## Current distribution
+## Install from PyPI
 
-**0.1.0 is a release candidate, not a published release.** Install from a source
-checkout on Linux. The candidate wheel target is Linux x86_64 CPU, CPython
-**3.11–3.14**, pending successful matrix verification. These instructions do not
-assume a PyPI release or downloadable prebuilt wheels. Documentation on `main`
-describes that checkout, not necessarily an older installed artifact; record the
-commit you build and consult its documentation.
+**[Tensor0 0.1.0](https://pypi.org/project/tensor0/0.1.0/) was published on
+2026-10-10.** The tested wheel matrix covers **CPython 3.11–3.14**, **Linux
+x86_64 CPU**, and **glibc >=2.28** (manylinux_2_28).
 
-## Prerequisites
+Use a virtual environment:
 
-- Linux CPU is the supported numerical execution target.
-- Python **3.11** is the numerical baseline; **3.11–3.14** is the candidate
-  wheel target pending matrix verification. Package metadata permits Python
-  >=3.11, but that range alone does not guarantee builds or numerical
-  compatibility on every version.
+```bash
+python3.11 -m venv .venv
+source .venv/bin/activate
+python -m pip install tensor0==0.1.0
+python -m pip check
+```
+
+Installing these prebuilt wheels requires **no Rust or C++ compiler** and no CUDA
+toolkit. JAX and JAXLIB **0.10.1** are installed through Tensor0's pinned
+dependencies. Native handlers use matching vendored XLA FFI headers and reject
+mismatched runtime versions. Do not independently upgrade JAX/JAXLIB.
+
+Python >=3.11 package metadata does not establish support for future interpreters
+or other platforms. Documentation on `main` describes the current checkout;
+consult the matching release documentation when using an older artifact.
+
+## Source build prerequisites
+
+These tools are needed only when building from source, not when installing a
+supported wheel:
+
 - Rust/Cargo **1.87 or newer**, and a linker and standard system build tools
   (including `ar`).
 - A **C++20-capable compiler** and its standard library. The build defaults to
   `/usr/bin/c++`; set `CXX` to select another compiler. `CXXFLAGS` is not used.
-- JAX and JAXLIB **0.10.1**, installed through Tensor0's pinned dependencies.
-  Native handlers use matching vendored XLA FFI headers and reject mismatched
-  runtime versions. Do not independently upgrade JAX/JAXLIB.
+- A supported Python interpreter and access to the pinned Python dependencies
+  and Cargo crates, or suitable local caches. Linux CPU is the supported
+  numerical execution target.
 
 Native C++ template compilation is memory-intensive: heavy units can each use
 several GiB. Cargo's default parallelism follows CPU count, not free memory or

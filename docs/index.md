@@ -5,16 +5,17 @@ metadata and JAX-backed tensor storage.
 
 Use this documentation for the current checkout. The public API is still
 evolving, and Tensor0 is not yet a production-ready tensor-network framework.
-Source installation is the current distribution route; these docs do not assume
-published PyPI packages or prebuilt wheels.
+[Tensor0 0.1.0 is available on PyPI](https://pypi.org/project/tensor0/0.1.0/),
+published on 2026-10-10. Install with `pip install tensor0==0.1.0` in a virtual
+environment; supported prebuilt wheels require no Rust or C++ compiler.
 
 ## Runtime Compatibility
 
 The current numerical execution baseline supports Linux CPU with JAX and
-JAXLIB 0.10.1, with Python 3.11 as the baseline interpreter. Other Python
-versions are CI-tested only where explicitly recorded, not universally
-supported by virtue of the Python >=3.11 metadata. The native stride handler is compiled against that exact XLA FFI
-header version and rejects mismatched runtimes. Other platforms and versions
+JAXLIB 0.10.1. The tested 0.1.0 wheel matrix covers CPython 3.11–3.14 on
+Linux x86_64 with glibc >=2.28; Python 3.11 remains the baseline interpreter.
+The Python >=3.11 metadata does not imply support for future interpreters.
+The native stride handler is compiled against that exact XLA FFI header version and rejects mismatched runtimes. Other platforms and versions
 are not currently supported execution targets, and missing native routes are
 reported explicitly rather than hidden by an element-address fallback.
 Native stride operations lower through JAX as `stablehlo.custom_call`
@@ -25,7 +26,7 @@ paths, not the full TensorMap API or full reverse AD.
 
 ## Start Here
 
-- [Installation](installation.md): source builds, prerequisites and memory limits.
+- [Installation](installation.md): PyPI wheels, source builds and prerequisites.
 - [Support and compatibility](support.md): runtime scope and pre-1.0 API policy.
 - [Usage Guide](usage.md): current public API examples and boundaries.
 - [Contractions](contractions.md): primitive and tensor-network contraction

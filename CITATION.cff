@@ -3,6 +3,7 @@ message: "If you use Tensor0 in your research, please cite this software and rec
 title: Tensor0
 type: software
 version: 0.1.0
+date-released: 2026-10-10
 authors:
   - name: Tensor0 contributors
 repository-code: "https://github.com/yitan1/Tensor0"

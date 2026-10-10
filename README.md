@@ -15,29 +15,24 @@ algorithm framework.
 [Installation](docs/installation.md) · [Usage](docs/usage.md) ·
 [API](docs/api.md) · [Support policy](docs/support.md)
 
-## Install from source
+## Installation
 
-**0.1.0 is a release candidate, not a published release.** Source installation
-remains the documented distribution route. The candidate wheel target is
-**Linux x86_64 CPU, CPython 3.11–3.14**, pending successful matrix verification;
-this is not a claim of available wheels or PyPI publication.
-
-The numerical baseline is **Linux CPU, Python 3.11, JAX and JAXLIB 0.10.1**.
-Source builds require **Rust 1.87 or newer** and a **C++20-capable compiler**.
-The native XLA FFI checks the JAX/JAXLIB versions exactly. Only recorded passing
-candidate runs establish interpreter coverage.
+**[Tensor0 0.1.0](https://pypi.org/project/tensor0/0.1.0/) was published on
+2026-10-10.** Tested CPU wheels are available for **CPython 3.11–3.14 on
+Linux x86_64 with glibc >=2.28**. Install in a virtual environment:
 
 ```bash
-git clone https://github.com/yitan1/Tensor0.git
-cd Tensor0
 python3.11 -m venv .venv
 source .venv/bin/activate
-CARGO_BUILD_JOBS=1 python -m pip install .
+python -m pip install tensor0==0.1.0
 ```
 
-Native compilation can use several GiB per heavy C++ unit. Serial compilation
-limits concurrency, not peak memory; see [build prerequisites and memory
-limits](docs/installation.md). CPU builds do not require CUDA.
+These wheels require **no Rust or C++ compiler**. JAX and JAXLIB remain pinned to
+**0.10.1**; the native XLA FFI checks these versions exactly. CPU installation
+does not require CUDA.
+
+For source builds, **Rust >=1.87** and a **C++20-capable compiler** are required;
+see [source installation and memory limits](docs/installation.md#source-install).
 [Optional CUDA support](docs/cuda.md) is experimental and restricted to selected
 operations, dtypes and AD paths—not the full TensorMap API or full reverse AD.
 
@@ -64,7 +59,7 @@ symmetry-aware contractions, and JAX `jit`/`grad` integration. See the
 ## Contributing and benchmarks
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development and verification links,
-[CHANGELOG.md](CHANGELOG.md) for candidate changes, and the
+[CHANGELOG.md](CHANGELOG.md) for release changes, and the
 [release checklist](docs/releasing.md) for installed-artifact acceptance.
 Reproducible [benchmark suites](benchmarks/README.md) and their reports document
 measured configurations and limitations; they are not performance guarantees.

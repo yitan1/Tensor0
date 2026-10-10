@@ -1,12 +1,18 @@
 # Release and artifact acceptance
 
-This is a maintainer checklist, not a statement that packages have been published
-or that a release has passed. Python, Rust workspace and citation metadata use
-**0.1.0** for the release candidate; no publication or release date is announced.
-"Candidate" describes acceptance status: the distribution version is `0.1.0`,
-not a PEP 440 prerelease such as `0.1.0rc1`.
-Do not tag or publish merely to exercise packaging. Source installation remains
-the documented user route.
+## Current release
+
+**0.1.0 was published on 2026-10-10**:
+[PyPI](https://pypi.org/project/tensor0/0.1.0/) ·
+[GitHub Release v0.1.0](https://github.com/yitan1/Tensor0/releases/tag/v0.1.0).
+All five published distribution files (four wheels and one sdist) have hashes
+matching the accepted candidate. The tested CPU wheel matrix is CPython
+**3.11–3.14**, Linux **x86_64**, manylinux_2_28 (**glibc >=2.28**).
+The existing `v0.1.0` tag is immutable; do not move or recreate it.
+
+The following checklist is for **future releases**, not a historical audit of
+0.1.0. Each release needs its own acceptance evidence and maintainer approval.
+Do not tag or publish merely to exercise packaging.
 
 ## Candidate preparation
 
@@ -16,7 +22,7 @@ the documented user route.
   a release number from `Unreleased`.
 - [ ] Review public API changes, migration notes and known limitations in
   [CHANGELOG.md](https://github.com/yitan1/Tensor0/blob/main/CHANGELOG.md).
-  Keep the 0.1.0 entry marked as a candidate until publication is confirmed.
+  Keep the new release entry marked as a candidate until publication is confirmed.
 - [ ] Verify dependency pins and vendored XLA FFI headers agree with JAX/JAXLIB
   0.10.1, and check licenses/notices and package metadata.
 - [ ] Run the [development verification](development.md#verification) and strict
@@ -27,9 +33,9 @@ the documented user route.
 ## Build and inspect distributions
 
 The [artifact workflow](https://github.com/yitan1/Tensor0/blob/main/.github/workflows/artifacts.yml)
-is an artifact-only validation route, not PyPI publishing. The 0.1.0 candidate
-target is Linux x86_64 CPU, CPython **3.11–3.14**, manylinux_2_28 (glibc >=2.28),
-pending successful matrix verification. Wheels must be built from the extracted
+is an artifact-only validation route, not PyPI publishing. The current wheel
+target is Linux x86_64 CPU, CPython **3.11–3.14**, manylinux_2_28 (glibc >=2.28).
+Verify this matrix anew for each release. Wheels must be built from the extracted
 sdist, inspected and tested in isolated installed environments. Consult the
 actual workflow configuration, run logs and artifacts: a target matrix is not
 an assertion that hosted jobs have passed. Smoke checks do not replace the full
@@ -124,8 +130,9 @@ establish ownership.
 Create the GitHub `pypi` environment, restrict deployments to `main`, and
 configure a required reviewer for manual maintainer approval before upload. Referencing `environment: pypi` in workflow
 YAML does **not** configure reviewer protection or guarantee approval. Trusted
-Publishing uses OIDC rather than a stored PyPI API token. These are outstanding
-setup requirements, not claims of a configured publisher or an upload.
+Publishing uses OIDC rather than a stored PyPI API token. Verify these settings
+before each release; workflow YAML alone is not evidence that publisher or
+environment protections remain correctly configured.
 
 - [ ] Resolve failures and disclose untested configurations. Preserve candidate
   evidence and hashes; an artifact-building CI job is not automatically a full
@@ -136,8 +143,9 @@ setup requirements, not claims of a configured publisher or an upload.
 - [ ] Confirm successful same-commit **push** CI on `main`: Linux x86_64 CPU
   jobs for Python 3.11–3.14 and the blocking public-package Pyright job. Advisory
   test typing reports do not replace the blocking check.
-- [ ] Confirm the existing release tag (for example, `v0.1.0`) points at exactly
-  that candidate commit and matches both its Python and Rust source versions.
+- [ ] Confirm the new release tag points at exactly the candidate commit and
+  matches both its Python and Rust source versions.
+  Release tags are immutable; never move an existing tag to a new candidate.
 - [ ] Confirm maintainer approval, destination, version and artifact selection
   before any tag or upload. Never upload test artifacts under an intended release
   version without coordinating that release.
@@ -154,7 +162,7 @@ setup requirements, not claims of a configured publisher or an upload.
 ### Maintainer command examples
 
 **Examples only—not instructions to publish now.** After maintainer approval
-for candidate preparation and after the workflows are available on `main`:
+for a future candidate:
 
 ```bash
 gh workflow run artifacts.yml --repo yitan1/Tensor0 --ref main
@@ -166,14 +174,14 @@ same-commit CI. Only after explicit release approval, an existing matching tag,
 and confirmed PyPI publisher and required-reviewer environment configuration:
 
 ```bash
-# Replace the example run ID with the verified candidate run.
+# Replace the run ID and tag with the approved future release values.
 gh workflow run publish.yml --repo yitan1/Tensor0 --ref main \
-  -f candidate_run_id=123456789 -f release_tag=v0.1.0
+  -f candidate_run_id=123456789 -f release_tag=vX.Y.Z
 ```
 
 Dispatch does not replace the required review of the `pypi` deployment. Neither
-a tag nor a GitHub release automatically publishes. No configuration, tag,
-hosted verification or publication is claimed by these examples.
+a tag nor a GitHub release automatically publishes. These examples do not
+establish acceptance or publication of any future release.
 
 No signing, reproducible-byte builds, universal wheel portability or release
 automation guarantees are implied by this checklist.
