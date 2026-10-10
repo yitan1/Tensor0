@@ -32,5 +32,4 @@ commands and environment details in the pull request; do not claim unexecuted
 platforms or Python versions as verified. There is no required automatic version
 bump, tag or publication for a contribution.
 
-For bug reports, use the issue template with versions, device, dtype and a small
-reproducer. See the [reporting guidance](docs/support.md#reporting-problems).
+For bug reports, include versions, device, dtype and a small reproducer. See the [reporting guidance](docs/support.md#reporting-problems).
