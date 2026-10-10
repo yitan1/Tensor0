@@ -384,7 +384,7 @@ universal toolkit compatibility is implied by the optional build.
 
 CUDA remains experimental. The
 [CUDA build workflow](https://github.com/yitan1/Tensor0/blob/main/.github/workflows/cuda-build.yml)
-uses a free hosted Ubuntu CPU runner with `nvidia/cuda:12.9.1-devel-ubuntu22.04`,
+uses a free hosted Ubuntu CPU runner with `nvidia/cuda:12.9.1-devel-ubuntu24.04`,
 CPython 3.11 and `sm_80`. It builds a real release CUDA wheel from the sdist with
 `--compatibility linux`, then checks CUDA registration and installed CPU smoke
 behavior without a GPU. This is **not manylinux verification or GPU acceptance**.

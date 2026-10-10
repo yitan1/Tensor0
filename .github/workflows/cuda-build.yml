@@ -35,7 +35,8 @@ jobs:
   build:
     name: CUDA 12.9 / sm_80 / CPython 3.11 (compile and CPU smoke only)
     runs-on: ubuntu-24.04
-    container: nvidia/cuda:12.9.1-devel-ubuntu22.04
+    # Match the GCC 13 baseline used by CPU CI; GCC 11 rejects the JAX FFI headers.
+    container: nvidia/cuda:12.9.1-devel-ubuntu24.04
     timeout-minutes: 120
     defaults:
       run:
@@ -113,7 +114,7 @@ jobs:
               'python': sys.version,
               'rust': version('rustc', '--version'),
               'cxx': version(os.environ['CXX'], '--version'),
-              'build_image': 'nvidia/cuda:12.9.1-devel-ubuntu22.04',
+              'build_image': 'nvidia/cuda:12.9.1-devel-ubuntu24.04',
               'workflow_run_url': f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}",
               'gpu_execution': 'not tested',
           }
