@@ -379,3 +379,73 @@ Run against an isolated CUDA-enabled candidate, and run CPU stride regressions
 with CPU placement separately. Registration/build tests cover CPU-only and
 requested-but-unavailable configurations. No speedup, sanitizer validation or
 universal toolkit compatibility is implied by the optional build.
+
+### Manual installed-wheel acceptance
+
+CUDA remains experimental. The
+[CUDA build workflow](https://github.com/yitan1/Tensor0/blob/main/.github/workflows/cuda-build.yml)
+uses a free hosted Ubuntu CPU runner with `nvidia/cuda:12.9.1-devel-ubuntu22.04`,
+CPython 3.11 and `sm_80`. It builds a real release CUDA wheel from the sdist with
+`--compatibility linux`, then checks CUDA registration and installed CPU smoke
+behavior without a GPU. This is **not manylinux verification or GPU acceptance**.
+It runs on path-filtered pull requests and pushes to `main`, and manual dispatch;
+it has no publishing path. No paid GPU, self-hosted runner or cloud GPU runner is
+required: GPU acceptance is manual on an existing compatible machine.
+
+The candidate artifact is `tensor0-cuda-build-<sha>`. Its `build-info.json`
+records the source commit, wheel filename/SHA-256, CUDA architecture, toolchain
+versions and workflow run URL; `SHA256SUMS` binds the wheel bytes. A configured
+workflow is not evidence of a successful build or GPU execution.
+
+1. Before using a machine, check GPU, CPU and memory occupancy (for example,
+   `nvidia-smi`, `uptime`, `free -h` and process listings). Do not disturb other
+   workloads. Use an independent `runs/<timestamp>-cuda-acceptance/` directory
+   outside the checkout for artifacts, environment and results.
+2. Download the artifact from a trusted run and inspect its provenance and
+   `SHA256SUMS`. Use a separate **clean checkout of the exact
+   `build-info.json` source commit**. For a pull-request run this can be the PR
+   merge commit, not its head commit; do not substitute the latter.
+3. Create a fresh isolated CPython 3.11 venv. With permission, provision compatible
+   GPU JAX and pytest dependencies separately, retaining **jax==0.10.1 and
+   jaxlib==0.10.1**. Do not modify the current environment. Dependencies must
+   already be available before acceptance; the acceptance script does not
+   install, build, access the network or use SSH.
+4. Install the exact candidate by absolute local path, without rebuilding or
+   resolving dependencies, then invoke the script from the matching checkout.
+   Replace all placeholders below; the report directory must not already exist:
+
+   ```bash
+   /absolute/runs/<timestamp>-cuda-acceptance/venv/bin/python -m pip install \
+       --no-index --no-deps /absolute/runs/<timestamp>-cuda-acceptance/artifacts/candidate.whl
+   /absolute/runs/<timestamp>-cuda-acceptance/venv/bin/python -m pip check
+   /absolute/runs/<timestamp>-cuda-acceptance/venv/bin/python -I \
+       /absolute/matching-checkout/.github/scripts/cuda_acceptance.py \
+       --wheel /absolute/runs/<timestamp>-cuda-acceptance/artifacts/candidate.whl \
+       --build-info /absolute/runs/<timestamp>-cuda-acceptance/artifacts/build-info.json \
+       --output /absolute/runs/<timestamp>-cuda-acceptance/reports
+   ```
+
+The script checks wheel bytes and the installed `direct_url.json` hash, installed
+import origins, matching clean source commit, native/JAX versions and both CUDA
+and CPU backends. It runs GPU primitive/lifecycle, FFI boundary and bounded public
+TensorMap tests, retaining `report.json`, preflight diagnostics and per-suite
+logs/JUnit reports. Only the two CPU-only-extension skip reasons
+`requires a CPU-only extension` and `requires CPU-only extension` are allowed;
+all other skips fail acceptance. Retain these outputs with the artifact hashes
+and driver/device information. A passing result establishes only the tested
+candidate and bounded matrix, not general GPU support.
+
+### Optional source-native contracts
+
+Standalone native contracts are a complementary **source test, not an installed
+wheel test**. With an existing toolkit and compatible device, run from the
+matching checkout using a separately provisioned test environment:
+
+```bash
+NVCC=/usr/local/cuda/bin/nvcc CUDA_HOME=/usr/local/cuda TENSOR0_CUDA_ARCH=sm_80 \
+    /absolute/source-test-venv/bin/python -m pytest tests/stride/native/cuda -ra
+```
+
+Require no unexpected skips and retain the command, results, NVCC version,
+architecture, driver/device, source commit and candidate hashes. These contracts
+compile source executables and cannot replace actual-wheel GPU acceptance.

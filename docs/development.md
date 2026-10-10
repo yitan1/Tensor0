@@ -181,6 +181,16 @@ same-type Copy, Update, Accumulation, Dot and Reduction, not dtype
 conversion or complete reverse-mode differentiation. See [CUDA support](cuda.md)
 for the supported coefficient types and limited AD paths.
 
+The artifact-only `cuda-build.yml` workflow compiles a release CUDA wheel from
+its sdist on a free hosted CPU runner (CUDA 12.9.1 container, CPython 3.11,
+`sm_80`) and checks registration and CPU smoke behavior without a GPU. Its
+`--compatibility linux` wheel is not manylinux-verified and is not published.
+Path-filtered PR/`main` runs and manual dispatch do not provide GPU coverage.
+Use [manual installed-wheel acceptance](cuda.md#manual-installed-wheel-acceptance)
+on an existing GPU machine; no paid GPU or self-hosted/cloud GPU runner is part
+of this route. Source-native CUDA contracts are optional complementary checks,
+not wheel acceptance. CUDA remains experimental.
+
 ## Local Setup
 
 ```bash

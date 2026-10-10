@@ -1,0 +1,143 @@
+name: CUDA build checks (no GPU execution)
+
+on:
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'crates/**'
+      - 'tests/**'
+      - 'Cargo.*'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - '.github/scripts/**'
+      - '.github/workflows/cuda-build.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'crates/**'
+      - 'tests/**'
+      - 'Cargo.*'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - '.github/scripts/**'
+      - '.github/workflows/cuda-build.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cuda-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: CUDA 12.9 / sm_80 / CPython 3.11 (compile and CPU smoke only)
+    runs-on: ubuntu-24.04
+    container: nvidia/cuda:12.9.1-devel-ubuntu22.04
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: bash
+    env:
+      CARGO_BUILD_JOBS: '1'
+      TENSOR0_CUDA: '1'
+      TENSOR0_CUDA_ARCH: sm_80
+      CUDA_HOME: /usr/local/cuda
+      CXX: /usr/bin/g++
+      JAX_PLATFORMS: cpu
+    steps:
+      - name: Install container build tools (no NVIDIA driver)
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends ca-certificates curl git build-essential pkg-config
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v8.3.2
+        with:
+          python-version: '3.11'
+          enable-cache: true
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build and inspect source distribution
+        run: |
+          uvx --python 3.11 --from maturin==1.13.1 maturin sdist --out "$RUNNER_TEMP/cuda-dist"
+          uv run --no-project --python 3.11 python .github/scripts/check_artifacts.py \
+            "$RUNNER_TEMP"/cuda-dist/*.tar.gz --extract "$RUNNER_TEMP/cuda-source"
+          uv venv --python 3.11 "$RUNNER_TEMP/cuda-test"
+      - name: Compile and link CUDA wheel from sdist without a GPU
+        working-directory: ${{ runner.temp }}/cuda-source/source
+        run: |
+          uvx --python 3.11 --from maturin==1.13.1 maturin build \
+            --release --locked --compatibility linux \
+            --interpreter "$RUNNER_TEMP/cuda-test/bin/python" \
+            --out "$RUNNER_TEMP/cuda-dist" 2>&1 | tee "$RUNNER_TEMP/cuda-build.log"
+      - name: Inspect and install the wheel in isolation
+        run: |
+          uv run --no-project --python 3.11 python .github/scripts/check_artifacts.py "$RUNNER_TEMP"/cuda-dist/*.whl
+          uv pip install --python "$RUNNER_TEMP/cuda-test/bin/python" "$RUNNER_TEMP"/cuda-dist/*.whl
+          uv pip check --python "$RUNNER_TEMP/cuda-test/bin/python"
+      - name: Verify CUDA registration and CPU behavior without a GPU
+        working-directory: ${{ runner.temp }}
+        run: |
+          "$RUNNER_TEMP/cuda-test/bin/python" -I - <<'PY'
+          from tensor0 import _native
+          assert _native._stride_cuda_available(), 'Expected a CUDA-enabled wheel'
+          registration = _native._stride_cuda_registration()
+          for operation in ('copy', 'update', 'accumulation', 'dot', 'reduction'):
+              for dtype in ('f32', 'f64', 'c64', 'c128'):
+                  assert f'{operation}_{dtype}' in registration
+          PY
+          "$RUNNER_TEMP/cuda-test/bin/python" -I "$GITHUB_WORKSPACE/.github/scripts/wheel_smoke.py"
+      - name: Record candidate provenance for manual GPU acceptance
+        run: |
+          "$RUNNER_TEMP/cuda-test/bin/python" -I - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+          import sys
+
+          directory = Path(os.environ['RUNNER_TEMP']) / 'cuda-dist'
+          wheel, = directory.glob('*.whl')
+          def version(*args):
+              return subprocess.check_output(args, text=True).strip()
+          with wheel.open('rb') as stream:
+              digest = hashlib.file_digest(stream, 'sha256').hexdigest()
+          info = {
+              'source_commit': os.environ['GITHUB_SHA'],
+              'wheel': wheel.name,
+              'sha256': digest,
+              'cuda_arch': os.environ['TENSOR0_CUDA_ARCH'],
+              'cuda_toolkit': version('/usr/local/cuda/bin/nvcc', '--version'),
+              'python': sys.version,
+              'rust': version('rustc', '--version'),
+              'cxx': version(os.environ['CXX'], '--version'),
+              'build_image': 'nvidia/cuda:12.9.1-devel-ubuntu22.04',
+              'workflow_run_url': f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}",
+              'gpu_execution': 'not tested',
+          }
+          (directory / 'build-info.json').write_text(json.dumps(info, indent=2) + '\n')
+          (directory / 'SHA256SUMS').write_text(f"{info['sha256']}  {wheel.name}\n")
+          PY
+          {
+            echo '## CUDA compilation and CPU smoke only'
+            echo 'No GPU kernels were executed. GPU correctness has NOT been accepted.'
+            echo 'Experimental Linux wheel: CPython 3.11, CUDA 12.9, sm_80; not manylinux certified.'
+            echo 'Use build-info.json and the exact wheel for manual GPU acceptance.'
+            echo 'This artifact is not part of the CPU PyPI publishing workflow.'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tensor0-cuda-build-${{ github.sha }}
+          path: ${{ runner.temp }}/cuda-dist/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Preserve compiler diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tensor0-cuda-build-log-${{ github.sha }}
+          path: ${{ runner.temp }}/cuda-build.log
+          if-no-files-found: ignore
+          retention-days: 14

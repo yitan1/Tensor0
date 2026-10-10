@@ -106,10 +106,24 @@ python3.11 -m venv /tmp/tensor0-candidate
   3.14**, with recorded build and installed CPU results. Until the matrix passes,
   describe it as a target, not verified coverage. Package metadata or a pass on
   one interpreter is not evidence for another.
-- [ ] If a CUDA artifact is proposed, separately execute the bounded CUDA tests
-  on a compatible GPU and record toolkit/driver/architecture and skips. A CPU
-  pass does not establish CUDA support. Do not generalize beyond the documented
-  [CUDA matrix](cuda.md).
+- [ ] If an experimental CUDA artifact is proposed, require
+  [manual installed-wheel GPU acceptance](cuda.md#manual-installed-wheel-acceptance)
+  of the exact candidate bytes and matching clean source commit, plus recorded
+  CPU/no-GPU checks of that wheel. Retain build provenance, hashes, reports,
+  driver/device/architecture and skips. Source-native contracts supplement but
+  do not replace wheel tests. A CPU pass does not establish CUDA support; do not
+  generalize beyond the documented [CUDA matrix](cuda.md).
+
+The separate `cuda-build.yml` route produces `tensor0-cuda-build-<sha>` with
+`build-info.json` and `SHA256SUMS`; its free hosted CPU runner compiles CUDA and
+checks registration/CPU smoke, **not GPU execution**. Its CPython 3.11,
+CUDA 12.9.1, `sm_80` Linux wheel is not manylinux-verified. GPU acceptance is
+manual/offline with separately pre-provisioned dependencies, not an automatic
+CI gate. There is no paid GPU or self-hosted/cloud GPU runner requirement.
+The current `publish.yml` workflow remains **CPU-only** and does not consume
+these CUDA artifacts. Passing manual acceptance does not add a CUDA publishing
+path or authorize publication; any CUDA release proposal needs separate
+maintainer approval and must retain the experimental scope.
 
 ## Publish only after approval
 
