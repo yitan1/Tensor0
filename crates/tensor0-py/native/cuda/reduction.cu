@@ -86,7 +86,7 @@ ffi::ErrorOr<std::unique_ptr<ReductionPreparedState>> InstantiateReduction(
         std::move(parameters), coefficient_records.size(), packed.words.size(), capacity);
   });
   if (error.failure()) return ffi::Unexpected(error);
-  return state;
+  return std::move(state);
 }
 
 uint64_t CoefficientCount(ffi::AnyBuffer buffer, uint64_t batches) {

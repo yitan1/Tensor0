@@ -75,7 +75,7 @@ ffi::ErrorOr<std::unique_ptr<UpdatePreparedState>> InstantiateUpdate(
         std::move(packed.schedules), packed.words.size(), full_coverage);
   });
   if (error.failure()) return ffi::Unexpected(error);
-  return state;
+  return std::move(state);
 }
 
 uint64_t CoefficientCount(ffi::AnyBuffer buffer, uint64_t batches) {

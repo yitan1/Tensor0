@@ -67,7 +67,7 @@ ffi::ErrorOr<std::unique_ptr<CopyPreparedState>> InstantiateCopy(
         full_coverage);
   });
   if (error.failure()) return ffi::Unexpected(error);
-  return state;
+  return std::move(state);
 }
 
 template <ffi::DataType Dtype, int Bytes>

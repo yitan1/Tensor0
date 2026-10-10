@@ -67,7 +67,7 @@ ffi::ErrorOr<std::unique_ptr<DotPreparedState>> InstantiateDot(
         std::move(packed.schedules), capacity, packed.words.size(), conjugate != 0);
   });
   if (error.failure()) return ffi::Unexpected(error);
-  return state;
+  return std::move(state);
 }
 
 template <ffi::DataType Dtype, typename T>
