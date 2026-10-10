@@ -85,7 +85,7 @@ jobs:
           "$RUNNER_TEMP/wheel-test/bin/python" -I "$GITHUB_WORKSPACE/examples/contractions.py"
       - name: Record artifact provenance and publication handoff
         run: |
-          sha256sum dist/*.tar.gz dist/*.whl | tee dist/SHA256SUMS
+          (cd dist && sha256sum *.tar.gz *.whl) | tee dist/SHA256SUMS
           {
             echo '## Artifact-only handoff'
             echo "Source commit: $GITHUB_SHA"

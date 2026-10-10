@@ -399,7 +399,7 @@ def test_real_cargo_jobserver_and_noop(build):
                MOCK_REAL_COMPILER=compiler, MOCK_LOG=str(manifest.parent / "cargo-commands.jsonl"),
                MOCK_CONCURRENCY=str(state), MOCK_EXPECTED_JOBS="3", NUM_JOBS="3")
     env.pop("TENSOR0_CXX_OPT_LEVEL", None)
-    command = ["cargo", "build", "--offline", "-vv", "-j", "3",
+    command = ["cargo", "build", "--offline", "--color=never", "-vv", "-j", "3",
                "--manifest-path", str(manifest / "Cargo.toml")]
     result = subprocess.run(command, env=env, capture_output=True, text=True, timeout=90)
     assert result.returncode == 0, result.stderr
@@ -614,7 +614,7 @@ else:
     env = dict(os.environ, CXX=compiler, TENSOR0_CUDA="1", CUDA_HOME=str(toolkit), NVCC=str(nvcc),
                CARGO_TARGET_DIR=str(manifest / "target"))
     env.pop("TENSOR0_CXX_OPT_LEVEL", None)
-    command = ["cargo", "build", "--offline", "-vv", "-j", "2",
+    command = ["cargo", "build", "--offline", "--color=never", "-vv", "-j", "2",
                "--manifest-path", str(manifest / "Cargo.toml")]
     executable = manifest / "target/debug/runtime-test"
     replace_runtime(1)
