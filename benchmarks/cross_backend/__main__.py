@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 import shlex
@@ -14,6 +15,7 @@ from ._protocol import (
     BACKEND_NAMES,
     ProtocolError,
     load_profiles,
+    load_sampling_plan,
     load_workloads,
 )
 from ._report import render_markdown
@@ -63,6 +65,12 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--warmup", type=int, help="Override warmup count.")
     parser.add_argument("--repeat", type=int, help="Override samples per round.")
+    parser.add_argument(
+        "--sampling-plan",
+        type=Path,
+        help="JSON list of workload_id/repeat entries for all selected workloads; "
+        "overrides --repeat.",
+    )
     parser.add_argument("--rounds", type=int, help="Override paired round count.")
     parser.add_argument(
         "--threads",
@@ -137,6 +145,10 @@ def main() -> None:
         warmup = profile["warmup"] if args.warmup is None else args.warmup
         repeat = profile["repeat"] if args.repeat is None else args.repeat
         rounds = profile["rounds"] if args.rounds is None else args.rounds
+        sampling_plan = (
+            None if args.sampling_plan is None
+            else load_sampling_plan(args.sampling_plan, workload_ids)
+        )
         payload = run_comparison(
             profile=args.profile,
             workloads=[workloads[workload_id] for workload_id in workload_ids],
@@ -146,7 +158,13 @@ def main() -> None:
             repeat=repeat,
             rounds=rounds,
             threads=args.threads,
+            repeat_by_workload=sampling_plan,
         )
+        if args.sampling_plan is not None:
+            payload["config"]["sampling_plan"] = {
+                "path": str(args.sampling_plan),
+                "sha256": hashlib.sha256(args.sampling_plan.read_bytes()).hexdigest(),
+            }
     except ProtocolError as error:
         raise SystemExit(str(error)) from None
 

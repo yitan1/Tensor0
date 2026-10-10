@@ -24,6 +24,7 @@ from ._protocol import (
     ProtocolError,
     build_request,
     validate_backend_response,
+    validate_sampling_plan,
 )
 
 
@@ -60,6 +61,7 @@ def _backend_command(name: str) -> list[str]:
             raise FileNotFoundError("julia executable was not found")
         return [
             julia,
+            "--startup-file=no",
             f"--project={_TENSORKIT_ROOT}",
             str(_TENSORKIT_ROOT / "runner.jl"),
         ]
@@ -272,6 +274,7 @@ def run_comparison(
     repeat: int,
     rounds: int,
     threads: int = 1,
+    repeat_by_workload: dict[str, int] | None = None,
 ) -> dict[str, Any]:
     selected_workloads = tuple(workloads)
     selected_backends = tuple(backends)
@@ -292,6 +295,12 @@ def run_comparison(
         raise ProtocolError(
             "warmup, repeat, rounds, and threads are out of range"
         )
+
+    workload_ids = [w["id"] for w in selected_workloads]
+    if len(workload_ids) != len(set(workload_ids)):
+        raise ProtocolError("selected workloads contain duplicates")
+    if repeat_by_workload is not None:
+        repeat_by_workload = validate_sampling_plan(repeat_by_workload, workload_ids)
 
     run_id = uuid.uuid4().hex
     responses: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
@@ -315,6 +324,7 @@ def run_comparison(
             warmup=warmup,
             repeat=repeat,
             workloads=workload_order,
+            repeat_by_workload=repeat_by_workload,
         )
         for backend_name in backend_order:
             response, failure = _invoke_backend(
@@ -340,7 +350,9 @@ def run_comparison(
                     }
                 )
             for result in response["results"]:
-                responses[(backend_name, result["workload_id"])].append(result)
+                responses[(backend_name, result["workload_id"])].append(
+                    {**result, "round": round_index}
+                )
 
     records: list[dict[str, Any]] = []
     records_by_key: dict[tuple[str, str], dict[str, Any]] = {}
@@ -392,7 +404,18 @@ def run_comparison(
                     "completed_rounds": len(successful),
                     "expected_rounds": rounds,
                     "warmup": warmup,
-                    "repeat_per_round": repeat,
+                    "repeat_per_round": (
+                        repeat if repeat_by_workload is None
+                        else repeat_by_workload[workload["id"]]
+                    ),
+                    "round_statistics": [
+                        {
+                            "round": result["round"],
+                            "sample_count": len(result["samples_ms"]),
+                            **_statistics(result["samples_ms"]),
+                        }
+                        for result in successful
+                    ],
                     "samples_ms": samples,
                     **_statistics(samples),
                     "output": {
@@ -476,6 +499,25 @@ def run_comparison(
             contender = records_by_key[(backend_name, workload["id"])]
             if contender["status"] not in {"ok", "partial"}:
                 continue
+            baseline_rounds = {
+                r["round"]: r for r in baseline_record["round_statistics"]
+            }
+            contender_rounds = {
+                r["round"]: r for r in contender["round_statistics"]
+            }
+            paired_rounds = [
+                {
+                    "round": r,
+                    "baseline_median_ms": baseline_rounds[r]["median_ms"],
+                    "contender_median_ms": contender_rounds[r]["median_ms"],
+                    "contender_speedup": (
+                        baseline_rounds[r]["median_ms"]
+                        / contender_rounds[r]["median_ms"]
+                    ),
+                }
+                for r in sorted(baseline_rounds.keys() & contender_rounds.keys())
+            ]
+            ratios = [r["contender_speedup"] for r in paired_rounds]
             pairwise.append(
                 {
                     "workload_id": workload["id"],
@@ -488,6 +530,10 @@ def run_comparison(
                         / contender["median_ms"]
                     ),
                     "validation": contender["validation"]["status"],
+                    "paired_rounds": paired_rounds,
+                    "direction_inconsistent": (
+                        any(r < 1 for r in ratios) and any(r > 1 for r in ratios)
+                    ),
                 }
             )
 
@@ -505,6 +551,10 @@ def run_comparison(
             "repeat": repeat,
             "rounds": rounds,
             "threads": threads,
+            **(
+                {"repeat_by_workload": repeat_by_workload}
+                if repeat_by_workload is not None else {}
+            ),
         },
         "environment": _environment(threads),
         "backend_metadata": backend_metadata,

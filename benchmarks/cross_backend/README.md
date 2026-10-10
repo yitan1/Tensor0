@@ -178,12 +178,26 @@ Official comparisons use only `steady_state`:
 - raw samples, median, IQR, environment, versions, and workload hashes are
   retained.
 
-The orchestrator defaults to one CPU thread. `--threads N` gives both backends
-the same explicit thread budget: BLAS/OpenMP and Julia use `N`, while Tensor0's
-XLA CPU Eigen pool receives `N` intra-operation threads. Backend metadata and
-the result configuration record the effective settings. Runs with different
-thread counts are different measurement policies and must not be compared as
-if only the library implementation changed.
+The orchestrator defaults to a one-worker CPU budget. `--threads N` sets
+BLAS/OpenMP and Julia to `N`, and the Tensor0 CPU adapter calls the existing
+`tensor0._stride.set_num_threads(N)` before preparation or measurement. This
+limits native stride workers independently of XLA: at `N=1`, Eigen
+multithreading is disabled; at larger `N`, XLA receives an intra-operation
+thread setting. Tensor0 metadata records the queried `native_worker_limit`,
+CPU affinity where available, and thread environment; TensorKit records its
+queried Julia and BLAS counts. Julia runs with `--startup-file=no`. This is a
+worker upper bound, not an assertion of exactly `N` active workers or total OS
+threads. CUDA execution does not change the native CPU worker limit (the
+metadata field is `null`); `--threads` is not a GPU tuning parameter.
+
+The runner does not pin CPUs. For strict single-logical-CPU comparisons on
+Linux, first check the allowed cpuset and occupation of the selected CPU and
+its SMT sibling, then run the entire orchestrator with `taskset -c <cpu>` so
+both backend processes inherit the same affinity. Runs with different native
+limits, affinities, or thread counts are different measurement policies and
+must not be compared as if only the library implementation changed. Results
+from the earlier runner that set only environment/XLA flags did not constrain
+Tensor0's native stride workers and are not strict one-worker baselines.
 
 `contender_speedup` means:
 
@@ -204,3 +218,40 @@ Values greater than one mean the contender was faster.
 
 Raw results are generated under `benchmark-results/cross_backend/`, which is
 ignored by Git. Large retained experiments belong under `local/benchmarks/`.
+
+### Explicit workload sampling plans
+
+By default, the profile or `--repeat` count still applies to every workload in
+all rounds. For a preflight-budgeted run, `--sampling-plan plan.json` accepts a
+JSON list with exactly one entry for **every selected workload**:
+
+```json
+[
+  {"workload_id": "tensor_networks.mpo.trivial.float64.d10x4x3", "repeat": 100},
+  {"workload_id": "tensor_networks.mpo.trivial.float64.d2560x4x3", "repeat": 7}
+]
+```
+
+Select the matching workloads with `--workload`, or provide a complete plan for
+the chosen profile. Counts must be positive integers; unknown, missing and
+duplicate workloads are errors. The plan overrides `--repeat` for selected
+workloads, without adaptive sampling during measurement. Use the **same frozen
+plan** for both backends and for each thread-count run. Preflight samples are
+not formal measurement samples.
+
+The optional protocol-v1 `measurement.repeat_by_workload` map carries the actual
+counts to both adapters; requests without that field retain the original
+uniform-repeat behavior. Result JSON retains the effective map, each record's
+`repeat_per_round`, and the CLI plan's path and SHA256. `config.repeat` retains
+the profile/CLI fallback and is not the actual workload count when a plan is
+present.
+
+Pooled min/median/IQR/max and speedup definitions are unchanged. New
+`round_statistics` entries retain the original zero-based round index, actual
+sample count and within-round statistics. `paired_rounds` compares medians only
+for round indices completed by both backends. The Markdown report displays
+round medians and these ratios, labeling `direction inconsistent` when ratios
+occur both below and above one (exact ties are not reversals). A ratio above one
+favors the contender. These diagnostics describe observed round stability;
+they are **not significance tests**, and a lack of observed reversal is not a
+claim of statistical significance or stability beyond the measured rounds.

@@ -33,6 +33,8 @@ from tensor0 import (
     space,
 )
 
+from tensor0._stride import get_num_threads, set_num_threads
+
 from ..._protocol import SCHEMA_VERSION, validate_request
 
 
@@ -291,6 +293,13 @@ def _backend_metadata() -> dict[str, Any]:
         "jax": getattr(jax, "__version__", "unknown"),
         "jax_backend": jax.default_backend(),
         "jax_devices": [str(device) for device in jax.devices()],
+        "native_worker_limit": (
+            get_num_threads() if jax.default_backend() == "cpu" else None
+        ),
+        "cpu_affinity": (
+            sorted(os.sched_getaffinity(0))
+            if hasattr(os, "sched_getaffinity") else None
+        ),
         "thread_settings": {
             name: os.environ.get(name, "unset")
             for name in (
@@ -308,6 +317,8 @@ def _backend_metadata() -> dict[str, Any]:
 
 def execute(request: dict[str, Any]) -> dict[str, Any]:
     validate_request(request)
+    if jax.default_backend() == "cpu":
+        set_num_threads(int(os.environ.get("CROSS_BACKEND_THREADS", "1")))
     measurement = request["measurement"]
     results = []
     with jax.enable_x64(True):
@@ -317,7 +328,9 @@ def execute(request: dict[str, Any]) -> dict[str, Any]:
                     _measure(
                         workload,
                         warmup=measurement["warmup"],
-                        repeat=measurement["repeat"],
+                        repeat=measurement.get("repeat_by_workload", {}).get(
+                            workload["id"], measurement["repeat"]
+                        ),
                     )
                 )
             except Exception as error:

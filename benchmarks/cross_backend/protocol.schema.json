@@ -26,6 +26,10 @@
         "repeat": {
           "type": "integer",
           "minimum": 1
+        },
+        "repeat_by_workload": {
+          "type": "object",
+          "additionalProperties": {"type": "integer", "minimum": 1}
         }
       }
     },

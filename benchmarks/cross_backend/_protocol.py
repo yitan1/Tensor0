@@ -545,6 +545,7 @@ def build_request(
     warmup: int,
     repeat: int,
     workloads: Iterable[dict[str, Any]],
+    repeat_by_workload: Mapping[str, int] | None = None,
 ) -> dict[str, Any]:
     request = {
         "schema_version": SCHEMA_VERSION,
@@ -558,6 +559,8 @@ def build_request(
         },
         "workloads": list(workloads),
     }
+    if repeat_by_workload is not None:
+        request["measurement"]["repeat_by_workload"] = dict(repeat_by_workload)
     validate_request(request)
     return request
 
@@ -574,7 +577,7 @@ def validate_request(payload: object) -> dict[str, Any]:
     if measurement.get("kind") != MEASUREMENT_KIND:
         raise ProtocolError("request.measurement.kind must be steady_state")
     _integer(measurement.get("warmup"), "request.measurement.warmup")
-    repeat = _integer(
+    _integer(
         measurement.get("repeat"),
         "request.measurement.repeat",
         minimum=1,
@@ -582,6 +585,14 @@ def validate_request(payload: object) -> dict[str, Any]:
     workloads = _list(request.get("workloads"), "request.workloads")
     if not workloads:
         raise ProtocolError("request.workloads must not be empty")
+    ids = [
+        _string(_object(w, "request.workload").get("id"), "workload.id")
+        for w in workloads
+    ]
+    if len(ids) != len(set(ids)):
+        raise ProtocolError("request.workloads contains duplicates")
+    if "repeat_by_workload" in measurement:
+        validate_sampling_plan(measurement["repeat_by_workload"], ids)
     for index, raw_workload in enumerate(workloads):
         workload = _object(raw_workload, f"request.workloads[{index}]")
         context = f"request.workloads[{index}]"
@@ -633,7 +644,6 @@ def validate_backend_response(
     if len(results) != len(expected_workloads):
         raise ProtocolError("backend response has the wrong result count")
     seen: set[str] = set()
-    expected_repeat = request["measurement"]["repeat"]
     for index, raw_result in enumerate(results):
         context = f"backend response.results[{index}]"
         result = _object(raw_result, context)
@@ -650,6 +660,9 @@ def validate_backend_response(
         if status not in {"ok", "error"}:
             raise ProtocolError(f"{context}.status must be ok or error")
         if status == "ok":
+            expected_repeat = request["measurement"].get("repeat_by_workload", {}).get(
+                workload_id, request["measurement"]["repeat"]
+            )
             samples = _list(result.get("samples_ms"), f"{context}.samples_ms")
             if len(samples) != expected_repeat or not all(
                 isinstance(sample, (int, float))
@@ -670,3 +683,31 @@ def validate_backend_response(
         else:
             _string(result.get("error"), f"{context}.error")
     return response
+
+
+def validate_sampling_plan(payload: object, workload_ids: Iterable[str]) -> dict[str, int]:
+    """Require an explicit positive repeat count for every selected workload."""
+    plan = _object(payload, "sampling plan")
+    expected = set(workload_ids)
+    if set(plan) != expected:
+        raise ProtocolError("sampling plan has unknown or missing workloads")
+    return {
+        wid: _integer(count, f"sampling plan.{wid}", minimum=1)
+        for wid, count in plan.items()
+    }
+
+
+def load_sampling_plan(path: Path, workload_ids: Iterable[str]) -> dict[str, int]:
+    """Read a JSON list; unlike object keys, duplicate workload entries are visible."""
+    try:
+        entries = _list(json.loads(path.read_text(encoding="utf-8")), "sampling plan")
+    except (OSError, json.JSONDecodeError) as error:
+        raise ProtocolError(f"cannot read sampling plan: {error}") from error
+    plan: dict[str, int] = {}
+    for entry in entries:
+        item = _object(entry, "sampling plan entry")
+        wid = _string(item.get("workload_id"), "sampling plan workload_id")
+        if wid in plan:
+            raise ProtocolError("sampling plan contains duplicate workload")
+        plan[wid] = _integer(item.get("repeat"), "sampling plan repeat", minimum=1)
+    return validate_sampling_plan(plan, workload_ids)

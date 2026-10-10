@@ -301,7 +301,50 @@ def test_cross_backend_protocol_rejects_wrong_su2_data_policy():
         )
 
 
-def test_tensor0_adapter_executes_protocol_smoke():
+@pytest.mark.parametrize("threads", [1, 3])
+@pytest.mark.parametrize("backend", ["cpu", "cuda"])
+def test_tensor0_adapter_native_thread_budget(monkeypatch, threads, backend):
+    request = build_request(
+        run_id="thread-budget",
+        round_index=0,
+        warmup=0,
+        repeat=1,
+        workloads=(next(iter(load_workloads().values())),),
+    )
+    monkeypatch.setenv("CROSS_BACKEND_THREADS", str(threads))
+    monkeypatch.setattr(tensor0_runner.jax, "default_backend", lambda: backend)
+    limits = []
+    monkeypatch.setattr(tensor0_runner, "set_num_threads", limits.append)
+    monkeypatch.setattr(
+        tensor0_runner, "get_num_threads", lambda: limits[-1]
+    )
+
+    def measure(workload, **kwargs):
+        assert limits == ([threads] if backend == "cpu" else [])
+        return {"status": "ok"}
+
+    monkeypatch.setattr(tensor0_runner, "_measure", measure)
+    response = tensor0_runner.execute(request)
+    assert response["backend"]["native_worker_limit"] == (
+        threads if backend == "cpu" else None
+    )
+    assert (
+        response["backend"]["thread_settings"]["CROSS_BACKEND_THREADS"]
+        == str(threads)
+    )
+
+
+def test_tensor0_adapter_executes_protocol_smoke(monkeypatch):
+    monkeypatch.setenv("CROSS_BACKEND_THREADS", "1")
+    previous_limit = tensor0_runner.get_num_threads()
+    from tensor0._stride import enable_threads
+
+    def restore_limit():
+        if previous_limit is None:
+            enable_threads()
+        else:
+            tensor0_runner.set_num_threads(previous_limit)
+
     workload = load_workloads()[
         "tensor_networks.mpo.trivial.float64.d10x4x3"
     ]
@@ -313,7 +356,11 @@ def test_tensor0_adapter_executes_protocol_smoke():
         workloads=(workload,),
     )
 
-    response = tensor0_runner.execute(request)
+    try:
+        response = tensor0_runner.execute(request)
+    finally:
+        restore_limit()
+    assert response["backend"]["native_worker_limit"] == 1
     validate_backend_response(
         response,
         expected_backend="tensor0",
@@ -472,6 +519,13 @@ def test_cross_backend_thread_budget_configures_each_runtime():
     assert "--xla_cpu_multi_thread_eigen=true" in threaded["XLA_FLAGS"]
     assert "intra_op_parallelism_threads=8" in threaded["XLA_FLAGS"]
     assert "inter_op_parallelism_threads=1" in threaded["XLA_FLAGS"]
+
+
+def test_tensorkit_command_disables_user_startup(monkeypatch):
+    monkeypatch.setenv("CROSS_BACKEND_JULIA", "julia")
+    command = _orchestrator._backend_command("tensorkit")
+    assert command[0] == "julia"
+    assert "--startup-file=no" in command
 
 
 def test_cross_backend_module_entrypoint_lists_workloads():
@@ -647,3 +701,125 @@ def test_cross_backend_does_not_import_standard_suite():
 
     assert all("benchmarks.standard" not in source for source in sources)
     assert all("standard._" not in source for source in sources)
+
+
+def test_sampling_plan_protocol_and_backend_counts(monkeypatch):
+    workloads = list(load_workloads().values())[:2]
+    plan = {w['id']: i + 2 for i, w in enumerate(workloads)}
+    request = build_request(run_id='plan', round_index=0, warmup=2,
+                            repeat=7, workloads=workloads,
+                            repeat_by_workload=plan)
+    assert validate_request(request) is request
+    observed = []
+    monkeypatch.setattr(tensor0_runner.jax, 'default_backend', lambda: 'cuda')
+
+    def measure(w, *, warmup, repeat):
+        observed.append((w['id'], warmup, repeat))
+        return {'workload_id': w['id'], 'workload_hash': w['workload_hash'],
+                'status': 'ok', 'samples_ms': [1.] * repeat,
+                'output': {'real': 3., 'imag': 0.}}
+
+    monkeypatch.setattr(tensor0_runner, '_measure', measure)
+    response = tensor0_runner.execute(request)
+    validate_backend_response(response, expected_backend='tensor0', request=request)
+    assert observed == [(w['id'], 2, plan[w['id']]) for w in workloads]
+    invalid = copy.deepcopy(response)
+    invalid['results'][0]['samples_ms'].append(1.)
+    with pytest.raises(ProtocolError, match='finite positive samples'):
+        validate_backend_response(invalid, expected_backend='tensor0', request=request)
+    default = build_request(run_id='default', round_index=0, warmup=2,
+                            repeat=7, workloads=workloads)
+    assert default['measurement'] == {'kind': 'steady_state', 'warmup': 2, 'repeat': 7}
+    tensor0_runner.execute(default)
+    assert observed[-2:] == [(w['id'], 2, 7) for w in workloads]
+
+
+@pytest.mark.parametrize('variant', ['unknown', 'missing', 'duplicate', 'zero', 'bool'])
+def test_sampling_plan_rejects_invalid_entries(tmp_path, variant):
+    from benchmarks.cross_backend._protocol import load_sampling_plan
+    ids = list(load_workloads())[:2]
+    entries = [{'workload_id': wid, 'repeat': 3} for wid in ids]
+    if variant == 'unknown': entries[0]['workload_id'] = 'unknown'
+    elif variant == 'missing': entries.pop()
+    elif variant == 'duplicate': entries.append(entries[0])
+    elif variant == 'zero': entries[0]['repeat'] = 0
+    else: entries[0]['repeat'] = True
+    path = tmp_path / 'plan.json'
+    path.write_text(json.dumps(entries))
+    with pytest.raises(ProtocolError): load_sampling_plan(path, ids)
+
+
+def test_sampling_plan_round_counts_pairing_and_reversal(monkeypatch):
+    from benchmarks.cross_backend._report import render_markdown
+    workloads = list(load_workloads().values())[:2]
+    plan = {w['id']: i + 2 for i, w in enumerate(workloads)}
+    seen = []
+
+    def invoke(name, request, *, threads):
+        seen.append((name, request['round'], request['measurement']))
+        # Fail a middle round: do not accidentally pair r2 with r1.
+        if name == 'tensor0' and request['round'] == 1:
+            return None, {'backend': name, 'round': 1, 'kind': 'test', 'error': 'missing'}
+        sample = (1. if request['round'] == 0 else 4.) if name == 'tensor0' else 2.
+        return {'backend': {'name': name, 'version': 'test', 'runtime': 'test'},
+                'results': [{'workload_id': w['id'], 'status': 'ok',
+                             'samples_ms': [sample] * plan[w['id']],
+                             'output': {'real': 1., 'imag': 0.}}
+                            for w in request['workloads']]}, None
+
+    monkeypatch.setattr(_orchestrator, '_invoke_backend', invoke)
+    monkeypatch.setattr(_orchestrator, '_environment', lambda _: {})
+    payload = _orchestrator.run_comparison(profile='test', workloads=workloads,
+                                          backends=['tensor0', 'tensorkit'],
+                                          baseline='tensorkit', warmup=2, repeat=7,
+                                          rounds=3, repeat_by_workload=plan)
+    assert all(x[2]['repeat_by_workload'] == plan for x in seen)
+    for record in payload['records']:
+        count = plan[record['workload_id']]
+        assert record['repeat_per_round'] == count
+        assert len(record['samples_ms']) == count * record['completed_rounds']
+        assert all(r['sample_count'] == count for r in record['round_statistics'])
+        if record['backend'] == 'tensor0':
+            assert [r['round'] for r in record['round_statistics']] == [0, 2]
+            assert record['median_ms'] == 2.5
+    for pair in payload['pairwise']:
+        assert [r['round'] for r in pair['paired_rounds']] == [0, 2]
+        assert [r['contender_speedup'] for r in pair['paired_rounds']] == [2., .5]
+        assert pair['direction_inconsistent'] is True
+        assert pair['contender_speedup'] == .8
+    assert 'direction inconsistent' in render_markdown(payload, command='test')
+    assert json.loads(json.dumps(payload))['config']['repeat_by_workload'] == plan
+
+
+def test_sampling_plan_cli_retains_file_provenance(monkeypatch, tmp_path):
+    import hashlib
+    from benchmarks.cross_backend import __main__ as cli
+    wid = next(iter(load_workloads()))
+    path = tmp_path / 'plan.json'
+    path.write_text(json.dumps([{'workload_id': wid, 'repeat': 15}]))
+    output = tmp_path / 'output.json'
+    captured = {}
+    def run(**kwargs):
+        captured.update(kwargs)
+        return {'config': {}, 'records': [], 'failures': []}
+    monkeypatch.setattr(cli, 'run_comparison', run)
+    monkeypatch.setattr(cli, 'render_markdown', lambda *args, **kwargs: '')
+    monkeypatch.setattr(sys, 'argv', ['cross-backend', '--workload', wid,
+                                    '--sampling-plan', str(path), '--repeat', '7',
+                                    '--json-output', str(output)])
+    cli.main()
+    assert captured['repeat'] == 7
+    assert captured['repeat_by_workload'] == {wid: 15}
+    assert json.loads(output.read_text())['config']['sampling_plan'] == {
+        'path': str(path), 'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}
+
+
+def test_sampling_plan_rejects_duplicate_selected_workloads(monkeypatch):
+    workload = next(iter(load_workloads().values()))
+    with pytest.raises(ProtocolError, match='duplicates'):
+        build_request(run_id='duplicate', round_index=0, warmup=0,
+                      repeat=1, workloads=[workload, workload])
+    with pytest.raises(ProtocolError, match='duplicates'):
+        _orchestrator.run_comparison(profile='test', workloads=[workload, workload],
+                                    backends=['tensor0'], baseline='tensor0',
+                                    warmup=0, repeat=1, rounds=1)

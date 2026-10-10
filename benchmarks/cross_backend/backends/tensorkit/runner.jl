@@ -336,7 +336,8 @@ function execute(request)
     results = Any[]
     for workload in request["workloads"]
         try
-            push!(results, measure_workload(workload, warmup, repeat))
+            workload_repeat = Int(get(get(measurement, "repeat_by_workload", Dict()), workload["id"], repeat))
+            push!(results, measure_workload(workload, warmup, workload_repeat))
         catch error
             push!(
                 results,
