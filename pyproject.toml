@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "tensor0"
-version = "0.0.0"
+version = "0.1.0"
 description = "Rust-backed metadata and JAX-backed symmetric TensorMap core"
 readme = "README.md"
 requires-python = ">=3.11"

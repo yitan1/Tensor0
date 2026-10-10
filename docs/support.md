@@ -9,7 +9,8 @@ performance and exhaustive coverage are not promised.
 | Area | Policy |
 | --- | --- |
 | Numerical runtime | Linux CPU with JAX **0.10.1** and JAXLIB **0.10.1** |
-| Python | **3.11** baseline; other versions are CI-tested only when explicitly recorded for the candidate |
+| Python | **3.11** numerical baseline; **CPython 3.11–3.14** candidate wheel target, pending matrix verification |
+| Candidate wheels | **0.1.0**, Linux **x86_64 CPU**; no published wheels or PyPI release announced |
 | Native source build | Rust **>=1.87**, C++20 compiler; see [Installation](installation.md) |
 | CUDA | Experimental opt-in build with a bounded [operation/dtype/AD matrix](cuda.md); not full API support |
 | Other platforms/backends or JAX versions | Not supported numerical execution targets |
@@ -37,13 +38,19 @@ Underscore-prefixed modules, native registration/FFI interfaces and internal
 layouts not documented as public are implementation details. Do not depend on
 their import paths, binary ABI or serialization across versions.
 
-Before 1.0, public names, signatures, storage conventions and numerical policies
-may change between releases. There is no guaranteed deprecation window or
-backport/LTS commitment. Changes affecting public use should be recorded in the
-[changelog](https://github.com/yitan1/Tensor0/blob/main/CHANGELOG.md), with
-migration guidance for breaking changes. Pin the Tensor0 artifact or source
-commit as well as its runtime dependencies for reproducibility. A future 1.0
-compatibility policy must be stated explicitly; it is not implied here.
+Before 1.0, patch releases (`0.x.y` to `0.x.(y+1)`) preserve backward
+compatibility of the documented public API. Breaking public API changes require
+a minor release (`0.x` to `0.(x+1)`) and migration guidance in the
+[changelog](https://github.com/yitan1/Tensor0/blob/main/CHANGELOG.md). This policy
+covers documented names, signatures and behavior, not internal layouts, binary
+ABI, execution plans or performance. Bug fixes may correct behavior that
+violates the documented contract; numerical results remain subject to the
+stated tolerances rather than bitwise stability.
+
+There is no guaranteed deprecation window or backport/LTS commitment. Pin the
+Tensor0 artifact or source commit as well as its runtime dependencies for
+reproducibility. A future 1.0 compatibility policy must be stated explicitly;
+it is not implied here.
 
 ## Reporting problems
 

@@ -21,14 +21,18 @@ env:
 
 jobs:
   test:
-    name: Linux x86_64 / Python 3.11
+    name: Linux x86_64 / Python ${{ matrix.python }}
     runs-on: ubuntu-24.04
     timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v8.3.2
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python }}
           enable-cache: true
       - uses: dtolnay/rust-toolchain@stable
       - name: Install test dependencies, including benchmark plotting tests

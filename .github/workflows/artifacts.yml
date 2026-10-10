@@ -1,10 +1,8 @@
 name: Linux CPU release artifacts
 
-# Artifact-only: no PyPI credentials, publishing, tag creation or release uploads.
+# Manual preparation only: no publishing, tag creation or release uploads.
 on:
   workflow_dispatch:
-  release:
-    types: [published]
 
 permissions:
   contents: read
@@ -19,10 +17,11 @@ env:
   JAX_PLATFORMS: cpu
 
 jobs:
-  build:
-    name: CPython 3.11 / manylinux_2_28 x86_64
+  sdist:
+    name: Build source distribution once
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v8.3.2
@@ -30,51 +29,58 @@ jobs:
           python-version: "3.11"
           enable-cache: true
       - uses: dtolnay/rust-toolchain@stable
-      - name: Reject placeholder releases
-        if: github.event_name == 'release'
-        env:
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
+      - name: Build and inspect sdist without installing the project
         run: |
-          uv run --no-project --python 3.11 python - <<'PY'
-          import os
-          from pathlib import Path
-          import tomllib
+          uvx --python 3.11 --from maturin==1.13.1 maturin sdist --out dist
+          uv run --no-project --python 3.11 python .github/scripts/check_artifacts.py dist/*.tar.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tensor0-sdist-${{ github.sha }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 30
 
-          version = tomllib.loads(Path('pyproject.toml').read_text())['project']['version']
-          tag = os.environ['RELEASE_TAG']
-          rust_version = tomllib.loads(Path('Cargo.toml').read_text())['workspace']['package']['version']
-          if version == '0.0.0' or tag in {'0.0.0', 'v0.0.0'}:
-              raise SystemExit('Placeholder 0.0.0 is allowed only for manual artifact validation, not a release.')
-          if rust_version != version or tag not in {version, f'v{version}'}:
-              raise SystemExit('Release tag must match both Python and Rust package versions.')
-          PY
-      - name: Build sdist without installing the project
-        run: uvx --python 3.11 --from maturin==1.13.1 maturin sdist --out dist
-      - name: Inspect and extract the sdist
-        run: |
-          uv run --no-project --python 3.11 python .github/scripts/check_artifacts.py dist/*.tar.gz --extract artifact-source
+  wheel:
+    name: CPython ${{ matrix.python }} / manylinux_2_28 x86_64
+    needs: sdist
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v8.3.2
+        with:
+          python-version: ${{ matrix.python }}
+          enable-cache: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: tensor0-sdist-${{ github.sha }}
+          path: dist
+      - name: Inspect and extract the shared sdist
+        run: uv run --no-project python .github/scripts/check_artifacts.py dist/*.tar.gz --extract artifact-source
       - name: Build portable wheel exclusively from extracted sdist
         uses: PyO3/maturin-action@v1
         with:
           maturin-version: "1.13.1"
           manylinux: "2_28"
-          # The manylinux image supplies a modern C++20 GCC via its PATH.
-          # Do not use build.rs's /usr/bin/c++ default on AlmaLinux 8.
+          # AlmaLinux 8's default /usr/bin/c++ is too old for our C++20 code.
           before-script-linux: export CXX=g++; export CARGO_BUILD_JOBS=1; export TENSOR0_CUDA=0; g++ --version
           working-directory: artifact-source/source
           command: build
-          # The inspected sdist contains its generated Cargo.lock.
           args: >-
             --release --locked --strip --auditwheel repair
-            --interpreter python3.11
+            --interpreter python${{ matrix.python }}
             --out ../../dist
       - name: Check wheel contents and binary compatibility
         run: |
-          uv run --no-project --python 3.11 python .github/scripts/check_artifacts.py dist/*.whl
-          uvx --python 3.11 --from auditwheel auditwheel show dist/*.whl
+          uv run --no-project python .github/scripts/check_artifacts.py dist/*.whl
+          uvx --from auditwheel auditwheel show dist/*.whl
       - name: Install wheel in an isolated environment
         run: |
-          uv venv --python 3.11 "$RUNNER_TEMP/wheel-test"
+          uv venv --python '${{ matrix.python }}' "$RUNNER_TEMP/wheel-test"
           uv pip install --python "$RUNNER_TEMP/wheel-test/bin/python" dist/*.whl
           uv pip check --python "$RUNNER_TEMP/wheel-test/bin/python"
       - name: Installed-wheel public CPU smoke and examples outside checkout
@@ -83,22 +89,48 @@ jobs:
           "$RUNNER_TEMP/wheel-test/bin/python" -I "$GITHUB_WORKSPACE/.github/scripts/wheel_smoke.py"
           "$RUNNER_TEMP/wheel-test/bin/python" -I "$GITHUB_WORKSPACE/examples/basic_usage.py"
           "$RUNNER_TEMP/wheel-test/bin/python" -I "$GITHUB_WORKSPACE/examples/contractions.py"
-      - name: Record artifact provenance and publication handoff
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tensor0-wheel-${{ matrix.python }}-${{ github.sha }}
+          path: dist/*.whl
+          if-no-files-found: error
+          retention-days: 30
+
+  assemble:
+    name: Assemble tested distributions (no rebuild)
+    needs: [sdist, wheel]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: tensor0-sdist-${{ github.sha }}
+          path: dist
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: tensor0-wheel-*-${{ github.sha }}
+          merge-multiple: true
+          path: dist
+      - name: Check matrix completeness and record basename checksums
+        shell: bash
         run: |
-          (cd dist && sha256sum *.tar.gz *.whl) | tee dist/SHA256SUMS
+          test "$(find dist -name '*.tar.gz' | wc -l)" -eq 1
+          test "$(find dist -name '*.whl' | wc -l)" -eq 4
+          for abi in cp311 cp312 cp313 cp314; do
+            test "$(find dist -name "*-${abi}-${abi}-*.whl" | wc -l)" -eq 1
+          done
+          (cd dist && sha256sum *.tar.gz *.whl > SHA256SUMS)
           {
-            echo '## Artifact-only handoff'
+            echo '## Tested Linux x86_64 CPU candidate'
             echo "Source commit: $GITHUB_SHA"
-            echo 'Target: Linux x86_64 CPU, CPython 3.11, manylinux_2_28 (glibc >= 2.28).'
-            echo 'Includes sdist, wheel built from that sdist, and SHA256SUMS.'
-            echo 'Wheel was inspected and installed outside the checkout; public dense conversion, composition, permutation, jit and grad were checked.'
-            echo 'No PyPI publication or tag creation occurs. Download artifacts from this run.'
-            echo 'Before any future publication: select a real version (currently 0.0.0), review licenses/metadata, run the complete Linux CPU CI, and document tested Python/platform coverage.'
-            echo 'CUDA, other architectures, macOS/Windows, and additional Python wheel ABIs are not validated here.'
+            echo "Candidate run: $GITHUB_RUN_ID"
+            echo 'One sdist and four wheels: CPython 3.11–3.14, manylinux_2_28.'
+            echo 'Each wheel passed archive/auditwheel checks, isolated smoke and public examples.'
+            echo 'Publish only this assembled artifact; no rebuild. No publication occurs here.'
           } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         with:
-          name: tensor0-linux-x86_64-cp311-${{ github.sha }}
+          name: tensor0-dist-${{ github.sha }}
           path: dist/
           if-no-files-found: error
           retention-days: 30

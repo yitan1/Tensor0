@@ -1,9 +1,12 @@
 # Release and artifact acceptance
 
 This is a maintainer checklist, not a statement that packages have been published
-or that a release has passed. Tensor0 currently uses version **0.0.0**; keep it
-until an intentional release is coordinated. Do not tag or publish merely to
-exercise packaging. Source installation remains the documented user route.
+or that a release has passed. Python, Rust workspace and citation metadata use
+**0.1.0** for the release candidate; no publication or release date is announced.
+"Candidate" describes acceptance status: the distribution version is `0.1.0`,
+not a PEP 440 prerelease such as `0.1.0rc1`.
+Do not tag or publish merely to exercise packaging. Source installation remains
+the documented user route.
 
 ## Candidate preparation
 
@@ -13,7 +16,7 @@ exercise packaging. Source installation remains the documented user route.
   a release number from `Unreleased`.
 - [ ] Review public API changes, migration notes and known limitations in
   [CHANGELOG.md](https://github.com/yitan1/Tensor0/blob/main/CHANGELOG.md).
-  Move entries out of `Unreleased` only when the release is actually prepared.
+  Keep the 0.1.0 entry marked as a candidate until publication is confirmed.
 - [ ] Verify dependency pins and vendored XLA FFI headers agree with JAX/JAXLIB
   0.10.1, and check licenses/notices and package metadata.
 - [ ] Run the [development verification](development.md#verification) and strict
@@ -24,13 +27,18 @@ exercise packaging. Source installation remains the documented user route.
 ## Build and inspect distributions
 
 The [artifact workflow](https://github.com/yitan1/Tensor0/blob/main/.github/workflows/artifacts.yml)
-is an artifact-only validation route, not PyPI publishing. Its configured target
-is Linux x86_64 CPU, CPython 3.11 and manylinux_2_28 (glibc >=2.28); it builds a
-wheel from the extracted sdist, inspects distributions and runs an isolated
-installed-wheel public smoke check. This describes the workflow's intent, not
-an assertion that a hosted run has passed. Consult the actual run logs and
-artifacts. Its smoke check does not replace the full CPU suite or validate CUDA,
-other architectures or other Python wheel ABIs.
+is an artifact-only validation route, not PyPI publishing. The 0.1.0 candidate
+target is Linux x86_64 CPU, CPython **3.11–3.14**, manylinux_2_28 (glibc >=2.28),
+pending successful matrix verification. Wheels must be built from the extracted
+sdist, inspected and tested in isolated installed environments. Consult the
+actual workflow configuration, run logs and artifacts: a target matrix is not
+an assertion that hosted jobs have passed. Smoke checks do not replace the full
+CPU suite or validate CUDA, other architectures or untested Python wheel ABIs.
+
+Candidate preparation is manual on `main`. The workflow assembles one sdist,
+four interpreter-specific wheels and `SHA256SUMS` into
+`tensor0-dist-<sha>`, where `<sha>` is the full candidate commit hash. It does
+not create tags or publish.
 
 The custom archive check only covers Tensor0-specific contents: native build
 inputs, Python/type files, declared license files and excluded private/build
@@ -88,9 +96,10 @@ python3.11 -m venv /tmp/tensor0-candidate
   tooling provisioned separately. Verify import origins again, including in
   subprocess tests. Retain the complete checkout for source-dependent tests;
   those checks supplement, rather than replace, installed numerical acceptance.
-- [ ] Check declared Python 3.11 baseline acceptance explicitly. Other Python
-  versions count only as tested versions with recorded results. Package metadata
-  or a local run on a different interpreter is not a 3.11 validation pass.
+- [ ] Verify every candidate target interpreter, CPython **3.11, 3.12, 3.13 and
+  3.14**, with recorded build and installed CPU results. Until the matrix passes,
+  describe it as a target, not verified coverage. Package metadata or a pass on
+  one interpreter is not evidence for another.
 - [ ] If a CUDA artifact is proposed, separately execute the bounded CUDA tests
   on a compatible GPU and record toolkit/driver/architecture and skips. A CPU
   pass does not establish CUDA support. Do not generalize beyond the documented
@@ -98,15 +107,73 @@ python3.11 -m venv /tmp/tensor0-candidate
 
 ## Publish only after approval
 
+Configure PyPI Trusted Publishing for the following exact GitHub identity:
+
+| Publisher field | Value |
+| --- | --- |
+| Owner / repository | `yitan1` / `Tensor0` |
+| Workflow filename | `publish.yml` |
+| GitHub environment | `pypi` |
+
+Before the first publication, the intended PyPI project owner's account must
+configure a pending Trusted Publisher for the new project with the identity
+above. For an existing project, its owner must add the publisher in that
+project's settings. A missing public project page does not reserve its name or
+establish ownership.
+
+Create the GitHub `pypi` environment, restrict deployments to `main`, and
+configure a required reviewer for manual maintainer approval before upload. Referencing `environment: pypi` in workflow
+YAML does **not** configure reviewer protection or guarantee approval. Trusted
+Publishing uses OIDC rather than a stored PyPI API token. These are outstanding
+setup requirements, not claims of a configured publisher or an upload.
+
 - [ ] Resolve failures and disclose untested configurations. Preserve candidate
   evidence and hashes; an artifact-building CI job is not automatically a full
   numerical or portability certification.
+- [ ] Select `tensor0-dist-<sha>` from a successful manual `artifacts.yml` run
+  on this repository's `main`, recording its run ID, source commit and hashes.
+  The commit must remain an ancestor of `main`.
+- [ ] Confirm successful same-commit **push** CI on `main`: Linux x86_64 CPU
+  jobs for Python 3.11–3.14 and the blocking public-package Pyright job. Advisory
+  test typing reports do not replace the blocking check.
+- [ ] Confirm the existing release tag (for example, `v0.1.0`) points at exactly
+  that candidate commit and matches both its Python and Rust source versions.
 - [ ] Confirm maintainer approval, destination, version and artifact selection
   before any tag or upload. Never upload test artifacts under an intended release
   version without coordinating that release.
-- [ ] Only after publication, update installation links to artifacts that really
-  exist and describe their verified platform/interpreter scope. Recheck a fresh
-  install of the published artifact, not just the local build.
+- [ ] Manually dispatch [publish.yml](https://github.com/yitan1/Tensor0/blob/main/.github/workflows/publish.yml)
+  on `main` with `candidate_run_id` and `release_tag`. It verifies the candidate,
+  tag, source versions and same-commit CI, then checks the exact distribution
+  set and `SHA256SUMS`. The approved `pypi` job uploads those verified bytes.
+  **Do not rebuild for publication** or substitute artifacts from another run.
+- [ ] Only after publication, update the changelog status and installation links
+  to artifacts that really exist and describe their verified scope. Add a
+  release date only when known. Recheck a fresh install of the published
+  artifact, not just the local build.
+
+### Maintainer command examples
+
+**Examples only—not instructions to publish now.** After maintainer approval
+for candidate preparation and after the workflows are available on `main`:
+
+```bash
+gh workflow run artifacts.yml --repo yitan1/Tensor0 --ref main
+gh run list --repo yitan1/Tensor0 --workflow artifacts.yml --branch main
+```
+
+Record the selected successful candidate run ID and commit; verify the required
+same-commit CI. Only after explicit release approval, an existing matching tag,
+and confirmed PyPI publisher and required-reviewer environment configuration:
+
+```bash
+# Replace the example run ID with the verified candidate run.
+gh workflow run publish.yml --repo yitan1/Tensor0 --ref main \
+  -f candidate_run_id=123456789 -f release_tag=v0.1.0
+```
+
+Dispatch does not replace the required review of the `pypi` deployment. Neither
+a tag nor a GitHub release automatically publishes. No configuration, tag,
+hosted verification or publication is claimed by these examples.
 
 No signing, reproducible-byte builds, universal wheel portability or release
 automation guarantees are implied by this checklist.

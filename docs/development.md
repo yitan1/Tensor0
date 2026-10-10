@@ -202,8 +202,10 @@ uv run python examples/contractions.py
 uv run pyright src examples benchmarks
 ```
 
-Linux CPU CI runs these checks on Python 3.11 with a freshly built extension.
-The source, examples and benchmarks type check is blocking. The default
+Linux CPU CI is configured to run the build, tests and examples on CPython
+3.11–3.14 with a freshly built extension. Each matrix job must pass before a
+candidate is accepted; configuration alone is not verification. The source,
+examples and benchmarks type check runs on Python 3.11 and is blocking. The default
 `uv run pyright` also includes tests; it currently reports test typing debt,
 including dynamic test doubles and intentionally invalid inputs. CI retains
 this full check as an explicitly advisory report with its diagnostics uploaded,

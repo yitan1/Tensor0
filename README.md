@@ -2,7 +2,9 @@
 
 Tensor0 is an experimental symmetric tensor library for Python, with Rust-backed
 structural metadata and JAX-backed storage and automatic differentiation. It is
-not yet a production-ready tensor-network framework; the pre-1.0 API may change.
+not yet a production-ready tensor-network framework. Before 1.0, public API
+patch releases remain backward-compatible; breaking changes require a minor
+release and migration notes.
 
 Use it for tensor algebra with conserved charges and other supported symmetries:
 work with symmetry-allowed blocks, then compose, contract or differentiate them
@@ -15,13 +17,15 @@ algorithm framework.
 
 ## Install from source
 
-Source installation is the current distribution route. Published PyPI releases
-and prebuilt wheels are not currently offered as an installation path.
+**0.1.0 is a release candidate, not a published release.** Source installation
+remains the documented distribution route. The candidate wheel target is
+**Linux x86_64 CPU, CPython 3.11–3.14**, pending successful matrix verification;
+this is not a claim of available wheels or PyPI publication.
 
-The supported numerical baseline is **Linux CPU, Python 3.11, JAX and JAXLIB
-0.10.1**. Builds require **Rust 1.87 or newer** and a **C++20-capable compiler**.
-The native XLA FFI checks the JAX/JAXLIB versions exactly. Other Python versions
-are CI-tested only where explicitly recorded, not a blanket support guarantee.
+The numerical baseline is **Linux CPU, Python 3.11, JAX and JAXLIB 0.10.1**.
+Source builds require **Rust 1.87 or newer** and a **C++20-capable compiler**.
+The native XLA FFI checks the JAX/JAXLIB versions exactly. Only recorded passing
+candidate runs establish interpreter coverage.
 
 ```bash
 git clone https://github.com/yitan1/Tensor0.git
@@ -60,7 +64,7 @@ symmetry-aware contractions, and JAX `jit`/`grad` integration. See the
 ## Contributing and benchmarks
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development and verification links,
-[CHANGELOG.md](CHANGELOG.md) for unreleased changes, and the
+[CHANGELOG.md](CHANGELOG.md) for candidate changes, and the
 [release checklist](docs/releasing.md) for installed-artifact acceptance.
 Reproducible [benchmark suites](benchmarks/README.md) and their reports document
 measured configurations and limitations; they are not performance guarantees.

@@ -2,17 +2,20 @@
 
 ## Current distribution
 
-Install from a source checkout on Linux. These instructions do not assume a
-published PyPI release or downloadable prebuilt wheel. Documentation on `main`
+**0.1.0 is a release candidate, not a published release.** Install from a source
+checkout on Linux. The candidate wheel target is Linux x86_64 CPU, CPython
+**3.11–3.14**, pending successful matrix verification. These instructions do not
+assume a PyPI release or downloadable prebuilt wheels. Documentation on `main`
 describes that checkout, not necessarily an older installed artifact; record the
 commit you build and consult its documentation.
 
 ## Prerequisites
 
 - Linux CPU is the supported numerical execution target.
-- Python **3.11** is the baseline. Package metadata permits Python >=3.11;
-  other versions are CI-tested only where an actual run is recorded. That range
-  alone does not guarantee builds or numerical compatibility on every version.
+- Python **3.11** is the numerical baseline; **3.11–3.14** is the candidate
+  wheel target pending matrix verification. Package metadata permits Python
+  >=3.11, but that range alone does not guarantee builds or numerical
+  compatibility on every version.
 - Rust/Cargo **1.87 or newer**, and a linker and standard system build tools
   (including `ar`).
 - A **C++20-capable compiler** and its standard library. The build defaults to

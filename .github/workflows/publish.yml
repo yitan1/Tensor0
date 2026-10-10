@@ -1,0 +1,165 @@
+name: Publish tested release to PyPI
+
+# Deliberately manual: a tag or GitHub release never publishes automatically.
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_run_id:
+        description: Successful Linux CPU release artifacts run on main
+        required: true
+        type: string
+      release_tag:
+        description: Existing release tag (v0.1.0); must point at the candidate commit
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pypi-publish
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Verify candidate, release tag and CPU CI
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      sha: ${{ steps.provenance.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify provenance using GitHub API and source versions
+        id: provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import re
+          import subprocess
+          import tomllib
+
+          repo = os.environ['GITHUB_REPOSITORY']
+          run_id = os.environ['CANDIDATE_RUN_ID']
+          tag = os.environ['RELEASE_TAG']
+          if not re.fullmatch(r'[1-9][0-9]*', run_id):
+              raise SystemExit('Candidate run ID must be a positive integer.')
+          if not re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+', tag) or tag == 'v0.0.0':
+              raise SystemExit('Use a real stable version tag, e.g. v0.1.0, not v0.0.0.')
+          version = tag[1:]
+
+          def api(path):
+              return json.loads(subprocess.check_output(['gh', 'api', f'repos/{repo}/{path}']))
+
+          def git(*args):
+              return subprocess.check_output(['git', *args], text=True).strip()
+
+          run = api(f'actions/runs/{run_id}')
+          workflow = api('actions/workflows/artifacts.yml')
+          if not (run['workflow_id'] == workflow['id']
+                  and run['path'] == '.github/workflows/artifacts.yml'
+                  and run['repository']['full_name'] == repo
+                  and run['head_repository']['full_name'] == repo
+                  and run['event'] == 'workflow_dispatch'
+                  and run['head_branch'] == 'main'
+                  and run['status'] == 'completed' and run['conclusion'] == 'success'):
+              raise SystemExit('Candidate must be a successful manual artifacts.yml run on this repository main.')
+          sha = run['head_sha']
+          if git('rev-parse', f'refs/tags/{tag}^{{commit}}') != sha:
+              raise SystemExit('Release tag does not point at the candidate commit.')
+          subprocess.run(['git', 'merge-base', '--is-ancestor', sha, 'origin/main'], check=True)
+          python_version = tomllib.loads(git('show', f'{sha}:pyproject.toml'))['project']['version']
+          rust_version = tomllib.loads(git('show', f'{sha}:Cargo.toml'))['workspace']['package']['version']
+          if python_version != version or rust_version != version:
+              raise SystemExit('Release tag must match both Python and Rust source versions.')
+          ci = api(f'actions/workflows/ci.yml/runs?branch=main&event=push&status=success&head_sha={sha}&per_page=100')
+          required = {f'Linux x86_64 / Python {v}' for v in ('3.11', '3.12', '3.13', '3.14')}
+          required.add('Public-package Pyright (Python 3.11)')
+          for check in ci['workflow_runs']:
+              if check['head_sha'] != sha or check['repository']['full_name'] != repo:
+                  continue
+              jobs = api(f"actions/runs/{check['id']}/jobs?per_page=100")['jobs']
+              passed = {job['name'] for job in jobs if job['conclusion'] == 'success'}
+              if required <= passed:
+                  break
+          else:
+              raise SystemExit('No successful four-version CPU CI and blocking typecheck for this exact commit.')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'sha={sha}\n')
+          PY
+      - uses: actions/download-artifact@v4
+        with:
+          name: tensor0-dist-${{ steps.provenance.outputs.sha }}
+          path: candidate
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.candidate_run_id }}
+      - name: Verify exact distribution set and checksums (no rebuild)
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          import hashlib
+
+          version = os.environ['RELEASE_TAG'][1:]
+          root = Path('candidate')
+          files = {path.name for path in root.iterdir()}
+          packages = {f'tensor0-{version}.tar.gz'}
+          for abi in ('cp311', 'cp312', 'cp313', 'cp314'):
+              matches = {name for name in files if name.startswith(f'tensor0-{version}-{abi}-{abi}-')
+                         and name.endswith('_x86_64.whl') and 'manylinux_2_28_x86_64' in name}
+              if len(matches) != 1:
+                  raise SystemExit(f'Expected exactly one {abi} manylinux_2_28 x86_64 wheel.')
+              packages.update(matches)
+          if files != packages | {'SHA256SUMS'}:
+              raise SystemExit('Candidate must contain exactly one sdist, four wheels and SHA256SUMS.')
+          entries = [line.split() for line in (root / 'SHA256SUMS').read_text().splitlines()]
+          if len(entries) != 5 or any(len(entry) != 2 for entry in entries):
+              raise SystemExit('Expected five basename checksum entries.')
+          if {name for _, name in entries} != packages:
+              raise SystemExit('Checksum manifest does not match distributions.')
+          for digest, name in entries:
+              if hashlib.sha256((root / name).read_bytes()).hexdigest() != digest:
+                  raise SystemExit(f'Checksum mismatch: {name}')
+          PY
+          mkdir dist
+          cp candidate/*.tar.gz candidate/*.whl dist/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: verified-pypi-dist-${{ steps.provenance.outputs.sha }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish verified binaries (no checkout or build)
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    # Configure required reviewers and deployment restrictions in repository settings.
+    # Naming an environment here does not itself enable approval protection.
+    environment:
+      name: pypi
+      url: https://pypi.org/p/tensor0
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: verified-pypi-dist-${{ needs.verify.outputs.sha }}
+          path: dist
+      - name: Publish via PyPI Trusted Publishing
+        uses: pypa/gh-action-pypi-publish@release/v1
