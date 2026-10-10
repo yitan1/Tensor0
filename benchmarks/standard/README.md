@@ -45,6 +45,24 @@ Domain modules describe the operation and inputs. `_specs.py` alone owns
 warmup, cold-cache, JIT compilation, cached execution, and gradient execution
 behavior, so adding an execution axis does not duplicate domain workloads.
 
+## Retained snapshot
+
+See the [retained report](results/report.md) and [raw results and samples](results/results.json).
+The current default CPU data is an **exploratory snapshot on a non-isolated
+workstation**, not an interference-free formal baseline. It records the loaded
+`333de65` native artifact, not unbuilt workspace native changes; successful
+timing is not numerical validation.
+
+Use these fixed filenames and keep date, revision, loaded artifact identity,
+environment, worker/affinity policy and limitations inside the report and JSON.
+Publication-only annotations belong in top-level `publication_metadata`;
+runner fields, samples and as-run provenance remain unchanged. No timestamp
+directories or results index are required. Commands below writing these paths
+overwrite the retained snapshot; review metadata before publishing a replacement.
+Historical comparisons and diagnostics belong under `local/benchmarks/`,
+without public report dependencies on private files. See the
+[shared publication convention](../README.md#retained-results).
+
 ## Running benchmarks
 
 Use the project environment through `uv`:
@@ -53,6 +71,32 @@ Use the project environment through `uv`:
 uv run python -m benchmarks.standard --list-scenarios
 uv run python -m benchmarks.standard --quick --json
 ```
+
+### Strict single-worker CPU runs
+
+BLAS/OpenMP environment variables and XLA Eigen flags do **not** constrain
+Tensor0's independent native stride worker limit. The standard CLI does not
+set that limit. To reproduce a strict CPU run without adding a new CLI option,
+use the existing API in the same process before running the module:
+
+```sh
+env JAX_PLATFORMS=cpu \
+  OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 \
+  JULIA_NUM_THREADS=1 CROSS_BACKEND_THREADS=1 \
+  OMP_DYNAMIC=FALSE MKL_DYNAMIC=FALSE \
+  XLA_FLAGS=--xla_cpu_multi_thread_eigen=false \
+  taskset -c 2 .venv/bin/python -c \
+  'import runpy; from tensor0._stride import set_num_threads, get_num_threads; set_num_threads(1); assert get_num_threads() == 1; runpy.run_module("benchmarks.standard", run_name="__main__")' \
+  --json-output benchmarks/standard/results/results.json \
+  --markdown benchmarks/standard/results/report.md
+```
+
+CPU2 is an example, not a portable default: check the allowed cpuset and that
+CPU's SMT sibling for occupation before pinning. Runtime helper OS threads may
+still exist; the native limit is a worker upper bound. This CPU recipe does not
+change CUDA execution. Record the queried native limit and actual loaded
+extension identity alongside results; successful timing is not numerical
+validation.
 
 Without `--quick`, the default run includes `quick` and `full-only` scenarios.
 Scenarios marked `explicit-only` run only when selected by id. An explicit
@@ -78,7 +122,7 @@ memory before using `--all`:
 
 ```sh
 uv run python -m benchmarks.standard --all \
-  --json-output benchmark-results/standard/tensor0-suite.json
+  --json-output benchmarks/standard/results/results.json
 ```
 
 Use `--group` to select a benchmark domain without spelling every scenario id:
@@ -97,8 +141,8 @@ Write reproducible reports with `--json-output` and `--markdown`:
 uv run python -m benchmarks.standard \
   --all \
   --group contractions \
-  --json-output benchmark-results/standard/contractions.json \
-  --markdown benchmark-results/standard/contractions.md
+  --json-output benchmarks/standard/results/results.json \
+  --markdown benchmarks/standard/results/report.md
 ```
 
 ## Measurement boundary

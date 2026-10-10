@@ -1,0 +1,4907 @@
+{
+  "config": {
+    "profile": "full",
+    "repeat": 7,
+    "scenario_count": 105,
+    "warmup": 2
+  },
+  "environment": {
+    "benchmark_script_sha256": "aaf5de1f54b7bbde7ed3487377f0c05cecc3357682c822263aa4ef69c4c63b76",
+    "benchmark_suite": {
+      "contractions": {
+        "api_network_scenario_count": 10,
+        "chain_dimensions": {
+          "medium": [
+            16,
+            4,
+            16,
+            4
+          ],
+          "small": [
+            4,
+            3,
+            5,
+            4
+          ]
+        },
+        "primitive_scenario_count": 15,
+        "scenario_count": 25
+      },
+      "diagnostics": {
+        "layout_cache_scenario_count": 4,
+        "scenario_count": 6,
+        "strided_indices_scenario_count": 2
+      },
+      "linalg": {
+        "block_case_count": 11,
+        "case_count": 40,
+        "cases": [
+          {
+            "dimensions": [
+              2,
+              2,
+              2
+            ],
+            "dtype": "float64",
+            "operation": "mul",
+            "sector": "trivial",
+            "sigmas": null
+          },
+          {
+            "dimensions": [
+              8,
+              8,
+              8
+            ],
+            "dtype": "float64",
+            "operation": "mul",
+            "sector": "trivial",
+            "sigmas": null
+          },
+          {
+            "dimensions": [
+              32,
+              32,
+              32
+            ],
+            "dtype": "float64",
+            "operation": "mul",
+            "sector": "trivial",
+            "sigmas": null
+          },
+          {
+            "dimensions": [
+              64,
+              64,
+              64
+            ],
+            "dtype": "float64",
+            "operation": "mul",
+            "sector": "trivial",
+            "sigmas": null
+          },
+          {
+            "dimensions": [
+              128,
+              128,
+              128
+            ],
+            "dtype": "float64",
+            "operation": "mul",
+            "sector": "trivial",
+            "sigmas": null
+          },
+          {
+            "dimensions": [
+              2,
+              2,
+              2
+            ],
+            "dtype": "complex128",
+            "operation": "mul",
+            "sector": "trivial",
+            "sigmas": null
+          },
+          {
+            "dimensions": [
+              8,
+              8,
+              8
+            ],
+            "dtype": "complex128",
+            "operation": "mul",
+            "sector": "trivial",
+            "sigmas": null
+          },
+          {
+            "dimensions": [
+              32,
+              32,
+              32
+            ],
+            "dtype": "complex128",
+            "operation": "mul",
+            "sector": "trivial",
+            "sigmas": null
+          },
+          {
+            "dimensions": [
+              64,
+              64,
+              64
+            ],
+            "dtype": "complex128",
+            "operation": "mul",
+            "sector": "trivial",
+            "sigmas": null
+          },
+          {
+            "dimensions": [
+              128,
+              128,
+              128
+            ],
+            "dtype": "complex128",
+            "operation": "mul",
+            "sector": "trivial",
+            "sigmas": null
+          },
+          {
+            "dimensions": [
+              2,
+              2,
+              2
+            ],
+            "dtype": "float64",
+            "operation": "mul",
+            "sector": "z2",
+            "sigmas": [
+              0.5,
+              0.5,
+              0.5
+            ]
+          },
+          {
+            "dimensions": [
+              8,
+              8,
+              8
+            ],
+            "dtype": "float64",
+            "operation": "mul",
+            "sector": "z2",
+            "sigmas": [
+              0.5,
+              0.5,
+              0.5
+            ]
+          },
+          {
+            "dimensions": [
+              32,
+              32,
+              32
+            ],
+            "dtype": "float64",
+            "operation": "mul",
+            "sector": "z2",
+            "sigmas": [
+              0.5,
+              0.5,
+              0.5
+            ]
+          },
+          {
+            "dimensions": [
+              64,
+              64,
+              64
+            ],
+            "dtype": "float64",
+            "operation": "mul",
+            "sector": "z2",
+            "sigmas": [
+              0.5,
+              0.5,
+              0.5
+            ]
+          },
+          {
+            "dimensions": [
+              128,
+              128,
+              128
+            ],
+            "dtype": "float64",
+            "operation": "mul",
+            "sector": "z2",
+            "sigmas": [
+              0.5,
+              0.5,
+              0.5
+            ]
+          },
+          {
+            "dimensions": [
+              2,
+              2,
+              2
+            ],
+            "dtype": "complex128",
+            "operation": "mul",
+            "sector": "z2",
+            "sigmas": [
+              0.5,
+              0.5,
+              0.5
+            ]
+          },
+          {
+            "dimensions": [
+              8,
+              8,
+              8
+            ],
+            "dtype": "complex128",
+            "operation": "mul",
+            "sector": "z2",
+            "sigmas": [
+              0.5,
+              0.5,
+              0.5
+            ]
+          },
+          {
+            "dimensions": [
+              32,
+              32,
+              32
+            ],
+            "dtype": "complex128",
+            "operation": "mul",
+            "sector": "z2",
+            "sigmas": [
+              0.5,
+              0.5,
+              0.5
+            ]
+          },
+          {
+            "dimensions": [
+              64,
+              64,
+              64
+            ],
+            "dtype": "complex128",
+            "operation": "mul",
+            "sector": "z2",
+            "sigmas": [
+              0.5,
+              0.5,
+              0.5
+            ]
+          },
+          {
+            "dimensions": [
+              128,
+              128,
+              128
+            ],
+            "dtype": "complex128",
+            "operation": "mul",
+            "sector": "z2",
+            "sigmas": [
+              0.5,
+              0.5,
+              0.5
+            ]
+          },
+          {
+            "dimensions": [
+              2,
+              2
+            ],
+            "dtype": "float64",
+            "operation": "svd",
+            "sector": "trivial",
+            "sigmas": null
+          },
+          {
+            "dimensions": [
+              8,
+              8
+            ],
+            "dtype": "float64",
+            "operation": "svd",
+            "sector": "trivial",
+            "sigmas": null
+          },
+          {
+            "dimensions": [
+              32,
+              32
+            ],
+            "dtype": "float64",
+            "operation": "svd",
+            "sector": "trivial",
+            "sigmas": null
+          },
+          {
+            "dimensions": [
+              64,
+              64
+            ],
+            "dtype": "float64",
+            "operation": "svd",
+            "sector": "trivial",
+            "sigmas": null
+          },
+          {
+            "dimensions": [
+              128,
+              128
+            ],
+            "dtype": "float64",
+            "operation": "svd",
+            "sector": "trivial",
+            "sigmas": null
+          },
+          {
+            "dimensions": [
+              2,
+              2
+            ],
+            "dtype": "complex128",
+            "operation": "svd",
+            "sector": "trivial",
+            "sigmas": null
+          },
+          {
+            "dimensions": [
+              8,
+              8
+            ],
+            "dtype": "complex128",
+            "operation": "svd",
+            "sector": "trivial",
+            "sigmas": null
+          },
+          {
+            "dimensions": [
+              32,
+              32
+            ],
+            "dtype": "complex128",
+            "operation": "svd",
+            "sector": "trivial",
+            "sigmas": null
+          },
+          {
+            "dimensions": [
+              64,
+              64
+            ],
+            "dtype": "complex128",
+            "operation": "svd",
+            "sector": "trivial",
+            "sigmas": null
+          },
+          {
+            "dimensions": [
+              128,
+              128
+            ],
+            "dtype": "complex128",
+            "operation": "svd",
+            "sector": "trivial",
+            "sigmas": null
+          },
+          {
+            "dimensions": [
+              2,
+              2
+            ],
+            "dtype": "float64",
+            "operation": "svd",
+            "sector": "z2",
+            "sigmas": [
+              0.5,
+              0.5
+            ]
+          },
+          {
+            "dimensions": [
+              8,
+              8
+            ],
+            "dtype": "float64",
+            "operation": "svd",
+            "sector": "z2",
+            "sigmas": [
+              0.5,
+              0.5
+            ]
+          },
+          {
+            "dimensions": [
+              32,
+              32
+            ],
+            "dtype": "float64",
+            "operation": "svd",
+            "sector": "z2",
+            "sigmas": [
+              0.5,
+              0.5
+            ]
+          },
+          {
+            "dimensions": [
+              64,
+              64
+            ],
+            "dtype": "float64",
+            "operation": "svd",
+            "sector": "z2",
+            "sigmas": [
+              0.5,
+              0.5
+            ]
+          },
+          {
+            "dimensions": [
+              128,
+              128
+            ],
+            "dtype": "float64",
+            "operation": "svd",
+            "sector": "z2",
+            "sigmas": [
+              0.5,
+              0.5
+            ]
+          },
+          {
+            "dimensions": [
+              2,
+              2
+            ],
+            "dtype": "complex128",
+            "operation": "svd",
+            "sector": "z2",
+            "sigmas": [
+              0.5,
+              0.5
+            ]
+          },
+          {
+            "dimensions": [
+              8,
+              8
+            ],
+            "dtype": "complex128",
+            "operation": "svd",
+            "sector": "z2",
+            "sigmas": [
+              0.5,
+              0.5
+            ]
+          },
+          {
+            "dimensions": [
+              32,
+              32
+            ],
+            "dtype": "complex128",
+            "operation": "svd",
+            "sector": "z2",
+            "sigmas": [
+              0.5,
+              0.5
+            ]
+          },
+          {
+            "dimensions": [
+              64,
+              64
+            ],
+            "dtype": "complex128",
+            "operation": "svd",
+            "sector": "z2",
+            "sigmas": [
+              0.5,
+              0.5
+            ]
+          },
+          {
+            "dimensions": [
+              128,
+              128
+            ],
+            "dtype": "complex128",
+            "operation": "svd",
+            "sector": "z2",
+            "sigmas": [
+              0.5,
+              0.5
+            ]
+          }
+        ],
+        "extension_scenario_count": 18,
+        "operation_contract": {
+          "@": "functional TensorMap composition; output allocation is inside timing",
+          "svd_compact": "functional factorization; result allocation is inside timing"
+        },
+        "operation_counts": {
+          "mul": 20,
+          "svd": 20
+        }
+      },
+      "registered_scenario_count": 203,
+      "standard_case_count": 132,
+      "tensor_networks": {
+        "case_count": 88,
+        "cases": [
+          {
+            "dimensions": [
+              10,
+              4,
+              3
+            ],
+            "dtype": "float64",
+            "sector": "trivial",
+            "sigmas": null,
+            "topology": "mpo"
+          },
+          {
+            "dimensions": [
+              40,
+              4,
+              3
+            ],
+            "dtype": "float64",
+            "sector": "trivial",
+            "sigmas": null,
+            "topology": "mpo"
+          },
+          {
+            "dimensions": [
+              160,
+              4,
+              3
+            ],
+            "dtype": "float64",
+            "sector": "trivial",
+            "sigmas": null,
+            "topology": "mpo"
+          },
+          {
+            "dimensions": [
+              640,
+              4,
+              3
+            ],
+            "dtype": "float64",
+            "sector": "trivial",
+            "sigmas": null,
+            "topology": "mpo"
+          },
+          {
+            "dimensions": [
+              2560,
+              4,
+              3
+            ],
+            "dtype": "float64",
+            "sector": "trivial",
+            "sigmas": null,
+            "topology": "mpo"
+          },
+          {
+            "dimensions": [
+              100,
+              10,
+              10
+            ],
+            "dtype": "float64",
+            "sector": "trivial",
+            "sigmas": null,
+            "topology": "mpo"
+          },
+          {
+            "dimensions": [
+              200,
+              10,
+              10
+            ],
+            "dtype": "float64",
+            "sector": "trivial",
+            "sigmas": null,
+            "topology": "mpo"
+          },
+          {
+            "dimensions": [
+              300,
+              20,
+              20
+            ],
+            "dtype": "float64",
+            "sector": "trivial",
+            "sigmas": null,
+            "topology": "mpo"
+          },
+          {
+            "dimensions": [
+              10,
+              4,
+              4
+            ],
+            "dtype": "float64",
+            "sector": "z2",
+            "sigmas": [
+              0.5,
+              0.5,
+              0.5
+            ],
+            "topology": "mpo"
+          },
+          {
+            "dimensions": [
+              40,
+              4,
+              4
+            ],
+            "dtype": "float64",
+            "sector": "z2",
+            "sigmas": [
+              0.5,
+              0.5,
+              0.5
+            ],
+            "topology": "mpo"
+          },
+          {
+            "dimensions": [
+              160,
+              4,
+              4
+            ],
+            "dtype": "float64",
+            "sector": "z2",
+            "sigmas": [
+              0.5,
+              0.5,
+              0.5
+            ],
+            "topology": "mpo"
+          },
+          {
+            "dimensions": [
+              640,
+              4,
+              4
+            ],
+            "dtype": "float64",
+            "sector": "z2",
+            "sigmas": [
+              0.5,
+              0.5,
+              0.5
+            ],
+            "topology": "mpo"
+          },
+          {
+            "dimensions": [
+              2560,
+              4,
+              4
+            ],
+            "dtype": "float64",
+            "sector": "z2",
+            "sigmas": [
+              0.5,
+              0.5,
+              0.5
+            ],
+            "topology": "mpo"
+          },
+          {
+            "dimensions": [
+              100,
+              10,
+              10
+            ],
+            "dtype": "float64",
+            "sector": "z2",
+            "sigmas": [
+              0.5,
+              0.5,
+              0.5
+            ],
+            "topology": "mpo"
+          },
+          {
+            "dimensions": [
+              200,
+              10,
+              10
+            ],
+            "dtype": "float64",
+            "sector": "z2",
+            "sigmas": [
+              0.5,
+              0.5,
+              0.5
+            ],
+            "topology": "mpo"
+          },
+          {
+            "dimensions": [
+              300,
+              20,
+              20
+            ],
+            "dtype": "float64",
+            "sector": "z2",
+            "sigmas": [
+              0.5,
+              0.5,
+              0.5
+            ],
+            "topology": "mpo"
+          },
+          {
+            "dimensions": [
+              40,
+              5,
+              3
+            ],
+            "dtype": "float64",
+            "sector": "u1",
+            "sigmas": [
+              0.5,
+              0.5,
+              0.5
+            ],
+            "topology": "mpo"
+          },
+          {
+            "dimensions": [
+              160,
+              5,
+              3
+            ],
+            "dtype": "float64",
+            "sector": "u1",
+            "sigmas": [
+              0.5,
+              0.5,
+              0.5
+            ],
+            "topology": "mpo"
+          },
+          {
+            "dimensions": [
+              640,
+              5,
+              3
+            ],
+            "dtype": "float64",
+            "sector": "u1",
+            "sigmas": [
+              0.5,
+              0.5,
+              0.5
+            ],
+            "topology": "mpo"
+          },
+          {
+            "dimensions": [
+              2560,
+              5,
+              3
+            ],
+            "dtype": "float64",
+            "sector": "u1",
+            "sigmas": [
+              0.5,
+              0.5,
+              0.5
+            ],
+            "topology": "mpo"
+          },
+          {
+            "dimensions": [
+              6120,
+              5,
+              3
+            ],
+            "dtype": "float64",
+            "sector": "u1",
+            "sigmas": [
+              0.5,
+              0.5,
+              0.5
+            ],
+            "topology": "mpo"
+          },
+          {
+            "dimensions": [
+              200,
+              20,
+              20
+            ],
+            "dtype": "float64",
+            "sector": "u1",
+            "sigmas": [
+              0.5,
+              0.5,
+              0.5
+            ],
+            "topology": "mpo"
+          },
+          {
+            "dimensions": [
+              400,
+              20,
+              20
+            ],
+            "dtype": "float64",
+            "sector": "u1",
+            "sigmas": [
+              0.5,
+              0.5,
+              0.5
+            ],
+            "topology": "mpo"
+          },
+          {
+            "dimensions": [
+              400,
+              40,
+              40
+            ],
+            "dtype": "float64",
+            "sector": "u1",
+            "sigmas": [
+              0.5,
+              0.5,
+              0.5
+            ],
+            "topology": "mpo"
+          },
+          {
+            "dimensions": [
+              40,
+              5,
+              3
+            ],
+            "dtype": "float64",
+            "sector": "su2",
+            "sigmas": [
+              2.0,
+              2.0,
+              2.0
+            ],
+            "topology": "mpo"
+          },
+          {
+            "dimensions": [
+              160,
+              5,
+              3
+            ],
+            "dtype": "float64",
+            "sector": "su2",
+            "sigmas": [
+              2.0,
+              2.0,
+              2.0
+            ],
+            "topology": "mpo"
+          },
+          {
+            "dimensions": [
+              640,
+              5,
+              3
+            ],
+            "dtype": "float64",
+            "sector": "su2",
+            "sigmas": [
+              2.0,
+              2.0,
+              2.0
+            ],
+            "topology": "mpo"
+          },
+          {
+            "dimensions": [
+              2560,
+              5,
+              3
+            ],
+            "dtype": "float64",
+            "sector": "su2",
+            "sigmas": [
+              2.0,
+              2.0,
+              2.0
+            ],
+            "topology": "mpo"
+          },
+          {
+            "dimensions": [
+              6120,
+              5,
+              3
+            ],
+            "dtype": "float64",
+            "sector": "su2",
+            "sigmas": [
+              2.0,
+              2.0,
+              2.0
+            ],
+            "topology": "mpo"
+          },
+          {
+            "dimensions": [
+              200,
+              20,
+              20
+            ],
+            "dtype": "float64",
+            "sector": "su2",
+            "sigmas": [
+              2.0,
+              2.0,
+              2.0
+            ],
+            "topology": "mpo"
+          },
+          {
+            "dimensions": [
+              400,
+              20,
+              20
+            ],
+            "dtype": "float64",
+            "sector": "su2",
+            "sigmas": [
+              2.0,
+              2.0,
+              2.0
+            ],
+            "topology": "mpo"
+          },
+          {
+            "dimensions": [
+              400,
+              40,
+              40
+            ],
+            "dtype": "float64",
+            "sector": "su2",
+            "sigmas": [
+              2.0,
+              2.0,
+              2.0
+            ],
+            "topology": "mpo"
+          },
+          {
+            "dimensions": [
+              3,
+              2,
+              2,
+              50
+            ],
+            "dtype": "float64",
+            "sector": "trivial",
+            "sigmas": null,
+            "topology": "pepo"
+          },
+          {
+            "dimensions": [
+              3,
+              3,
+              3,
+              100
+            ],
+            "dtype": "float64",
+            "sector": "trivial",
+            "sigmas": null,
+            "topology": "pepo"
+          },
+          {
+            "dimensions": [
+              4,
+              2,
+              2,
+              50
+            ],
+            "dtype": "float64",
+            "sector": "trivial",
+            "sigmas": null,
+            "topology": "pepo"
+          },
+          {
+            "dimensions": [
+              4,
+              3,
+              3,
+              100
+            ],
+            "dtype": "float64",
+            "sector": "trivial",
+            "sigmas": null,
+            "topology": "pepo"
+          },
+          {
+            "dimensions": [
+              5,
+              2,
+              2,
+              50
+            ],
+            "dtype": "float64",
+            "sector": "trivial",
+            "sigmas": null,
+            "topology": "pepo"
+          },
+          {
+            "dimensions": [
+              5,
+              2,
+              3,
+              100
+            ],
+            "dtype": "float64",
+            "sector": "trivial",
+            "sigmas": null,
+            "topology": "pepo"
+          },
+          {
+            "dimensions": [
+              6,
+              2,
+              2,
+              50
+            ],
+            "dtype": "float64",
+            "sector": "trivial",
+            "sigmas": null,
+            "topology": "pepo"
+          },
+          {
+            "dimensions": [
+              6,
+              3,
+              2,
+              100
+            ],
+            "dtype": "float64",
+            "sector": "trivial",
+            "sigmas": null,
+            "topology": "pepo"
+          },
+          {
+            "dimensions": [
+              4,
+              2,
+              2,
+              50
+            ],
+            "dtype": "float64",
+            "sector": "z2",
+            "sigmas": [
+              0.5,
+              0.5,
+              0.5,
+              0.5
+            ],
+            "topology": "pepo"
+          },
+          {
+            "dimensions": [
+              4,
+              4,
+              4,
+              100
+            ],
+            "dtype": "float64",
+            "sector": "z2",
+            "sigmas": [
+              0.5,
+              0.5,
+              0.5,
+              0.5
+            ],
+            "topology": "pepo"
+          },
+          {
+            "dimensions": [
+              5,
+              2,
+              2,
+              50
+            ],
+            "dtype": "float64",
+            "sector": "z2",
+            "sigmas": [
+              0.5,
+              0.5,
+              0.5,
+              0.5
+            ],
+            "topology": "pepo"
+          },
+          {
+            "dimensions": [
+              5,
+              3,
+              4,
+              100
+            ],
+            "dtype": "float64",
+            "sector": "z2",
+            "sigmas": [
+              0.5,
+              0.5,
+              0.5,
+              0.5
+            ],
+            "topology": "pepo"
+          },
+          {
+            "dimensions": [
+              6,
+              2,
+              2,
+              50
+            ],
+            "dtype": "float64",
+            "sector": "z2",
+            "sigmas": [
+              0.5,
+              0.5,
+              0.5,
+              0.5
+            ],
+            "topology": "pepo"
+          },
+          {
+            "dimensions": [
+              6,
+              2,
+              4,
+              100
+            ],
+            "dtype": "float64",
+            "sector": "z2",
+            "sigmas": [
+              0.5,
+              0.5,
+              0.5,
+              0.5
+            ],
+            "topology": "pepo"
+          },
+          {
+            "dimensions": [
+              8,
+              2,
+              2,
+              50
+            ],
+            "dtype": "float64",
+            "sector": "z2",
+            "sigmas": [
+              0.5,
+              0.5,
+              0.5,
+              0.5
+            ],
+            "topology": "pepo"
+          },
+          {
+            "dimensions": [
+              8,
+              3,
+              2,
+              100
+            ],
+            "dtype": "float64",
+            "sector": "z2",
+            "sigmas": [
+              0.5,
+              0.5,
+              0.5,
+              0.5
+            ],
+            "topology": "pepo"
+          },
+          {
+            "dimensions": [
+              4,
+              2,
+              2,
+              100
+            ],
+            "dtype": "float64",
+            "sector": "u1",
+            "sigmas": [
+              0.5,
+              0.5,
+              0.5,
+              0.5
+            ],
+            "topology": "pepo"
+          },
+          {
+            "dimensions": [
+              4,
+              4,
+              4,
+              200
+            ],
+            "dtype": "float64",
+            "sector": "u1",
+            "sigmas": [
+              0.5,
+              0.5,
+              0.5,
+              0.5
+            ],
+            "topology": "pepo"
+          },
+          {
+            "dimensions": [
+              6,
+              2,
+              2,
+              100
+            ],
+            "dtype": "float64",
+            "sector": "u1",
+            "sigmas": [
+              0.5,
+              0.5,
+              0.5,
+              0.5
+            ],
+            "topology": "pepo"
+          },
+          {
+            "dimensions": [
+              6,
+              3,
+              4,
+              200
+            ],
+            "dtype": "float64",
+            "sector": "u1",
+            "sigmas": [
+              0.5,
+              0.5,
+              0.5,
+              0.5
+            ],
+            "topology": "pepo"
+          },
+          {
+            "dimensions": [
+              8,
+              2,
+              2,
+              100
+            ],
+            "dtype": "float64",
+            "sector": "u1",
+            "sigmas": [
+              0.5,
+              0.5,
+              0.5,
+              0.5
+            ],
+            "topology": "pepo"
+          },
+          {
+            "dimensions": [
+              8,
+              2,
+              4,
+              200
+            ],
+            "dtype": "float64",
+            "sector": "u1",
+            "sigmas": [
+              0.5,
+              0.5,
+              0.5,
+              0.5
+            ],
+            "topology": "pepo"
+          },
+          {
+            "dimensions": [
+              10,
+              2,
+              2,
+              50
+            ],
+            "dtype": "float64",
+            "sector": "u1",
+            "sigmas": [
+              0.5,
+              0.5,
+              0.5,
+              0.5
+            ],
+            "topology": "pepo"
+          },
+          {
+            "dimensions": [
+              10,
+              3,
+              2,
+              100
+            ],
+            "dtype": "float64",
+            "sector": "u1",
+            "sigmas": [
+              0.5,
+              0.5,
+              0.5,
+              0.5
+            ],
+            "topology": "pepo"
+          },
+          {
+            "dimensions": [
+              4,
+              2,
+              2,
+              100
+            ],
+            "dtype": "float64",
+            "sector": "su2",
+            "sigmas": [
+              2.0,
+              2.0,
+              2.0,
+              2.0
+            ],
+            "topology": "pepo"
+          },
+          {
+            "dimensions": [
+              4,
+              4,
+              4,
+              200
+            ],
+            "dtype": "float64",
+            "sector": "su2",
+            "sigmas": [
+              2.0,
+              2.0,
+              2.0,
+              2.0
+            ],
+            "topology": "pepo"
+          },
+          {
+            "dimensions": [
+              6,
+              2,
+              2,
+              100
+            ],
+            "dtype": "float64",
+            "sector": "su2",
+            "sigmas": [
+              2.0,
+              2.0,
+              2.0,
+              2.0
+            ],
+            "topology": "pepo"
+          },
+          {
+            "dimensions": [
+              6,
+              3,
+              4,
+              200
+            ],
+            "dtype": "float64",
+            "sector": "su2",
+            "sigmas": [
+              2.0,
+              2.0,
+              2.0,
+              2.0
+            ],
+            "topology": "pepo"
+          },
+          {
+            "dimensions": [
+              8,
+              2,
+              2,
+              100
+            ],
+            "dtype": "float64",
+            "sector": "su2",
+            "sigmas": [
+              2.0,
+              2.0,
+              2.0,
+              2.0
+            ],
+            "topology": "pepo"
+          },
+          {
+            "dimensions": [
+              8,
+              2,
+              4,
+              200
+            ],
+            "dtype": "float64",
+            "sector": "su2",
+            "sigmas": [
+              2.0,
+              2.0,
+              2.0,
+              2.0
+            ],
+            "topology": "pepo"
+          },
+          {
+            "dimensions": [
+              10,
+              2,
+              2,
+              50
+            ],
+            "dtype": "float64",
+            "sector": "su2",
+            "sigmas": [
+              2.0,
+              2.0,
+              2.0,
+              2.0
+            ],
+            "topology": "pepo"
+          },
+          {
+            "dimensions": [
+              10,
+              3,
+              2,
+              100
+            ],
+            "dtype": "float64",
+            "sector": "su2",
+            "sigmas": [
+              2.0,
+              2.0,
+              2.0,
+              2.0
+            ],
+            "topology": "pepo"
+          },
+          {
+            "dimensions": [
+              2
+            ],
+            "dtype": "float64",
+            "sector": "trivial",
+            "sigmas": null,
+            "topology": "mera"
+          },
+          {
+            "dimensions": [
+              3
+            ],
+            "dtype": "float64",
+            "sector": "trivial",
+            "sigmas": null,
+            "topology": "mera"
+          },
+          {
+            "dimensions": [
+              4
+            ],
+            "dtype": "float64",
+            "sector": "trivial",
+            "sigmas": null,
+            "topology": "mera"
+          },
+          {
+            "dimensions": [
+              8
+            ],
+            "dtype": "float64",
+            "sector": "trivial",
+            "sigmas": null,
+            "topology": "mera"
+          },
+          {
+            "dimensions": [
+              12
+            ],
+            "dtype": "float64",
+            "sector": "trivial",
+            "sigmas": null,
+            "topology": "mera"
+          },
+          {
+            "dimensions": [
+              16
+            ],
+            "dtype": "float64",
+            "sector": "trivial",
+            "sigmas": null,
+            "topology": "mera"
+          },
+          {
+            "dimensions": [
+              2
+            ],
+            "dtype": "float64",
+            "sector": "z2",
+            "sigmas": [
+              0.5
+            ],
+            "topology": "mera"
+          },
+          {
+            "dimensions": [
+              4
+            ],
+            "dtype": "float64",
+            "sector": "z2",
+            "sigmas": [
+              0.5
+            ],
+            "topology": "mera"
+          },
+          {
+            "dimensions": [
+              8
+            ],
+            "dtype": "float64",
+            "sector": "z2",
+            "sigmas": [
+              0.5
+            ],
+            "topology": "mera"
+          },
+          {
+            "dimensions": [
+              12
+            ],
+            "dtype": "float64",
+            "sector": "z2",
+            "sigmas": [
+              0.5
+            ],
+            "topology": "mera"
+          },
+          {
+            "dimensions": [
+              16
+            ],
+            "dtype": "float64",
+            "sector": "z2",
+            "sigmas": [
+              0.5
+            ],
+            "topology": "mera"
+          },
+          {
+            "dimensions": [
+              20
+            ],
+            "dtype": "float64",
+            "sector": "z2",
+            "sigmas": [
+              0.5
+            ],
+            "topology": "mera"
+          },
+          {
+            "dimensions": [
+              4
+            ],
+            "dtype": "float64",
+            "sector": "u1",
+            "sigmas": [
+              0.5
+            ],
+            "topology": "mera"
+          },
+          {
+            "dimensions": [
+              8
+            ],
+            "dtype": "float64",
+            "sector": "u1",
+            "sigmas": [
+              0.5
+            ],
+            "topology": "mera"
+          },
+          {
+            "dimensions": [
+              12
+            ],
+            "dtype": "float64",
+            "sector": "u1",
+            "sigmas": [
+              0.5
+            ],
+            "topology": "mera"
+          },
+          {
+            "dimensions": [
+              16
+            ],
+            "dtype": "float64",
+            "sector": "u1",
+            "sigmas": [
+              0.5
+            ],
+            "topology": "mera"
+          },
+          {
+            "dimensions": [
+              22
+            ],
+            "dtype": "float64",
+            "sector": "u1",
+            "sigmas": [
+              0.5
+            ],
+            "topology": "mera"
+          },
+          {
+            "dimensions": [
+              28
+            ],
+            "dtype": "float64",
+            "sector": "u1",
+            "sigmas": [
+              0.5
+            ],
+            "topology": "mera"
+          },
+          {
+            "dimensions": [
+              4
+            ],
+            "dtype": "float64",
+            "sector": "su2",
+            "sigmas": [
+              2.0
+            ],
+            "topology": "mera"
+          },
+          {
+            "dimensions": [
+              8
+            ],
+            "dtype": "float64",
+            "sector": "su2",
+            "sigmas": [
+              2.0
+            ],
+            "topology": "mera"
+          },
+          {
+            "dimensions": [
+              12
+            ],
+            "dtype": "float64",
+            "sector": "su2",
+            "sigmas": [
+              2.0
+            ],
+            "topology": "mera"
+          },
+          {
+            "dimensions": [
+              16
+            ],
+            "dtype": "float64",
+            "sector": "su2",
+            "sigmas": [
+              2.0
+            ],
+            "topology": "mera"
+          },
+          {
+            "dimensions": [
+              22
+            ],
+            "dtype": "float64",
+            "sector": "su2",
+            "sigmas": [
+              2.0
+            ],
+            "topology": "mera"
+          },
+          {
+            "dimensions": [
+              28
+            ],
+            "dtype": "float64",
+            "sector": "su2",
+            "sigmas": [
+              2.0
+            ],
+            "topology": "mera"
+          }
+        ],
+        "extensions": {
+          "jit": "small Trivial MPO/PEPO/MERA cases are explicit-only"
+        },
+        "sector_counts": {
+          "su2": 22,
+          "trivial": 22,
+          "u1": 22,
+          "z2": 22
+        },
+        "topology_counts": {
+          "mera": 24,
+          "mpo": 32,
+          "pepo": 32
+        },
+        "topology_definitions": {
+          "mera": {
+            "conjugate": [
+              false,
+              false,
+              true,
+              false,
+              false,
+              true,
+              true,
+              false,
+              true,
+              false,
+              false,
+              true
+            ],
+            "labels": [
+              [
+                9,
+                3,
+                4,
+                5,
+                1,
+                2
+              ],
+              [
+                1,
+                2,
+                7,
+                12
+              ],
+              [
+                3,
+                4,
+                11,
+                13
+              ],
+              [
+                8,
+                5,
+                15,
+                6
+              ],
+              [
+                6,
+                7,
+                19
+              ],
+              [
+                8,
+                9,
+                17,
+                10
+              ],
+              [
+                10,
+                11,
+                22
+              ],
+              [
+                12,
+                14,
+                20
+              ],
+              [
+                13,
+                14,
+                23
+              ],
+              [
+                18,
+                19,
+                20,
+                21,
+                22,
+                23
+              ],
+              [
+                16,
+                15,
+                18
+              ],
+              [
+                16,
+                17,
+                21
+              ]
+            ],
+            "operand_positions": [
+              3,
+              0,
+              0,
+              0,
+              1,
+              0,
+              1,
+              1,
+              1,
+              2,
+              1,
+              1
+            ],
+            "order": [
+              1,
+              2,
+              3,
+              4,
+              6,
+              5,
+              7,
+              10,
+              8,
+              9,
+              11,
+              14,
+              20,
+              23,
+              12,
+              13,
+              19,
+              22,
+              15,
+              18,
+              16,
+              17,
+              21
+            ]
+          },
+          "mpo": {
+            "conjugate": [
+              false,
+              false,
+              false,
+              true,
+              false
+            ],
+            "labels": [
+              [
+                4,
+                2,
+                1
+              ],
+              [
+                1,
+                3,
+                6
+              ],
+              [
+                2,
+                5,
+                3,
+                7
+              ],
+              [
+                4,
+                5,
+                8
+              ],
+              [
+                6,
+                7,
+                8
+              ]
+            ],
+            "operand_positions": [
+              2,
+              0,
+              1,
+              0,
+              3
+            ],
+            "order": [
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7,
+              8
+            ]
+          },
+          "pepo": {
+            "conjugate": [
+              false,
+              false,
+              false,
+              false,
+              true,
+              false,
+              false
+            ],
+            "labels": [
+              [
+                18,
+                7,
+                4,
+                2,
+                1
+              ],
+              [
+                1,
+                3,
+                6,
+                9,
+                10
+              ],
+              [
+                2,
+                17,
+                5,
+                3,
+                11
+              ],
+              [
+                4,
+                16,
+                8,
+                5,
+                6,
+                12
+              ],
+              [
+                7,
+                15,
+                8,
+                9,
+                13
+              ],
+              [
+                10,
+                11,
+                12,
+                13,
+                14
+              ],
+              [
+                14,
+                15,
+                16,
+                17,
+                18
+              ]
+            ],
+            "operand_positions": [
+              2,
+              5,
+              0,
+              1,
+              0,
+              4,
+              3
+            ],
+            "order": [
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7,
+              8,
+              9,
+              10,
+              11,
+              12,
+              13,
+              14,
+              15,
+              16,
+              17,
+              18
+            ]
+          }
+        },
+        "workload_contract": {
+          "execution": "Tensor0 functional ncon with a recorded expression tree",
+          "parameters": "fixed dtype, sector, dimension, and sigma matrix",
+          "result_boundary": "rank_zero_tensormap",
+          "setup": "space and random tensor construction outside timing",
+          "topologies": "fixed MPO, PEPO, and MERA index graphs"
+        }
+      },
+      "transforms": {
+        "case_count": 4,
+        "cases": [
+          {
+            "dimensions": [
+              2048,
+              2048
+            ],
+            "dtype": "float64",
+            "logical_input_mib": 32,
+            "operation": "permute",
+            "permutation": [
+              [
+                2,
+                1
+              ],
+              []
+            ],
+            "sector": "trivial",
+            "sigmas": null
+          },
+          {
+            "dimensions": [
+              8192,
+              512
+            ],
+            "dtype": "float64",
+            "logical_input_mib": 32,
+            "operation": "permute",
+            "permutation": [
+              [
+                2,
+                1
+              ],
+              []
+            ],
+            "sector": "trivial",
+            "sigmas": null
+          },
+          {
+            "dimensions": [
+              2048,
+              2048
+            ],
+            "dtype": "float64",
+            "logical_input_mib": 32,
+            "operation": "permute",
+            "permutation": [
+              [
+                2,
+                1
+              ],
+              []
+            ],
+            "sector": "z2",
+            "sigmas": [
+              0.5,
+              0.5
+            ]
+          },
+          {
+            "dimensions": [
+              8192,
+              512
+            ],
+            "dtype": "float64",
+            "logical_input_mib": 32,
+            "operation": "permute",
+            "permutation": [
+              [
+                2,
+                1
+              ],
+              []
+            ],
+            "sector": "z2",
+            "sigmas": [
+              0.5,
+              0.5
+            ]
+          }
+        ],
+        "extension_scenario_count": 15,
+        "memory_contract": {
+          "boundary": "input remains live while a distinct output is allocated",
+          "logical_input_mib": [
+            32
+          ],
+          "minimum_live_dense_mib": [
+            64
+          ]
+        },
+        "operation_contract": {
+          "permute": "functional operation; output allocation is inside timing",
+          "twist": "functional transform; result allocation is inside timing"
+        },
+        "smoke_case_count": 1
+      }
+    },
+    "benchmark_support_files_sha256": {
+      "benchmarks/standard/__init__.py": "f4dacd12ff29aafc1b8978ebb58d518fb7ddfd46a8570e63ae7b395d85f7c3ab",
+      "benchmarks/standard/_inputs.py": "f427c7acb637ab0fb2d61b43abedfad99e9bc215ab6cccb66e4ed5d6270428d7",
+      "benchmarks/standard/_runner.py": "ed6b76f35c9b50e52f226d9ac370ef8669bf497e922ef6a0081cbffaf6b11303",
+      "benchmarks/standard/_specs.py": "805eadb6f328d282602cf9ed572a7a25807f186be2e8067e37133edefc84218f",
+      "benchmarks/standard/contractions/__init__.py": "08ab3fd7b7cf13b838d6339124314e779cf202ddc793319e93c6e8ae2d059b8c",
+      "benchmarks/standard/contractions/api_networks/__init__.py": "2c1df6bd8b45f3caf5ae9ce3ea947311d2c2f96247a7218262afe22b82d9e41a",
+      "benchmarks/standard/contractions/api_networks/cases.py": "ba4e3ba983c36fdeda0387f397c0e6694b46b7ee66bf0f5a1eac46b9323f4c4d",
+      "benchmarks/standard/contractions/api_networks/params.toml": "27050f72a64b404550934e3a96018536c1e9b2c0da9a82d56b8a9eedce8528dc",
+      "benchmarks/standard/contractions/primitives/__init__.py": "46dfd89a75fb24e7eb976bad2b97151794adee7751461f41050436c96163a04e",
+      "benchmarks/standard/contractions/primitives/cases.py": "a278a9bf634d171712197b38c974d2f685ca4c43872f9633479018f8e17a2f39",
+      "benchmarks/standard/contractions/tensor_networks/__init__.py": "797909d1032815ae88c60ff81077e668c4ed23eb3ce90c1284a82b45962c6243",
+      "benchmarks/standard/contractions/tensor_networks/cases.py": "6ded416d34bce66c8a701f3fdd8ceb0e7af9337b6d5bb9aaa505be1a6527374c",
+      "benchmarks/standard/contractions/tensor_networks/params.toml": "affc11d8c115224f5d97bd8e3b64094fbdb790fd0409378a746c4a74585a4602",
+      "benchmarks/standard/diagnostics/__init__.py": "4ff6e2b9123a17379e6b8ed861eeb2b919c8c53999bca0fe4750bb524c0c241a",
+      "benchmarks/standard/diagnostics/cuda_owner_fiber.py": "25a0f399d452fb4c8d121ab482e1cdbc420a72421d999625f2e6f48e988df1a3",
+      "benchmarks/standard/diagnostics/layout_cache.py": "90c498b228933fdbf12471835aa8900997b8b39046576e12173c5bb25f9e0373",
+      "benchmarks/standard/diagnostics/stride_update.py": "20641ebfda61620cac46719351116db5e8badef197034426ff92646a50d45a23",
+      "benchmarks/standard/diagnostics/strided_indices.py": "22e43de228d1027886472428df427a2a6a809ff975261f2668890d85682afc7f",
+      "benchmarks/standard/linalg/__init__.py": "f8babdfa8e62edeedfe93c31319c585d415247cdcc045e627e93f651cf810e46",
+      "benchmarks/standard/linalg/cases.py": "e65169e420b97c74fc4b2beb6fc12a9f9ca104cd1129bb9491f6aaf6a6de0e7b",
+      "benchmarks/standard/linalg/params.toml": "2c7c9947b6ed6e31ff051edb79340aa09d29a6a1f7416af412e7dc1bf3c9c233",
+      "benchmarks/standard/transforms/__init__.py": "ad3f8dbf2e7b0a55574eb694b4c887ae92d1ce55a27d8b17f6e5793e0c56731f",
+      "benchmarks/standard/transforms/cases.py": "35ef61c1f04f77791667cc93a56e072233b3563955f7a61e2bf18ba696d994a7",
+      "benchmarks/standard/transforms/params.toml": "8d7d6ba62dbe09be3af148b87094302df9a71c874460dfe446d7ec9db29c6354"
+    },
+    "jax": "0.10.1",
+    "jax_backend": "cpu",
+    "jax_devices": [
+      "cpu:0"
+    ],
+    "jax_enable_x64": true,
+    "platform": "Linux-7.2.6-arch2-1-x86_64-with-glibc2.44",
+    "processor": "unknown",
+    "public_repository": {
+      "binary_diff_sha256": "a735338e40fd3a0b00db2cabe46def628c3cade537a15a7e4549c191210285a6",
+      "dirty": true,
+      "revision": "333de65d10bbf4381b8189f0433927c8286c8729",
+      "untracked_files": [
+        {
+          "path": "benchmarks/cross_backend/results/2026-10-09-333de65-medium-cpu-native1-cpu2-20261009T051330Z/latency.svg",
+          "sha256": "dec4269593f8b4aa3dbd8c92799cbd528fc697263b400465130f4e9e55082a9d"
+        },
+        {
+          "path": "benchmarks/cross_backend/results/2026-10-09-333de65-medium-cpu-native1-cpu2-20261009T051330Z/report.md",
+          "sha256": "755bcc5da28cfa7165718f9db53fc16aed1340ef95c1d51510017f305aeb99c0"
+        },
+        {
+          "path": "benchmarks/cross_backend/results/2026-10-09-333de65-medium-cpu-native1-cpu2-20261009T051330Z/results.json",
+          "sha256": "f91ec344da64a79b5dd16714e23c7b928afdd839ecbcc244a60340b8091befef"
+        },
+        {
+          "path": "benchmarks/cross_backend/results/2026-10-09-333de65-medium-cpu-native1-cpu2-20261009T051330Z/round-responses.json",
+          "sha256": "bee1012c9477bfe5e4bcd81cedc0dae4694fb3589c641c9b5d4d47c54a21d2a9"
+        },
+        {
+          "path": "benchmarks/cross_backend/results/README.md",
+          "sha256": "a40fd8f649b1dd2438be4513c64f5458107ae8da5f65784126f18fae87aac413"
+        },
+        {
+          "path": "benchmarks/standard/results/README.md",
+          "sha256": "e1d7a8e28547ba97c8a61b463db3288bfa887ac1d6436fd80d688d6f8f3093b6"
+        }
+      ]
+    },
+    "python": "3.14.4",
+    "tensor0": "0.0.0",
+    "thread_settings": {
+      "MKL_NUM_THREADS": "1",
+      "OMP_NUM_THREADS": "1",
+      "OPENBLAS_NUM_THREADS": "1",
+      "XLA_FLAGS": "--xla_cpu_multi_thread_eigen=false"
+    }
+  },
+  "publication_metadata": {
+    "as_run_provenance": "Original runner payload fields, including historical paths and support hashes, are unchanged; they are not a manifest of the reorganized publication.",
+    "configuration_id": "20261009T051330Z",
+    "environment_notes": {
+      "boost_enabled": true,
+      "clocks_and_temperatures_locked": false,
+      "cpu_governor": "powersave",
+      "julia": "1.12.5",
+      "tensorkit": "0.16.5"
+    },
+    "identity": {
+      "cargo": "cargo 1.95.0 (f2d3ce0bd 2026-03-21)",
+      "cpu": "AMD Ryzen 7 7840HS w/ Radeon 780M Graphics",
+      "cpu_affinity": [
+        2
+      ],
+      "current_worktree_production_dirty": [
+        "crates/tensor0-py/native/execute/reduction.h",
+        "crates/tensor0-py/native/execute/scheduling.cc",
+        "crates/tensor0-py/native/execute/scheduling.h",
+        "crates/tensor0-py/native/ffi/reduction_impl.h"
+      ],
+      "execution_source_description": "HEAD 333de65 + benchmark-only runner changes; loaded native binary is unchanged. Working tree also contains pre-existing unbuilt native-source changes, listed separately.",
+      "ffi_build_versions": [
+        "0.10.1",
+        "0.10.1"
+      ],
+      "historical_production_HEAD_differences": [],
+      "historical_production_files_matching_HEAD": 160,
+      "jax": "0.10.1",
+      "jaxlib": "0.10.1",
+      "logical_cpus": 16,
+      "matplotlib": "3.10.9",
+      "native_bytes": 85932624,
+      "native_extension": "src/tensor0/_native.cpython-314-x86_64-linux-gnu.so",
+      "native_limit_verification": "Set and queried in-process before runpy; asserted unchanged after completion",
+      "native_sha256": "04dfed3079e7737dc5427a8390c672fdf33333a60ddc18217db37e268a41ca57",
+      "native_verification": "Loaded artifact SHA256 matches the previously build-verified HEAD artifact and historical 2026-10-05 run; no build performed in this run.",
+      "native_version": "0.0.0",
+      "native_worker_limit": 1,
+      "numpy": "2.4.6",
+      "physical_cores": 8,
+      "production_source_manifest_sha256": "7aee85eb808d1f57cf5a64397a7231e5f69e651034bedd938b0328b54ea9b806",
+      "python": "3.14.4",
+      "ram_gib": 46,
+      "run_id": "20261009T051330Z-standard-default",
+      "runner_support_hashes_location": "results.json: environment.benchmark_support_files_sha256 and benchmark_script_sha256",
+      "rustc": "rustc 1.95.0 (59807616e 2026-04-14)",
+      "source_revision": "333de65d10bbf4381b8189f0433927c8286c8729",
+      "tensor0_module": "src/tensor0/__init__.py"
+    },
+    "isolation": "Non-isolated workstation; not an interference-free formal baseline.",
+    "limitations": [
+      "CPU2 affinity does not isolate its SMT sibling CPU10 or package-wide resources.",
+      "CPU10 contention was observed during cross-backend measurement, reaching 100% busy at two-second observation resolution.",
+      "Loaded native artifact corresponds to revision 333de65; pre-existing unbuilt workspace native changes were not measured or validated."
+    ],
+    "measurement_date_utc": "2026-10-09",
+    "status": "exploratory_snapshot"
+  },
+  "results": [
+    {
+      "cache_policy": "warmed_metadata",
+      "description": "Tensor0 mul workload via TensorMap @; sector=trivial, dimensions=(2, 2, 2)",
+      "dtype": "float64",
+      "execution": "eager",
+      "group": "linalg",
+      "id": "linalg.mul.trivial.float64.d2x2x2.eager",
+      "iqr_ms": 0.006386499999999989,
+      "max_ms": 0.087233,
+      "median_ms": 0.073988,
+      "min_ms": 0.07006,
+      "repeat": 7,
+      "scenario_profile": "quick",
+      "size_label": "d2x2x2",
+      "times_ms": [
+        0.087233,
+        0.08065,
+        0.073988,
+        0.071594,
+        0.07006,
+        0.071383,
+        0.0751
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "warmed_metadata",
+      "description": "Tensor0 mul workload via TensorMap @; sector=trivial, dimensions=(8, 8, 8)",
+      "dtype": "float64",
+      "execution": "eager",
+      "group": "linalg",
+      "id": "linalg.mul.trivial.float64.d8x8x8.eager",
+      "iqr_ms": 0.026118000000000002,
+      "max_ms": 0.126385,
+      "median_ms": 0.115846,
+      "min_ms": 0.087353,
+      "repeat": 7,
+      "scenario_profile": "full-only",
+      "size_label": "d8x8x8",
+      "times_ms": [
+        0.115846,
+        0.120504,
+        0.126385,
+        0.090739,
+        0.087353,
+        0.097202,
+        0.119673
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "warmed_metadata",
+      "description": "Tensor0 mul workload via TensorMap @; sector=trivial, dimensions=(32, 32, 32)",
+      "dtype": "float64",
+      "execution": "eager",
+      "group": "linalg",
+      "id": "linalg.mul.trivial.float64.d32x32x32.eager",
+      "iqr_ms": 0.014181500000000014,
+      "max_ms": 0.122298,
+      "median_ms": 0.094676,
+      "min_ms": 0.084968,
+      "repeat": 7,
+      "scenario_profile": "full-only",
+      "size_label": "d32x32x32",
+      "times_ms": [
+        0.122298,
+        0.103383,
+        0.103333,
+        0.094676,
+        0.091561,
+        0.086792,
+        0.084968
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "warmed_metadata",
+      "description": "Tensor0 mul workload via TensorMap @; sector=trivial, dimensions=(64, 64, 64)",
+      "dtype": "float64",
+      "execution": "eager",
+      "group": "linalg",
+      "id": "linalg.mul.trivial.float64.d64x64x64.eager",
+      "iqr_ms": 0.014672500000000005,
+      "max_ms": 0.144159,
+      "median_ms": 0.112319,
+      "min_ms": 0.104224,
+      "repeat": 7,
+      "scenario_profile": "full-only",
+      "size_label": "d64x64x64",
+      "times_ms": [
+        0.125424,
+        0.112319,
+        0.110777,
+        0.144159,
+        0.106659,
+        0.121357,
+        0.104224
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "warmed_metadata",
+      "description": "Tensor0 mul workload via TensorMap @; sector=trivial, dimensions=(128, 128, 128)",
+      "dtype": "float64",
+      "execution": "eager",
+      "group": "linalg",
+      "id": "linalg.mul.trivial.float64.d128x128x128.eager",
+      "iqr_ms": 0.03220999999999999,
+      "max_ms": 0.273791,
+      "median_ms": 0.198611,
+      "min_ms": 0.184123,
+      "repeat": 7,
+      "scenario_profile": "full-only",
+      "size_label": "d128x128x128",
+      "times_ms": [
+        0.202328,
+        0.19278,
+        0.273791,
+        0.244306,
+        0.198611,
+        0.189434,
+        0.184123
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "warmed_metadata",
+      "description": "Tensor0 mul workload via TensorMap @; sector=trivial, dimensions=(2, 2, 2)",
+      "dtype": "complex128",
+      "execution": "eager",
+      "group": "linalg",
+      "id": "linalg.mul.trivial.complex128.d2x2x2.eager",
+      "iqr_ms": 0.007428499999999977,
+      "max_ms": 0.083025,
+      "median_ms": 0.068548,
+      "min_ms": 0.065623,
+      "repeat": 7,
+      "scenario_profile": "full-only",
+      "size_label": "d2x2x2",
+      "times_ms": [
+        0.083025,
+        0.07511,
+        0.068548,
+        0.066545,
+        0.067556,
+        0.073848,
+        0.065623
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "warmed_metadata",
+      "description": "Tensor0 mul workload via TensorMap @; sector=trivial, dimensions=(8, 8, 8)",
+      "dtype": "complex128",
+      "execution": "eager",
+      "group": "linalg",
+      "id": "linalg.mul.trivial.complex128.d8x8x8.eager",
+      "iqr_ms": 0.005158999999999997,
+      "max_ms": 0.09614,
+      "median_ms": 0.085379,
+      "min_ms": 0.083876,
+      "repeat": 7,
+      "scenario_profile": "full-only",
+      "size_label": "d8x8x8",
+      "times_ms": [
+        0.09614,
+        0.092051,
+        0.087403,
+        0.085379,
+        0.085169,
+        0.083876,
+        0.083967
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "warmed_metadata",
+      "description": "Tensor0 mul workload via TensorMap @; sector=trivial, dimensions=(32, 32, 32)",
+      "dtype": "complex128",
+      "execution": "eager",
+      "group": "linalg",
+      "id": "linalg.mul.trivial.complex128.d32x32x32.eager",
+      "iqr_ms": 0.014211500000000002,
+      "max_ms": 0.116738,
+      "median_ms": 0.106829,
+      "min_ms": 0.095979,
+      "repeat": 7,
+      "scenario_profile": "full-only",
+      "size_label": "d32x32x32",
+      "times_ms": [
+        0.116678,
+        0.10181,
+        0.111087,
+        0.106829,
+        0.097532,
+        0.116738,
+        0.095979
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "warmed_metadata",
+      "description": "Tensor0 mul workload via TensorMap @; sector=trivial, dimensions=(64, 64, 64)",
+      "dtype": "complex128",
+      "execution": "eager",
+      "group": "linalg",
+      "id": "linalg.mul.trivial.complex128.d64x64x64.eager",
+      "iqr_ms": 0.016655999999999976,
+      "max_ms": 0.186698,
+      "median_ms": 0.154037,
+      "min_ms": 0.142747,
+      "repeat": 7,
+      "scenario_profile": "full-only",
+      "size_label": "d64x64x64",
+      "times_ms": [
+        0.186698,
+        0.154037,
+        0.147766,
+        0.167101,
+        0.146373,
+        0.142747,
+        0.16035
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "warmed_metadata",
+      "description": "Tensor0 mul workload via TensorMap @; sector=trivial, dimensions=(128, 128, 128)",
+      "dtype": "complex128",
+      "execution": "eager",
+      "group": "linalg",
+      "id": "linalg.mul.trivial.complex128.d128x128x128.eager",
+      "iqr_ms": 0.02964,
+      "max_ms": 0.54658,
+      "median_ms": 0.489644,
+      "min_ms": 0.470228,
+      "repeat": 7,
+      "scenario_profile": "full-only",
+      "size_label": "d128x128x128",
+      "times_ms": [
+        0.485255,
+        0.489644,
+        0.491827,
+        0.54658,
+        0.47157,
+        0.470228,
+        0.524278
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "warmed_metadata",
+      "description": "Tensor0 mul workload via TensorMap @; sector=z2, dimensions=(2, 2, 2)",
+      "dtype": "float64",
+      "execution": "eager",
+      "group": "linalg",
+      "id": "linalg.mul.z2.float64.d2x2x2.eager",
+      "iqr_ms": 0.013094999999999968,
+      "max_ms": 0.306251,
+      "median_ms": 0.279562,
+      "min_ms": 0.26261,
+      "repeat": 7,
+      "scenario_profile": "full-only",
+      "size_label": "d2x2x2",
+      "times_ms": [
+        0.306251,
+        0.285794,
+        0.270555,
+        0.272007,
+        0.282958,
+        0.279562,
+        0.26261
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "warmed_metadata",
+      "description": "Tensor0 mul workload via TensorMap @; sector=z2, dimensions=(8, 8, 8)",
+      "dtype": "float64",
+      "execution": "eager",
+      "group": "linalg",
+      "id": "linalg.mul.z2.float64.d8x8x8.eager",
+      "iqr_ms": 0.03965399999999997,
+      "max_ms": 0.329154,
+      "median_ms": 0.298787,
+      "min_ms": 0.273961,
+      "repeat": 7,
+      "scenario_profile": "full-only",
+      "size_label": "d8x8x8",
+      "times_ms": [
+        0.319366,
+        0.298787,
+        0.314998,
+        0.279101,
+        0.275955,
+        0.329154,
+        0.273961
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "warmed_metadata",
+      "description": "Tensor0 mul workload via TensorMap @; sector=z2, dimensions=(32, 32, 32)",
+      "dtype": "float64",
+      "execution": "eager",
+      "group": "linalg",
+      "id": "linalg.mul.z2.float64.d32x32x32.eager",
+      "iqr_ms": 0.011371500000000034,
+      "max_ms": 0.36433,
+      "median_ms": 0.343101,
+      "min_ms": 0.324776,
+      "repeat": 7,
+      "scenario_profile": "full-only",
+      "size_label": "d32x32x32",
+      "times_ms": [
+        0.36433,
+        0.343972,
+        0.340365,
+        0.343101,
+        0.328242,
+        0.324776,
+        0.347378
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "warmed_metadata",
+      "description": "Tensor0 mul workload via TensorMap @; sector=z2, dimensions=(64, 64, 64)",
+      "dtype": "float64",
+      "execution": "eager",
+      "group": "linalg",
+      "id": "linalg.mul.z2.float64.d64x64x64.eager",
+      "iqr_ms": 0.013549499999999992,
+      "max_ms": 0.365492,
+      "median_ms": 0.351125,
+      "min_ms": 0.332199,
+      "repeat": 7,
+      "scenario_profile": "full-only",
+      "size_label": "d64x64x64",
+      "times_ms": [
+        0.365492,
+        0.351125,
+        0.354531,
+        0.344353,
+        0.35922,
+        0.342299,
+        0.332199
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "warmed_metadata",
+      "description": "Tensor0 mul workload via TensorMap @; sector=z2, dimensions=(128, 128, 128)",
+      "dtype": "float64",
+      "execution": "eager",
+      "group": "linalg",
+      "id": "linalg.mul.z2.float64.d128x128x128.eager",
+      "iqr_ms": 0.013254500000000002,
+      "max_ms": 0.404455,
+      "median_ms": 0.376322,
+      "min_ms": 0.364621,
+      "repeat": 7,
+      "scenario_profile": "full-only",
+      "size_label": "d128x128x128",
+      "times_ms": [
+        0.404455,
+        0.380009,
+        0.376322,
+        0.391901,
+        0.3698,
+        0.375601,
+        0.364621
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "warmed_metadata",
+      "description": "Tensor0 mul workload via TensorMap @; sector=z2, dimensions=(2, 2, 2)",
+      "dtype": "complex128",
+      "execution": "eager",
+      "group": "linalg",
+      "id": "linalg.mul.z2.complex128.d2x2x2.eager",
+      "iqr_ms": 0.027125500000000025,
+      "max_ms": 0.32182,
+      "median_ms": 0.308005,
+      "min_ms": 0.280905,
+      "repeat": 7,
+      "scenario_profile": "full-only",
+      "size_label": "d2x2x2",
+      "times_ms": [
+        0.32182,
+        0.308005,
+        0.290131,
+        0.289951,
+        0.313615,
+        0.320718,
+        0.280905
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "warmed_metadata",
+      "description": "Tensor0 mul workload via TensorMap @; sector=z2, dimensions=(8, 8, 8)",
+      "dtype": "complex128",
+      "execution": "eager",
+      "group": "linalg",
+      "id": "linalg.mul.z2.complex128.d8x8x8.eager",
+      "iqr_ms": 0.0292095,
+      "max_ms": 0.322492,
+      "median_ms": 0.293368,
+      "min_ms": 0.280964,
+      "repeat": 7,
+      "scenario_profile": "full-only",
+      "size_label": "d8x8x8",
+      "times_ms": [
+        0.31631,
+        0.322492,
+        0.285623,
+        0.286945,
+        0.280964,
+        0.314677,
+        0.293368
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "warmed_metadata",
+      "description": "Tensor0 mul workload via TensorMap @; sector=z2, dimensions=(32, 32, 32)",
+      "dtype": "complex128",
+      "execution": "eager",
+      "group": "linalg",
+      "id": "linalg.mul.z2.complex128.d32x32x32.eager",
+      "iqr_ms": 0.02990100000000001,
+      "max_ms": 0.396681,
+      "median_ms": 0.363518,
+      "min_ms": 0.331278,
+      "repeat": 7,
+      "scenario_profile": "full-only",
+      "size_label": "d32x32x32",
+      "times_ms": [
+        0.396681,
+        0.368318,
+        0.363518,
+        0.379859,
+        0.346447,
+        0.341928,
+        0.331278
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "warmed_metadata",
+      "description": "Tensor0 mul workload via TensorMap @; sector=z2, dimensions=(64, 64, 64)",
+      "dtype": "complex128",
+      "execution": "eager",
+      "group": "linalg",
+      "id": "linalg.mul.z2.complex128.d64x64x64.eager",
+      "iqr_ms": 0.021755000000000024,
+      "max_ms": 0.394076,
+      "median_ms": 0.372866,
+      "min_ms": 0.35421,
+      "repeat": 7,
+      "scenario_profile": "full-only",
+      "size_label": "d64x64x64",
+      "times_ms": [
+        0.394076,
+        0.3644,
+        0.382473,
+        0.372866,
+        0.354642,
+        0.380079,
+        0.35421
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "warmed_metadata",
+      "description": "Tensor0 mul workload via TensorMap @; sector=z2, dimensions=(128, 128, 128)",
+      "dtype": "complex128",
+      "execution": "eager",
+      "group": "linalg",
+      "id": "linalg.mul.z2.complex128.d128x128x128.eager",
+      "iqr_ms": 0.022016000000000036,
+      "max_ms": 0.508268,
+      "median_ms": 0.465419,
+      "min_ms": 0.45009,
+      "repeat": 7,
+      "scenario_profile": "full-only",
+      "size_label": "d128x128x128",
+      "times_ms": [
+        0.494192,
+        0.464927,
+        0.465419,
+        0.508268,
+        0.468013,
+        0.45009,
+        0.453246
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "warmed_metadata",
+      "description": "Tensor0 svd workload via svd_compact; sector=trivial, dimensions=(2, 2)",
+      "dtype": "float64",
+      "execution": "eager",
+      "group": "linalg",
+      "id": "linalg.svd.trivial.float64.d2x2.eager",
+      "iqr_ms": 0.01271799999999998,
+      "max_ms": 0.139561,
+      "median_ms": 0.128189,
+      "min_ms": 0.11264,
+      "repeat": 7,
+      "scenario_profile": "quick",
+      "size_label": "d2x2",
+      "times_ms": [
+        0.139561,
+        0.13433,
+        0.128189,
+        0.125785,
+        0.133479,
+        0.116588,
+        0.11264
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "warmed_metadata",
+      "description": "Tensor0 svd workload via svd_compact; sector=trivial, dimensions=(8, 8)",
+      "dtype": "float64",
+      "execution": "eager",
+      "group": "linalg",
+      "id": "linalg.svd.trivial.float64.d8x8.eager",
+      "iqr_ms": 0.00810050000000001,
+      "max_ms": 0.13986,
+      "median_ms": 0.129692,
+      "min_ms": 0.123881,
+      "repeat": 7,
+      "scenario_profile": "full-only",
+      "size_label": "d8x8",
+      "times_ms": [
+        0.13986,
+        0.132137,
+        0.137246,
+        0.126265,
+        0.129692,
+        0.126917,
+        0.123881
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "warmed_metadata",
+      "description": "Tensor0 svd workload via svd_compact; sector=trivial, dimensions=(32, 32)",
+      "dtype": "float64",
+      "execution": "eager",
+      "group": "linalg",
+      "id": "linalg.svd.trivial.float64.d32x32.eager",
+      "iqr_ms": 0.011391999999999958,
+      "max_ms": 0.263622,
+      "median_ms": 0.253413,
+      "min_ms": 0.242462,
+      "repeat": 7,
+      "scenario_profile": "full-only",
+      "size_label": "d32x32",
+      "times_ms": [
+        0.261518,
+        0.263622,
+        0.253413,
+        0.247912,
+        0.245969,
+        0.255147,
+        0.242462
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "warmed_metadata",
+      "description": "Tensor0 svd workload via svd_compact; sector=trivial, dimensions=(64, 64)",
+      "dtype": "float64",
+      "execution": "eager",
+      "group": "linalg",
+      "id": "linalg.svd.trivial.float64.d64x64.eager",
+      "iqr_ms": 0.007935000000000025,
+      "max_ms": 0.570164,
+      "median_ms": 0.550477,
+      "min_ms": 0.535179,
+      "repeat": 7,
+      "scenario_profile": "full-only",
+      "size_label": "d64x64",
+      "times_ms": [
+        0.570164,
+        0.556659,
+        0.550477,
+        0.553122,
+        0.535179,
+        0.543484,
+        0.550427
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "warmed_metadata",
+      "description": "Tensor0 svd workload via svd_compact; sector=trivial, dimensions=(128, 128)",
+      "dtype": "float64",
+      "execution": "eager",
+      "group": "linalg",
+      "id": "linalg.svd.trivial.float64.d128x128.eager",
+      "iqr_ms": 0.03412800000000016,
+      "max_ms": 1.720319,
+      "median_ms": 1.695233,
+      "min_ms": 1.656781,
+      "repeat": 7,
+      "scenario_profile": "full-only",
+      "size_label": "d128x128",
+      "times_ms": [
+        1.656781,
+        1.665859,
+        1.675677,
+        1.695233,
+        1.720319,
+        1.705232,
+        1.70456
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "warmed_metadata",
+      "description": "Tensor0 svd workload via svd_compact; sector=trivial, dimensions=(2, 2)",
+      "dtype": "complex128",
+      "execution": "eager",
+      "group": "linalg",
+      "id": "linalg.svd.trivial.complex128.d2x2.eager",
+      "iqr_ms": 0.009718000000000004,
+      "max_ms": 0.146644,
+      "median_ms": 0.1234,
+      "min_ms": 0.119723,
+      "repeat": 7,
+      "scenario_profile": "full-only",
+      "size_label": "d2x2",
+      "times_ms": [
+        0.146644,
+        0.138709,
+        0.1234,
+        0.120435,
+        0.12341,
+        0.122248,
+        0.119723
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "warmed_metadata",
+      "description": "Tensor0 svd workload via svd_compact; sector=trivial, dimensions=(8, 8)",
+      "dtype": "complex128",
+      "execution": "eager",
+      "group": "linalg",
+      "id": "linalg.svd.trivial.complex128.d8x8.eager",
+      "iqr_ms": 0.013915999999999984,
+      "max_ms": 0.149069,
+      "median_ms": 0.136315,
+      "min_ms": 0.126226,
+      "repeat": 7,
+      "scenario_profile": "full-only",
+      "size_label": "d8x8",
+      "times_ms": [
+        0.14437,
+        0.142215,
+        0.149069,
+        0.136315,
+        0.131726,
+        0.126226,
+        0.127027
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "warmed_metadata",
+      "description": "Tensor0 svd workload via svd_compact; sector=trivial, dimensions=(32, 32)",
+      "dtype": "complex128",
+      "execution": "eager",
+      "group": "linalg",
+      "id": "linalg.svd.trivial.complex128.d32x32.eager",
+      "iqr_ms": 0.013690000000000035,
+      "max_ms": 0.328162,
+      "median_ms": 0.303457,
+      "min_ms": 0.293177,
+      "repeat": 7,
+      "scenario_profile": "full-only",
+      "size_label": "d32x32",
+      "times_ms": [
+        0.328162,
+        0.308786,
+        0.301403,
+        0.313825,
+        0.303457,
+        0.293828,
+        0.293177
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "warmed_metadata",
+      "description": "Tensor0 svd workload via svd_compact; sector=trivial, dimensions=(64, 64)",
+      "dtype": "complex128",
+      "execution": "eager",
+      "group": "linalg",
+      "id": "linalg.svd.trivial.complex128.d64x64.eager",
+      "iqr_ms": 0.010033999999999987,
+      "max_ms": 0.757954,
+      "median_ms": 0.709333,
+      "min_ms": 0.692142,
+      "repeat": 7,
+      "scenario_profile": "full-only",
+      "size_label": "d64x64",
+      "times_ms": [
+        0.709033,
+        0.757954,
+        0.692142,
+        0.710476,
+        0.709333,
+        0.716136,
+        0.697511
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "warmed_metadata",
+      "description": "Tensor0 svd workload via svd_compact; sector=trivial, dimensions=(128, 128)",
+      "dtype": "complex128",
+      "execution": "eager",
+      "group": "linalg",
+      "id": "linalg.svd.trivial.complex128.d128x128.eager",
+      "iqr_ms": 0.022732500000000044,
+      "max_ms": 3.130391,
+      "median_ms": 3.107218,
+      "min_ms": 3.088934,
+      "repeat": 7,
+      "scenario_profile": "full-only",
+      "size_label": "d128x128",
+      "times_ms": [
+        3.130391,
+        3.122236,
+        3.092941,
+        3.088934,
+        3.107218,
+        3.120563,
+        3.104393
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "warmed_metadata",
+      "description": "Tensor0 svd workload via svd_compact; sector=z2, dimensions=(2, 2)",
+      "dtype": "float64",
+      "execution": "eager",
+      "group": "linalg",
+      "id": "linalg.svd.z2.float64.d2x2.eager",
+      "iqr_ms": 0.016806499999999946,
+      "max_ms": 0.36444,
+      "median_ms": 0.34333,
+      "min_ms": 0.327882,
+      "repeat": 7,
+      "scenario_profile": "full-only",
+      "size_label": "d2x2",
+      "times_ms": [
+        0.344343,
+        0.349973,
+        0.328884,
+        0.36444,
+        0.34333,
+        0.327882,
+        0.331819
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "warmed_metadata",
+      "description": "Tensor0 svd workload via svd_compact; sector=z2, dimensions=(8, 8)",
+      "dtype": "float64",
+      "execution": "eager",
+      "group": "linalg",
+      "id": "linalg.svd.z2.float64.d8x8.eager",
+      "iqr_ms": 0.02123500000000006,
+      "max_ms": 0.387674,
+      "median_ms": 0.355523,
+      "min_ms": 0.348149,
+      "repeat": 7,
+      "scenario_profile": "full-only",
+      "size_label": "d8x8",
+      "times_ms": [
+        0.357748,
+        0.355523,
+        0.384628,
+        0.387674,
+        0.348149,
+        0.350794,
+        0.349112
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "warmed_metadata",
+      "description": "Tensor0 svd workload via svd_compact; sector=z2, dimensions=(32, 32)",
+      "dtype": "float64",
+      "execution": "eager",
+      "group": "linalg",
+      "id": "linalg.svd.z2.float64.d32x32.eager",
+      "iqr_ms": 0.03299750000000001,
+      "max_ms": 0.453626,
+      "median_ms": 0.411197,
+      "min_ms": 0.39093,
+      "repeat": 7,
+      "scenario_profile": "full-only",
+      "size_label": "d32x32",
+      "times_ms": [
+        0.444119,
+        0.413492,
+        0.453626,
+        0.39677,
+        0.394846,
+        0.411197,
+        0.39093
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "warmed_metadata",
+      "description": "Tensor0 svd workload via svd_compact; sector=z2, dimensions=(64, 64)",
+      "dtype": "float64",
+      "execution": "eager",
+      "group": "linalg",
+      "id": "linalg.svd.z2.float64.d64x64.eager",
+      "iqr_ms": 0.018399499999999902,
+      "max_ms": 0.662516,
+      "median_ms": 0.630556,
+      "min_ms": 0.585312,
+      "repeat": 7,
+      "scenario_profile": "full-only",
+      "size_label": "d64x64",
+      "times_ms": [
+        0.645114,
+        0.585312,
+        0.662516,
+        0.631538,
+        0.62197,
+        0.630556,
+        0.617883
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "warmed_metadata",
+      "description": "Tensor0 svd workload via svd_compact; sector=z2, dimensions=(128, 128)",
+      "dtype": "float64",
+      "execution": "eager",
+      "group": "linalg",
+      "id": "linalg.svd.z2.float64.d128x128.eager",
+      "iqr_ms": 0.006607500000000099,
+      "max_ms": 1.161668,
+      "median_ms": 1.156949,
+      "min_ms": 1.141781,
+      "repeat": 7,
+      "scenario_profile": "full-only",
+      "size_label": "d128x128",
+      "times_ms": [
+        1.155336,
+        1.156949,
+        1.15763,
+        1.158372,
+        1.147451,
+        1.141781,
+        1.161668
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "warmed_metadata",
+      "description": "Tensor0 svd workload via svd_compact; sector=z2, dimensions=(2, 2)",
+      "dtype": "complex128",
+      "execution": "eager",
+      "group": "linalg",
+      "id": "linalg.svd.z2.complex128.d2x2.eager",
+      "iqr_ms": 0.028603500000000004,
+      "max_ms": 0.378747,
+      "median_ms": 0.352528,
+      "min_ms": 0.329114,
+      "repeat": 7,
+      "scenario_profile": "full-only",
+      "size_label": "d2x2",
+      "times_ms": [
+        0.373126,
+        0.352528,
+        0.365402,
+        0.378747,
+        0.337129,
+        0.344192,
+        0.329114
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "warmed_metadata",
+      "description": "Tensor0 svd workload via svd_compact; sector=z2, dimensions=(8, 8)",
+      "dtype": "complex128",
+      "execution": "eager",
+      "group": "linalg",
+      "id": "linalg.svd.z2.complex128.d8x8.eager",
+      "iqr_ms": 0.02836350000000004,
+      "max_ms": 0.380941,
+      "median_ms": 0.357377,
+      "min_ms": 0.333732,
+      "repeat": 7,
+      "scenario_profile": "full-only",
+      "size_label": "d8x8",
+      "times_ms": [
+        0.372726,
+        0.380941,
+        0.379929,
+        0.352137,
+        0.333732,
+        0.357377,
+        0.343791
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "warmed_metadata",
+      "description": "Tensor0 svd workload via svd_compact; sector=z2, dimensions=(32, 32)",
+      "dtype": "complex128",
+      "execution": "eager",
+      "group": "linalg",
+      "id": "linalg.svd.z2.complex128.d32x32.eager",
+      "iqr_ms": 0.015523999999999982,
+      "max_ms": 0.477711,
+      "median_ms": 0.416046,
+      "min_ms": 0.405988,
+      "repeat": 7,
+      "scenario_profile": "full-only",
+      "size_label": "d32x32",
+      "times_ms": [
+        0.43446,
+        0.417299,
+        0.477711,
+        0.411989,
+        0.416046,
+        0.405988,
+        0.408722
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "warmed_metadata",
+      "description": "Tensor0 svd workload via svd_compact; sector=z2, dimensions=(64, 64)",
+      "dtype": "complex128",
+      "execution": "eager",
+      "group": "linalg",
+      "id": "linalg.svd.z2.complex128.d64x64.eager",
+      "iqr_ms": 0.02865799999999996,
+      "max_ms": 0.72899,
+      "median_ms": 0.702831,
+      "min_ms": 0.674238,
+      "repeat": 7,
+      "scenario_profile": "full-only",
+      "size_label": "d64x64",
+      "times_ms": [
+        0.715645,
+        0.674238,
+        0.721005,
+        0.69687,
+        0.72899,
+        0.682464,
+        0.702831
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "warmed_metadata",
+      "description": "Tensor0 svd workload via svd_compact; sector=z2, dimensions=(128, 128)",
+      "dtype": "complex128",
+      "execution": "eager",
+      "group": "linalg",
+      "id": "linalg.svd.z2.complex128.d128x128.eager",
+      "iqr_ms": 0.028497999999999912,
+      "max_ms": 1.569078,
+      "median_ms": 1.550774,
+      "min_ms": 1.52737,
+      "repeat": 7,
+      "scenario_profile": "full-only",
+      "size_label": "d128x128",
+      "times_ms": [
+        1.528973,
+        1.529905,
+        1.561033,
+        1.569078,
+        1.52737,
+        1.554841,
+        1.550774
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "warmed_metadata",
+      "description": "Focused blockwise mul workload; sector=u1, size=small",
+      "dtype": "float64",
+      "execution": "eager",
+      "group": "linalg",
+      "id": "linalg.mul.u1.float64.small.eager",
+      "iqr_ms": 0.02555750000000001,
+      "max_ms": 0.328863,
+      "median_ms": 0.288829,
+      "min_ms": 0.276366,
+      "repeat": 7,
+      "scenario_profile": "quick",
+      "size_label": "small",
+      "times_ms": [
+        0.328863,
+        0.314707,
+        0.288829,
+        0.281045,
+        0.300952,
+        0.283499,
+        0.276366
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "warmed_metadata",
+      "description": "Focused blockwise mul workload; sector=u1, size=medium",
+      "dtype": "float64",
+      "execution": "eager",
+      "group": "linalg",
+      "id": "linalg.mul.u1.float64.medium.eager",
+      "iqr_ms": 0.013400499999999982,
+      "max_ms": 0.397521,
+      "median_ms": 0.343591,
+      "min_ms": 0.336167,
+      "repeat": 7,
+      "scenario_profile": "full-only",
+      "size_label": "medium",
+      "times_ms": [
+        0.397521,
+        0.355925,
+        0.349903,
+        0.343591,
+        0.336167,
+        0.336387,
+        0.34264
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "warmed_metadata",
+      "description": "Focused blockwise mul workload; sector=u1, size=large",
+      "dtype": "float64",
+      "execution": "eager",
+      "group": "linalg",
+      "id": "linalg.mul.u1.float64.large.eager",
+      "iqr_ms": 0.013124999999999942,
+      "max_ms": 0.358499,
+      "median_ms": 0.331919,
+      "min_ms": 0.325297,
+      "repeat": 7,
+      "scenario_profile": "full-only",
+      "size_label": "large",
+      "times_ms": [
+        0.358499,
+        0.33734,
+        0.331919,
+        0.349432,
+        0.330396,
+        0.325297,
+        0.330126
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "warmed_metadata",
+      "description": "Focused blockwise mul workload; sector=u1, size=small",
+      "dtype": "complex128",
+      "execution": "eager",
+      "group": "linalg",
+      "id": "linalg.mul.u1.complex128.small.eager",
+      "iqr_ms": 0.017973499999999976,
+      "max_ms": 0.32158,
+      "median_ms": 0.307053,
+      "min_ms": 0.288789,
+      "repeat": 7,
+      "scenario_profile": "full-only",
+      "size_label": "small",
+      "times_ms": [
+        0.307053,
+        0.288789,
+        0.301192,
+        0.298377,
+        0.321259,
+        0.32158,
+        0.314257
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "warmed_metadata",
+      "description": "Focused blockwise mul workload; sector=u1, size=medium",
+      "dtype": "complex128",
+      "execution": "eager",
+      "group": "linalg",
+      "id": "linalg.mul.u1.complex128.medium.eager",
+      "iqr_ms": 0.011280499999999971,
+      "max_ms": 0.363228,
+      "median_ms": 0.326589,
+      "min_ms": 0.311982,
+      "repeat": 7,
+      "scenario_profile": "full-only",
+      "size_label": "medium",
+      "times_ms": [
+        0.363228,
+        0.326619,
+        0.326589,
+        0.330677,
+        0.314036,
+        0.311982,
+        0.320699
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "warmed_metadata",
+      "description": "Focused blockwise mul workload; sector=fermion_parity, size=small",
+      "dtype": "float64",
+      "execution": "eager",
+      "group": "linalg",
+      "id": "linalg.mul.fermion_parity.float64.small.eager",
+      "iqr_ms": 0.009287000000000045,
+      "max_ms": 0.317252,
+      "median_ms": 0.305099,
+      "min_ms": 0.295201,
+      "repeat": 7,
+      "scenario_profile": "full-only",
+      "size_label": "small",
+      "times_ms": [
+        0.305099,
+        0.307183,
+        0.295521,
+        0.30573,
+        0.317252,
+        0.298818,
+        0.295201
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "warmed_metadata",
+      "description": "Focused blockwise svd workload; sector=u1, size=small",
+      "dtype": "float64",
+      "execution": "eager",
+      "group": "linalg",
+      "id": "linalg.svd.u1.float64.small.eager",
+      "iqr_ms": 0.02244750000000001,
+      "max_ms": 0.400778,
+      "median_ms": 0.377224,
+      "min_ms": 0.356585,
+      "repeat": 7,
+      "scenario_profile": "quick",
+      "size_label": "small",
+      "times_ms": [
+        0.378266,
+        0.377224,
+        0.356585,
+        0.400778,
+        0.357467,
+        0.361444,
+        0.38554
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "warmed_metadata",
+      "description": "Focused blockwise svd workload; sector=u1, size=medium",
+      "dtype": "float64",
+      "execution": "eager",
+      "group": "linalg",
+      "id": "linalg.svd.u1.float64.medium.eager",
+      "iqr_ms": 0.01866450000000003,
+      "max_ms": 0.374749,
+      "median_ms": 0.356064,
+      "min_ms": 0.338101,
+      "repeat": 7,
+      "scenario_profile": "full-only",
+      "size_label": "medium",
+      "times_ms": [
+        0.366704,
+        0.358069,
+        0.347409,
+        0.374749,
+        0.356064,
+        0.338101,
+        0.340035
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "warmed_metadata",
+      "description": "Focused blockwise svd workload; sector=u1, size=small",
+      "dtype": "complex128",
+      "execution": "eager",
+      "group": "linalg",
+      "id": "linalg.svd.u1.complex128.small.eager",
+      "iqr_ms": 0.02590799999999993,
+      "max_ms": 0.389677,
+      "median_ms": 0.375059,
+      "min_ms": 0.353971,
+      "repeat": 7,
+      "scenario_profile": "full-only",
+      "size_label": "small",
+      "times_ms": [
+        0.385119,
+        0.38075,
+        0.375059,
+        0.389677,
+        0.353971,
+        0.357968,
+        0.356085
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "warmed_metadata",
+      "description": "Focused blockwise svd workload; sector=u1, size=medium",
+      "dtype": "complex128",
+      "execution": "eager",
+      "group": "linalg",
+      "id": "linalg.svd.u1.complex128.medium.eager",
+      "iqr_ms": 0.024214499999999972,
+      "max_ms": 0.395838,
+      "median_ms": 0.375039,
+      "min_ms": 0.356425,
+      "repeat": 7,
+      "scenario_profile": "full-only",
+      "size_label": "medium",
+      "times_ms": [
+        0.395838,
+        0.36956,
+        0.382994,
+        0.394997,
+        0.356425,
+        0.375039,
+        0.360002
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "warmed_metadata",
+      "description": "Focused blockwise svd workload; sector=fermion_parity, size=small",
+      "dtype": "float64",
+      "execution": "eager",
+      "group": "linalg",
+      "id": "linalg.svd.fermion_parity.float64.small.eager",
+      "iqr_ms": 0.022241999999999984,
+      "max_ms": 0.394647,
+      "median_ms": 0.360953,
+      "min_ms": 0.341337,
+      "repeat": 7,
+      "scenario_profile": "full-only",
+      "size_label": "small",
+      "times_ms": [
+        0.39091,
+        0.361104,
+        0.360953,
+        0.394647,
+        0.347748,
+        0.359782,
+        0.341337
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "clear_jax_caches",
+      "description": "Focused blockwise mul workload; sector=u1, size=small",
+      "dtype": "float64",
+      "execution": "jit_compile_and_run",
+      "group": "linalg",
+      "id": "linalg.mul.u1.float64.small.jit_compile_and_run",
+      "iqr_ms": 0.6499784999999889,
+      "max_ms": 59.850164,
+      "median_ms": 57.370307,
+      "min_ms": 51.441846,
+      "repeat": 7,
+      "scenario_profile": "quick",
+      "size_label": "small",
+      "times_ms": [
+        57.540786,
+        57.998259,
+        59.850164,
+        57.046773,
+        57.370307,
+        57.192315,
+        51.441846
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "compiled_once",
+      "description": "Focused blockwise mul workload; sector=u1, size=small",
+      "dtype": "float64",
+      "execution": "jit_cached_run",
+      "group": "linalg",
+      "id": "linalg.mul.u1.float64.small.jit_cached_run",
+      "iqr_ms": 0.0015585000000000009,
+      "max_ms": 0.01075,
+      "median_ms": 0.007925,
+      "min_ms": 0.007754,
+      "repeat": 7,
+      "scenario_profile": "quick",
+      "size_label": "small",
+      "times_ms": [
+        0.010129,
+        0.01075,
+        0.007894,
+        0.007764,
+        0.007754,
+        0.008646,
+        0.007925
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "compiled_once",
+      "description": "Focused blockwise mul workload; sector=u1, size=small",
+      "dtype": "float64",
+      "execution": "value_and_grad_cached",
+      "group": "linalg",
+      "id": "linalg.mul.u1.float64.small.value_and_grad_cached",
+      "iqr_ms": 0.0013820000000000013,
+      "max_ms": 0.025278,
+      "median_ms": 0.022121,
+      "min_ms": 0.0215,
+      "repeat": 7,
+      "scenario_profile": "quick",
+      "size_label": "small",
+      "times_ms": [
+        0.025278,
+        0.023453,
+        0.022963,
+        0.022121,
+        0.021831,
+        0.021821,
+        0.0215
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "warmed_metadata",
+      "description": "Trivial matrix composition with dimensions (16, 12, 14)",
+      "dtype": "float64",
+      "execution": "eager",
+      "group": "linalg",
+      "id": "composition.trivial.float64.small.eager",
+      "iqr_ms": 0.008801500000000018,
+      "max_ms": 0.117769,
+      "median_ms": 0.09617,
+      "min_ms": 0.089056,
+      "repeat": 7,
+      "scenario_profile": "quick",
+      "size_label": "small",
+      "times_ms": [
+        0.10203,
+        0.099777,
+        0.117769,
+        0.09617,
+        0.091942,
+        0.092262,
+        0.089056
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "clear_jax_caches",
+      "description": "Trivial matrix composition with dimensions (16, 12, 14)",
+      "dtype": "float64",
+      "execution": "jit_compile_and_run",
+      "group": "linalg",
+      "id": "composition.trivial.float64.small.jit_compile_and_run",
+      "iqr_ms": 0.40995500000000185,
+      "max_ms": 8.769032,
+      "median_ms": 8.194981,
+      "min_ms": 7.928994,
+      "repeat": 7,
+      "scenario_profile": "full-only",
+      "size_label": "small",
+      "times_ms": [
+        8.769032,
+        8.303784,
+        8.556426,
+        7.928994,
+        7.942901,
+        8.194981,
+        8.097399
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "compiled_once",
+      "description": "Trivial matrix composition with dimensions (16, 12, 14)",
+      "dtype": "float64",
+      "execution": "jit_cached_run",
+      "group": "linalg",
+      "id": "composition.trivial.float64.small.jit_cached_run",
+      "iqr_ms": 0.0037569999999999965,
+      "max_ms": 0.024736,
+      "median_ms": 0.017453,
+      "min_ms": 0.017122,
+      "repeat": 7,
+      "scenario_profile": "full-only",
+      "size_label": "small",
+      "times_ms": [
+        0.020057,
+        0.024736,
+        0.022192,
+        0.017453,
+        0.017122,
+        0.017333,
+        0.017402
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "warmed_metadata",
+      "description": "Trivial matrix composition with dimensions (64, 48, 56)",
+      "dtype": "complex128",
+      "execution": "eager",
+      "group": "linalg",
+      "id": "composition.trivial.complex128.medium.eager",
+      "iqr_ms": 0.00883150000000002,
+      "max_ms": 0.138659,
+      "median_ms": 0.131756,
+      "min_ms": 0.122108,
+      "repeat": 7,
+      "scenario_profile": "full-only",
+      "size_label": "medium",
+      "times_ms": [
+        0.138659,
+        0.136495,
+        0.131756,
+        0.126256,
+        0.122108,
+        0.132587,
+        0.125163
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "warmed_metadata",
+      "description": "Tensor0 functional permute workload; sector=trivial, dimensions=(64, 48)",
+      "dtype": "float64",
+      "execution": "eager",
+      "group": "transforms",
+      "id": "transforms.permute.trivial.float64.d64x48.p2x1_to_empty.eager",
+      "iqr_ms": 0.005430499999999991,
+      "max_ms": 0.056385,
+      "median_ms": 0.046768,
+      "min_ms": 0.043231,
+      "repeat": 7,
+      "scenario_profile": "quick",
+      "size_label": "d64x48",
+      "times_ms": [
+        0.056385,
+        0.050785,
+        0.046768,
+        0.044974,
+        0.043231,
+        0.044593,
+        0.049643
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "cold_transform",
+      "description": "U1 permute with explicit tree-braider cache state",
+      "dtype": "float64",
+      "execution": "eager",
+      "group": "transforms",
+      "id": "transforms.permute.u1.float64.small.cold",
+      "iqr_ms": 0.020668999999999993,
+      "max_ms": 0.176349,
+      "median_ms": 0.146434,
+      "min_ms": 0.143748,
+      "repeat": 7,
+      "scenario_profile": "quick",
+      "size_label": "small",
+      "times_ms": [
+        0.176349,
+        0.175528,
+        0.157324,
+        0.146373,
+        0.145141,
+        0.146434,
+        0.143748
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "cached_transform",
+      "description": "U1 permute with explicit tree-braider cache state",
+      "dtype": "float64",
+      "execution": "eager",
+      "group": "transforms",
+      "id": "transforms.permute.u1.float64.small.cached",
+      "iqr_ms": 0.014046000000000003,
+      "max_ms": 0.162153,
+      "median_ms": 0.131686,
+      "min_ms": 0.126616,
+      "repeat": 7,
+      "scenario_profile": "full-only",
+      "size_label": "small",
+      "times_ms": [
+        0.13408,
+        0.130584,
+        0.162153,
+        0.152244,
+        0.131686,
+        0.126616,
+        0.127648
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "cold_transform",
+      "description": "U1 repartition with explicit tree-transposer cache state",
+      "dtype": "float64",
+      "execution": "eager",
+      "group": "transforms",
+      "id": "transforms.repartition.u1.float64.small.cold",
+      "iqr_ms": 0.01858950000000001,
+      "max_ms": 0.115596,
+      "median_ms": 0.101309,
+      "min_ms": 0.090018,
+      "repeat": 7,
+      "scenario_profile": "quick",
+      "size_label": "small",
+      "times_ms": [
+        0.115596,
+        0.1069,
+        0.101309,
+        0.115385,
+        0.093876,
+        0.09123,
+        0.090018
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "cached_transform",
+      "description": "U1 repartition with explicit tree-transposer cache state",
+      "dtype": "float64",
+      "execution": "eager",
+      "group": "transforms",
+      "id": "transforms.repartition.u1.float64.small.cached",
+      "iqr_ms": 0.006723000000000007,
+      "max_ms": 0.09695,
+      "median_ms": 0.084398,
+      "min_ms": 0.079508,
+      "repeat": 7,
+      "scenario_profile": "full-only",
+      "size_label": "small",
+      "times_ms": [
+        0.084398,
+        0.09695,
+        0.091431,
+        0.086461,
+        0.084046,
+        0.0804,
+        0.079508
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "cold_transform",
+      "description": "SU2 permute with explicit generic transformer cache state",
+      "dtype": "float64",
+      "execution": "eager",
+      "group": "transforms",
+      "id": "transforms.permute.su2.float64.small.cold",
+      "iqr_ms": 0.015643500000000005,
+      "max_ms": 0.228136,
+      "median_ms": 0.20326,
+      "min_ms": 0.195835,
+      "repeat": 7,
+      "scenario_profile": "quick",
+      "size_label": "small",
+      "times_ms": [
+        0.228136,
+        0.22006,
+        0.211875,
+        0.20326,
+        0.1982,
+        0.195835,
+        0.202448
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "cached_transform",
+      "description": "SU2 permute with explicit generic transformer cache state",
+      "dtype": "float64",
+      "execution": "eager",
+      "group": "transforms",
+      "id": "transforms.permute.su2.float64.small.cached",
+      "iqr_ms": 0.012408000000000002,
+      "max_ms": 0.186599,
+      "median_ms": 0.173564,
+      "min_ms": 0.163335,
+      "repeat": 7,
+      "scenario_profile": "full-only",
+      "size_label": "small",
+      "times_ms": [
+        0.186599,
+        0.182861,
+        0.173564,
+        0.170117,
+        0.167843,
+        0.163335,
+        0.179915
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "cold_transform",
+      "description": "Large U1 permute with explicit tree-braider cache state",
+      "dtype": "float64",
+      "execution": "eager",
+      "group": "transforms",
+      "id": "transforms.permute.u1.float64.large.cold",
+      "iqr_ms": 0.012483500000000036,
+      "max_ms": 0.237693,
+      "median_ms": 0.20366,
+      "min_ms": 0.192519,
+      "repeat": 7,
+      "scenario_profile": "full-only",
+      "size_label": "large",
+      "times_ms": [
+        0.237693,
+        0.210754,
+        0.20366,
+        0.195685,
+        0.194433,
+        0.204331,
+        0.192519
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "cached_transform",
+      "description": "Large U1 permute with explicit tree-braider cache state",
+      "dtype": "float64",
+      "execution": "eager",
+      "group": "transforms",
+      "id": "transforms.permute.u1.float64.large.cached",
+      "iqr_ms": 0.0019539999999999835,
+      "max_ms": 0.181318,
+      "median_ms": 0.177922,
+      "min_ms": 0.176349,
+      "repeat": 7,
+      "scenario_profile": "full-only",
+      "size_label": "large",
+      "times_ms": [
+        0.17684,
+        0.178914,
+        0.178273,
+        0.176439,
+        0.181318,
+        0.176349,
+        0.177922
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "warmed_metadata",
+      "description": "U1 identity twist",
+      "dtype": "float64",
+      "execution": "eager",
+      "group": "transforms",
+      "id": "transforms.twist.u1.identity.eager",
+      "iqr_ms": 0.000415,
+      "max_ms": 0.002104,
+      "median_ms": 0.001824,
+      "min_ms": 0.001503,
+      "repeat": 7,
+      "scenario_profile": "quick",
+      "size_label": "small",
+      "times_ms": [
+        0.002104,
+        0.001893,
+        0.001503,
+        0.001523,
+        0.001824,
+        0.001583,
+        0.002043
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "warmed_metadata",
+      "description": "FermionParity nontrivial twist",
+      "dtype": "float64",
+      "execution": "eager",
+      "group": "transforms",
+      "id": "transforms.twist.fermion_parity.nontrivial.eager",
+      "iqr_ms": 0.014091500000000007,
+      "max_ms": 0.133549,
+      "median_ms": 0.122068,
+      "min_ms": 0.115436,
+      "repeat": 7,
+      "scenario_profile": "quick",
+      "size_label": "small",
+      "times_ms": [
+        0.133549,
+        0.132247,
+        0.132988,
+        0.118771,
+        0.115436,
+        0.118281,
+        0.122068
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "warmed_metadata",
+      "description": "SU2 mixed-spin rank-4 permutation coverage",
+      "dtype": "float64",
+      "execution": "eager",
+      "group": "transforms",
+      "id": "protect.su2.permute.float64.small.eager",
+      "iqr_ms": 0.008230000000000015,
+      "max_ms": 0.194032,
+      "median_ms": 0.181439,
+      "min_ms": 0.170678,
+      "repeat": 7,
+      "scenario_profile": "quick",
+      "size_label": "small",
+      "times_ms": [
+        0.189764,
+        0.181068,
+        0.181939,
+        0.194032,
+        0.181439,
+        0.174175,
+        0.170678
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "warmed_metadata",
+      "description": "Trivial rank-4 nonidentity permutation with shape (4, 3, 5, 2)",
+      "dtype": "float64",
+      "execution": "eager",
+      "group": "transforms",
+      "id": "permute.trivial.rank4.float64.small.eager",
+      "iqr_ms": 0.001292500000000002,
+      "max_ms": 0.050294,
+      "median_ms": 0.044924,
+      "min_ms": 0.04287,
+      "repeat": 7,
+      "scenario_profile": "quick",
+      "size_label": "small",
+      "times_ms": [
+        0.050294,
+        0.045235,
+        0.043542,
+        0.045705,
+        0.044813,
+        0.044924,
+        0.04287
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "clear_jax_caches",
+      "description": "Trivial rank-4 nonidentity permutation with shape (4, 3, 5, 2)",
+      "dtype": "float64",
+      "execution": "jit_compile_and_run",
+      "group": "transforms",
+      "id": "permute.trivial.rank4.float64.small.jit_compile_and_run",
+      "iqr_ms": 0.6263989999999993,
+      "max_ms": 20.257518,
+      "median_ms": 19.474387,
+      "min_ms": 18.733265,
+      "repeat": 7,
+      "scenario_profile": "full-only",
+      "size_label": "small",
+      "times_ms": [
+        19.474387,
+        18.733265,
+        18.970837,
+        19.49753,
+        20.257518,
+        19.722229,
+        18.996124
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "compiled_once",
+      "description": "Trivial rank-4 nonidentity permutation with shape (4, 3, 5, 2)",
+      "dtype": "float64",
+      "execution": "jit_cached_run",
+      "group": "transforms",
+      "id": "permute.trivial.rank4.float64.small.jit_cached_run",
+      "iqr_ms": 0.0005915000000000009,
+      "max_ms": 0.007665,
+      "median_ms": 0.006482,
+      "min_ms": 0.006052,
+      "repeat": 7,
+      "scenario_profile": "full-only",
+      "size_label": "small",
+      "times_ms": [
+        0.007665,
+        0.007334,
+        0.006613,
+        0.006362,
+        0.006052,
+        0.006482,
+        0.006402
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "warmed_metadata",
+      "description": "Trivial rank-4 nonidentity permutation with shape (12, 8, 10, 6)",
+      "dtype": "complex128",
+      "execution": "eager",
+      "group": "transforms",
+      "id": "permute.trivial.rank4.complex128.medium.eager",
+      "iqr_ms": 0.006256500000000005,
+      "max_ms": 0.062527,
+      "median_ms": 0.052849,
+      "min_ms": 0.049953,
+      "repeat": 7,
+      "scenario_profile": "full-only",
+      "size_label": "medium",
+      "times_ms": [
+        0.062527,
+        0.057928,
+        0.055314,
+        0.052849,
+        0.049953,
+        0.050735,
+        0.049994
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "warmed_metadata",
+      "description": "U1 partial tensor trace",
+      "dtype": "float64",
+      "execution": "eager",
+      "group": "contractions",
+      "id": "trace.u1.partial",
+      "iqr_ms": 0.011541499999999982,
+      "max_ms": 0.293648,
+      "median_ms": 0.274001,
+      "min_ms": 0.254796,
+      "repeat": 7,
+      "scenario_profile": "quick",
+      "size_label": "small",
+      "times_ms": [
+        0.293648,
+        0.274001,
+        0.264283,
+        0.274833,
+        0.254796,
+        0.286234,
+        0.273701
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "warmed_metadata",
+      "description": "U1 partial binary contraction",
+      "dtype": "float64",
+      "execution": "eager",
+      "group": "contractions",
+      "id": "contract.u1.partial",
+      "iqr_ms": 0.07571600000000012,
+      "max_ms": 1.344409,
+      "median_ms": 1.206842,
+      "min_ms": 1.150887,
+      "repeat": 7,
+      "scenario_profile": "quick",
+      "size_label": "small",
+      "times_ms": [
+        1.344409,
+        1.251505,
+        1.150887,
+        1.204919,
+        1.201121,
+        1.206842,
+        1.305967
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "warmed_metadata",
+      "description": "SU2 partial tensor trace",
+      "dtype": "float64",
+      "execution": "eager",
+      "group": "contractions",
+      "id": "trace.su2.partial",
+      "iqr_ms": 0.016225000000000017,
+      "max_ms": 0.211815,
+      "median_ms": 0.186929,
+      "min_ms": 0.177311,
+      "repeat": 7,
+      "scenario_profile": "quick",
+      "size_label": "small",
+      "times_ms": [
+        0.193782,
+        0.186929,
+        0.183322,
+        0.183643,
+        0.205633,
+        0.211815,
+        0.177311
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "warmed_metadata",
+      "description": "FermionParity full tensor trace",
+      "dtype": "float64",
+      "execution": "eager",
+      "group": "contractions",
+      "id": "trace.fermion.full",
+      "iqr_ms": 0.005024499999999987,
+      "max_ms": 0.179525,
+      "median_ms": 0.168494,
+      "min_ms": 0.163395,
+      "repeat": 7,
+      "scenario_profile": "full-only",
+      "size_label": "small",
+      "times_ms": [
+        0.179525,
+        0.171921,
+        0.168494,
+        0.17159,
+        0.16594,
+        0.167522,
+        0.163395
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "warmed_metadata",
+      "description": "SU2 fusion-basis binary contraction",
+      "dtype": "float64",
+      "execution": "eager",
+      "group": "contractions",
+      "id": "contract.su2.fusion_basis",
+      "iqr_ms": 0.009993499999999989,
+      "max_ms": 0.850216,
+      "median_ms": 0.793912,
+      "min_ms": 0.789974,
+      "repeat": 7,
+      "scenario_profile": "full-only",
+      "size_label": "small",
+      "times_ms": [
+        0.850216,
+        0.793912,
+        0.79357,
+        0.792189,
+        0.800794,
+        0.789974,
+        0.804952
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "warmed_metadata",
+      "description": "FermionParity contraction with right twist",
+      "dtype": "float64",
+      "execution": "eager",
+      "group": "contractions",
+      "id": "contract.fermion.twist",
+      "iqr_ms": 0.011245999999999978,
+      "max_ms": 0.295461,
+      "median_ms": 0.279882,
+      "min_ms": 0.269573,
+      "repeat": 7,
+      "scenario_profile": "full-only",
+      "size_label": "small",
+      "times_ms": [
+        0.295461,
+        0.285122,
+        0.286755,
+        0.279882,
+        0.275043,
+        0.274342,
+        0.269573
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "warmed_metadata",
+      "description": "Trivial partial trace with source shape (8, 4, 6, 4)",
+      "dtype": "float64",
+      "execution": "eager",
+      "group": "contractions",
+      "id": "trace.trivial.partial.rank4.float64.small.eager",
+      "iqr_ms": 0.0048890000000000045,
+      "max_ms": 0.084247,
+      "median_ms": 0.076503,
+      "min_ms": 0.070422,
+      "repeat": 7,
+      "scenario_profile": "quick",
+      "size_label": "small",
+      "times_ms": [
+        0.084247,
+        0.079699,
+        0.080189,
+        0.076503,
+        0.07547,
+        0.07464,
+        0.070422
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "clear_jax_caches",
+      "description": "Trivial partial trace with source shape (8, 4, 6, 4)",
+      "dtype": "float64",
+      "execution": "jit_compile_and_run",
+      "group": "contractions",
+      "id": "trace.trivial.partial.rank4.float64.small.jit_compile_and_run",
+      "iqr_ms": 0.18646150000000006,
+      "max_ms": 24.308727,
+      "median_ms": 23.784469,
+      "min_ms": 23.649948,
+      "repeat": 7,
+      "scenario_profile": "full-only",
+      "size_label": "small",
+      "times_ms": [
+        23.938446,
+        23.649948,
+        23.783919,
+        23.983379,
+        23.764983,
+        24.308727,
+        23.784469
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "compiled_once",
+      "description": "Trivial partial trace with source shape (8, 4, 6, 4)",
+      "dtype": "float64",
+      "execution": "jit_cached_run",
+      "group": "contractions",
+      "id": "trace.trivial.partial.rank4.float64.small.jit_cached_run",
+      "iqr_ms": 0.001117,
+      "max_ms": 0.018995,
+      "median_ms": 0.016491,
+      "min_ms": 0.015499,
+      "repeat": 7,
+      "scenario_profile": "full-only",
+      "size_label": "small",
+      "times_ms": [
+        0.018995,
+        0.018004,
+        0.016361,
+        0.017062,
+        0.016491,
+        0.016471,
+        0.015499
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "warmed_metadata",
+      "description": "Trivial partial trace with source shape (24, 12, 20, 12)",
+      "dtype": "complex128",
+      "execution": "eager",
+      "group": "contractions",
+      "id": "trace.trivial.partial.rank4.complex128.medium.eager",
+      "iqr_ms": 0.02067399999999997,
+      "max_ms": 0.195334,
+      "median_ms": 0.169616,
+      "min_ms": 0.159006,
+      "repeat": 7,
+      "scenario_profile": "full-only",
+      "size_label": "medium",
+      "times_ms": [
+        0.179565,
+        0.195334,
+        0.191237,
+        0.169616,
+        0.162603,
+        0.159006,
+        0.166851
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "warmed_metadata",
+      "description": "Trivial partial contraction with dimensions (6, 4, 7, 5, 3)",
+      "dtype": "float64",
+      "execution": "eager",
+      "group": "contractions",
+      "id": "contract.trivial.partial.float64.small.eager",
+      "iqr_ms": 0.014878000000000002,
+      "max_ms": 0.159127,
+      "median_ms": 0.152144,
+      "min_ms": 0.124312,
+      "repeat": 7,
+      "scenario_profile": "quick",
+      "size_label": "small",
+      "times_ms": [
+        0.159047,
+        0.154809,
+        0.152144,
+        0.159127,
+        0.142275,
+        0.141825,
+        0.124312
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "clear_jax_caches",
+      "description": "Trivial partial contraction with dimensions (6, 4, 7, 5, 3)",
+      "dtype": "float64",
+      "execution": "jit_compile_and_run",
+      "group": "contractions",
+      "id": "contract.trivial.partial.float64.small.jit_compile_and_run",
+      "iqr_ms": 0.9385754999999989,
+      "max_ms": 33.883573,
+      "median_ms": 31.217348,
+      "min_ms": 30.662432,
+      "repeat": 7,
+      "scenario_profile": "full-only",
+      "size_label": "small",
+      "times_ms": [
+        30.662432,
+        31.484636,
+        30.725901,
+        31.217348,
+        31.060956,
+        32.179372,
+        33.883573
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "compiled_once",
+      "description": "Trivial partial contraction with dimensions (6, 4, 7, 5, 3)",
+      "dtype": "float64",
+      "execution": "jit_cached_run",
+      "group": "contractions",
+      "id": "contract.trivial.partial.float64.small.jit_cached_run",
+      "iqr_ms": 0.0049195,
+      "max_ms": 0.025317,
+      "median_ms": 0.021881,
+      "min_ms": 0.018825,
+      "repeat": 7,
+      "scenario_profile": "full-only",
+      "size_label": "small",
+      "times_ms": [
+        0.025317,
+        0.025187,
+        0.023494,
+        0.021881,
+        0.019616,
+        0.019226,
+        0.018825
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "warmed_metadata",
+      "description": "Trivial partial contraction with dimensions (16, 12, 18, 10, 8)",
+      "dtype": "complex128",
+      "execution": "eager",
+      "group": "contractions",
+      "id": "contract.trivial.partial.complex128.medium.eager",
+      "iqr_ms": 0.009718499999999991,
+      "max_ms": 0.24634,
+      "median_ms": 0.220792,
+      "min_ms": 0.212988,
+      "repeat": 7,
+      "scenario_profile": "full-only",
+      "size_label": "medium",
+      "times_ms": [
+        0.228146,
+        0.226683,
+        0.2201,
+        0.215292,
+        0.24634,
+        0.212988,
+        0.220792
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "warmed_metadata",
+      "description": "Named three-tensor default-order contraction",
+      "dtype": "float64",
+      "execution": "eager",
+      "group": "contractions",
+      "id": "network.named.default",
+      "iqr_ms": 0.021584500000000006,
+      "max_ms": 0.398925,
+      "median_ms": 0.370061,
+      "min_ms": 0.350744,
+      "repeat": 7,
+      "scenario_profile": "quick",
+      "size_label": "small",
+      "times_ms": [
+        0.39165,
+        0.370061,
+        0.384116,
+        0.398925,
+        0.364189,
+        0.368408,
+        0.350744
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "warmed_metadata",
+      "description": "Integer-label three-tensor default-order contraction",
+      "dtype": "float64",
+      "execution": "eager",
+      "group": "contractions",
+      "id": "network.ncon.default",
+      "iqr_ms": 0.010585000000000011,
+      "max_ms": 0.411678,
+      "median_ms": 0.390279,
+      "min_ms": 0.378967,
+      "repeat": 7,
+      "scenario_profile": "quick",
+      "size_label": "small",
+      "times_ms": [
+        0.391871,
+        0.411678,
+        0.388034,
+        0.389456,
+        0.390279,
+        0.378967,
+        0.406789
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "warmed_metadata",
+      "description": "Disconnected named tensor product",
+      "dtype": "float64",
+      "execution": "eager",
+      "group": "contractions",
+      "id": "network.disconnected",
+      "iqr_ms": 0.020278500000000033,
+      "max_ms": 0.4394,
+      "median_ms": 0.422919,
+      "min_ms": 0.39694,
+      "repeat": 7,
+      "scenario_profile": "quick",
+      "size_label": "small",
+      "times_ms": [
+        0.4394,
+        0.415625,
+        0.423871,
+        0.434852,
+        0.39694,
+        0.422919,
+        0.402541
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "clear_jax_caches",
+      "description": "Named three-tensor custom-order network",
+      "dtype": "float64",
+      "execution": "jit_compile_and_run",
+      "group": "contractions",
+      "id": "jax.network.compile_and_run",
+      "iqr_ms": 0.6363874999999979,
+      "max_ms": 21.241985,
+      "median_ms": 20.610496,
+      "min_ms": 20.268528,
+      "repeat": 7,
+      "scenario_profile": "quick",
+      "size_label": "small",
+      "times_ms": [
+        20.664618,
+        20.268528,
+        21.241985,
+        20.26926,
+        20.271394,
+        21.148811,
+        20.610496
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "compiled_once",
+      "description": "Named three-tensor custom-order network",
+      "dtype": "float64",
+      "execution": "jit_cached_run",
+      "group": "contractions",
+      "id": "jax.network.cached",
+      "iqr_ms": 0.00039599999999999965,
+      "max_ms": 0.008406,
+      "median_ms": 0.007123,
+      "min_ms": 0.006872,
+      "repeat": 7,
+      "scenario_profile": "quick",
+      "size_label": "small",
+      "times_ms": [
+        0.008406,
+        0.007604,
+        0.007073,
+        0.007304,
+        0.007043,
+        0.007123,
+        0.006872
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "compiled_once",
+      "description": "Named three-tensor custom-order network",
+      "dtype": "float64",
+      "execution": "value_and_grad_cached",
+      "group": "contractions",
+      "id": "jax.network.value_and_grad",
+      "iqr_ms": 0.000621,
+      "max_ms": 0.006653,
+      "median_ms": 0.005701,
+      "min_ms": 0.0054,
+      "repeat": 7,
+      "scenario_profile": "quick",
+      "size_label": "small",
+      "times_ms": [
+        0.006572,
+        0.006653,
+        0.005701,
+        0.00558,
+        0.0054,
+        0.005791,
+        0.005541
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "warmed_metadata",
+      "description": "Named default-order medium contraction",
+      "dtype": "float64",
+      "execution": "eager",
+      "group": "contractions",
+      "id": "network.named.default.medium",
+      "iqr_ms": 0.029088999999999976,
+      "max_ms": 0.463244,
+      "median_ms": 0.428129,
+      "min_ms": 0.402721,
+      "repeat": 7,
+      "scenario_profile": "full-only",
+      "size_label": "medium",
+      "times_ms": [
+        0.463244,
+        0.428129,
+        0.454959,
+        0.429291,
+        0.418752,
+        0.40732,
+        0.402721
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "warmed_metadata",
+      "description": "Named custom-order medium contraction",
+      "dtype": "float64",
+      "execution": "eager",
+      "group": "contractions",
+      "id": "network.named.custom.medium",
+      "iqr_ms": 0.029104500000000033,
+      "max_ms": 0.448828,
+      "median_ms": 0.394556,
+      "min_ms": 0.373637,
+      "repeat": 7,
+      "scenario_profile": "full-only",
+      "size_label": "medium",
+      "times_ms": [
+        0.407851,
+        0.381582,
+        0.41261,
+        0.38067,
+        0.394556,
+        0.448828,
+        0.373637
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "warmed_metadata",
+      "description": "Integer-label default-order medium contraction",
+      "dtype": "float64",
+      "execution": "eager",
+      "group": "contractions",
+      "id": "network.ncon.default.medium",
+      "iqr_ms": 0.010509500000000005,
+      "max_ms": 0.446213,
+      "median_ms": 0.433459,
+      "min_ms": 0.424231,
+      "repeat": 7,
+      "scenario_profile": "full-only",
+      "size_label": "medium",
+      "times_ms": [
+        0.433459,
+        0.440081,
+        0.424862,
+        0.437746,
+        0.431946,
+        0.424231,
+        0.446213
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "warmed_metadata",
+      "description": "Integer-label custom-order medium contraction",
+      "dtype": "float64",
+      "execution": "eager",
+      "group": "contractions",
+      "id": "network.ncon.custom.medium",
+      "iqr_ms": 0.027235999999999982,
+      "max_ms": 0.45047,
+      "median_ms": 0.395497,
+      "min_ms": 0.381703,
+      "repeat": 7,
+      "scenario_profile": "full-only",
+      "size_label": "medium",
+      "times_ms": [
+        0.45047,
+        0.389006,
+        0.409073,
+        0.416427,
+        0.382022,
+        0.395497,
+        0.381703
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "warmed_metadata",
+      "description": "Tensor0 MPO topology; sector=trivial, dimensions=(10, 4, 3)",
+      "dtype": "float64",
+      "execution": "eager",
+      "group": "tensor_networks",
+      "id": "tensor_networks.mpo.trivial.float64.d10x4x3.eager",
+      "iqr_ms": 0.011195999999999984,
+      "max_ms": 0.721175,
+      "median_ms": 0.704825,
+      "min_ms": 0.693794,
+      "repeat": 7,
+      "scenario_profile": "quick",
+      "size_label": "d10x4x3",
+      "times_ms": [
+        0.709504,
+        0.721175,
+        0.704825,
+        0.712069,
+        0.698644,
+        0.693794,
+        0.700537
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "warmed_metadata",
+      "description": "Tensor0 PEPO topology; sector=trivial, dimensions=(3, 2, 2, 50)",
+      "dtype": "float64",
+      "execution": "eager",
+      "group": "tensor_networks",
+      "id": "tensor_networks.pepo.trivial.float64.d3x2x2x50.eager",
+      "iqr_ms": 1.4353625,
+      "max_ms": 26.464398,
+      "median_ms": 25.203305,
+      "min_ms": 24.452575,
+      "repeat": 7,
+      "scenario_profile": "quick",
+      "size_label": "d3x2x2x50",
+      "times_ms": [
+        26.385982,
+        24.452575,
+        26.464398,
+        26.064372,
+        24.466852,
+        25.203305,
+        25.112777
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "warmed_metadata",
+      "description": "Tensor0 MERA topology; sector=trivial, dimensions=(2,)",
+      "dtype": "float64",
+      "execution": "eager",
+      "group": "tensor_networks",
+      "id": "tensor_networks.mera.trivial.float64.d2.eager",
+      "iqr_ms": 0.03263549999999982,
+      "max_ms": 1.997127,
+      "median_ms": 1.976428,
+      "min_ms": 1.938787,
+      "repeat": 7,
+      "scenario_profile": "quick",
+      "size_label": "d2",
+      "times_ms": [
+        1.976428,
+        1.983812,
+        1.997127,
+        1.98318,
+        1.943978,
+        1.957743,
+        1.938787
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "cold_layout",
+      "description": "U1 two-factor sector and degeneracy structure construction",
+      "dtype": "none",
+      "execution": "metadata",
+      "group": "diagnostics",
+      "id": "layout.u1_two_factor.cold",
+      "iqr_ms": 0.000536,
+      "max_ms": 0.008947,
+      "median_ms": 0.007965,
+      "min_ms": 0.007334,
+      "repeat": 7,
+      "scenario_profile": "quick",
+      "size_label": "small",
+      "times_ms": [
+        0.008947,
+        0.008156,
+        0.008295,
+        0.007965,
+        0.007895,
+        0.007484,
+        0.007334
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "cold_layout",
+      "description": "SU2 four spin-half sector and degeneracy structure construction",
+      "dtype": "none",
+      "execution": "metadata",
+      "group": "diagnostics",
+      "id": "layout.su2_four_half.cold",
+      "iqr_ms": 0.0001255000000000006,
+      "max_ms": 0.003186,
+      "median_ms": 0.002866,
+      "min_ms": 0.002675,
+      "repeat": 7,
+      "scenario_profile": "quick",
+      "size_label": "small",
+      "times_ms": [
+        0.003186,
+        0.002975,
+        0.002866,
+        0.002825,
+        0.002815,
+        0.002675,
+        0.002916
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "cached_layout",
+      "description": "U1 two-factor sector and degeneracy structure construction",
+      "dtype": "none",
+      "execution": "metadata",
+      "group": "diagnostics",
+      "id": "layout.u1_two_factor.cached",
+      "iqr_ms": 3.000000000000008e-05,
+      "max_ms": 0.000751,
+      "median_ms": 0.000691,
+      "min_ms": 0.000621,
+      "repeat": 7,
+      "scenario_profile": "full-only",
+      "size_label": "small",
+      "times_ms": [
+        0.000751,
+        0.000691,
+        0.000702,
+        0.000711,
+        0.000681,
+        0.000672,
+        0.000621
+      ],
+      "warmup": 2
+    },
+    {
+      "cache_policy": "cached_layout",
+      "description": "SU2 four spin-half sector and degeneracy structure construction",
+      "dtype": "none",
+      "execution": "metadata",
+      "group": "diagnostics",
+      "id": "layout.su2_four_half.cached",
+      "iqr_ms": 7.499999999999998e-05,
+      "max_ms": 0.000772,
+      "median_ms": 0.000732,
+      "min_ms": 0.000671,
+      "repeat": 7,
+      "scenario_profile": "full-only",
+      "size_label": "small",
+      "times_ms": [
+        0.000772,
+        0.000772,
+        0.000771,
+        0.000692,
+        0.000671,
+        0.000732,
+        0.000701
+      ],
+      "warmup": 2
+    }
+  ]
+}

@@ -101,6 +101,16 @@ for sector, block in tensor.blocks():
 See `docs/usage.md`, `docs/contractions.md`, and the two scripts under
 `examples/` for more examples.
 
+## Benchmarks
+
+See the [benchmark suites](benchmarks/README.md) and the
+[cross-backend CPU configuration reports](benchmarks/cross_backend/results/report.md).
+The retained cross-backend 1/4/8-worker results are from a shared Slurm Xeon
+node. New 4/8-worker results share a committed version and verified usable
+physical cores; the older 1-worker source differs, so these are not same-version
+1→4→8 scaling measurements. The standard suite remains an independent local
+Ryzen snapshot; reports disclose resource gates and limitations.
+
 ## Acknowledgments
 
 Tensor0's main design and architecture are based on [TensorKit.jl](https://github.com/Jutho/TensorKit.jl). Tensor0 focuses on bringing these ideas to Python with JAX-backed tensor storage and automatic differentiation support.

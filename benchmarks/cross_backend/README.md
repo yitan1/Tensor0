@@ -40,19 +40,35 @@ Run the paired smoke profile:
 ```sh
 uv run python -m benchmarks.cross_backend \
   --profile smoke \
-  --json-output benchmark-results/cross_backend/smoke.json \
-  --markdown benchmark-results/cross_backend/smoke.md
+  --json-output local/benchmarks/cross-smoke/results.json \
+  --markdown local/benchmarks/cross-smoke/report.md
 ```
 
 Run the cost-aware half matrix with the default single-thread policy:
 
 ```sh
 uv run --group bench python -m benchmarks.cross_backend \
-  --profile medium \
-  --json-output benchmark-results/cross_backend/medium-1t.json \
-  --markdown benchmark-results/cross_backend/medium-1t.md \
-  --plot benchmark-results/cross_backend/medium-1t.svg
+  --profile medium --threads 1 \
+  --json-output benchmarks/cross_backend/results/cpu-1t/results.json \
+  --markdown benchmarks/cross_backend/results/cpu-1t/report.md \
+  --plot benchmarks/cross_backend/results/cpu-1t/latency.svg
 ```
+
+For the retained four-worker medium policy, check core/sibling occupancy and
+allowed cpuset first, then pin the whole orchestrator (CPU numbers are
+host-specific):
+
+```sh
+env JAX_PLATFORMS=cpu JULIA_PKG_OFFLINE=true JULIA_PKG_PRECOMPILE_AUTO=0 \
+  taskset -c 1,2,4,7 .venv/bin/python -m benchmarks.cross_backend \
+  --profile medium --threads 4 --warmup 2 --repeat 7 --rounds 3 \
+  --json-output benchmarks/cross_backend/results/cpu-4t/results.json \
+  --markdown benchmarks/cross_backend/results/cpu-4t/report.md \
+  --plot benchmarks/cross_backend/results/cpu-4t/latency.svg
+```
+
+This overwrites that configuration, not the one-worker snapshot. See its
+[report](results/cpu-4t/report.md) for artifact identity and interference limits.
 
 Run the complete matrix with eight CPU threads per backend process:
 
@@ -60,9 +76,9 @@ Run the complete matrix with eight CPU threads per backend process:
 uv run --group bench python -m benchmarks.cross_backend \
   --profile full \
   --threads 8 \
-  --json-output benchmark-results/cross_backend/full-8t.json \
-  --markdown benchmark-results/cross_backend/full-8t.md \
-  --plot benchmark-results/cross_backend/full-8t.svg
+  --json-output local/benchmarks/cross-full-8t/results.json \
+  --markdown local/benchmarks/cross-full-8t/report.md \
+  --plot local/benchmarks/cross-full-8t/latency.svg
 ```
 
 The `medium` profile retains 36 of 69 workloads. It keeps four of eight
@@ -216,8 +232,36 @@ Values greater than one mean the contender was faster.
 - A backend failure is retained as structured result data and makes the command
   exit unsuccessfully.
 
-Raw results are generated under `benchmark-results/cross_backend/`, which is
-ignored by Git. Large retained experiments belong under `local/benchmarks/`.
+## Retained configurations
+
+See the [configuration overview](results/report.md) for retained medium CPU
+snapshots: [one worker](results/cpu-1t/report.md),
+[four workers](results/cpu-4t/report.md) and
+[eight workers](results/cpu-8t/report.md). All use the shared Slurm node `n008`,
+Xeon E5-2680 v3 (Haswell, no SMT), with verified native/Julia/BLAS budgets.
+The new 4t/8t snapshots use the same committed `e5bd1f7` production source,
+release artifact and environment, sequentially on same-socket physical cores;
+pinned-process throughput and native/BLAS per-thread gates verified usable
+resources before timing. No quota throttling or steal was observed. The node
+was not exclusive and frequency was not locked; gate success does not imply
+full occupancy of every workload. **The 1t snapshot uses older `333de65`
+source, so these are not same-version 1→4→8 scaling measurements.** The 4t/8t
+comparison is descriptive, not a randomized scaling trial. No dirty production
+changes were measured. The standard suite remains local and independent.
+
+Retain `report.md`, `results.json` and `latency.svg` under stable configuration
+paths `results/cpu-1t/`, `results/cpu-4t/` and `results/cpu-8t/`, with date, revision, loaded artifact
+identity, environment, worker/affinity policy, validation and limitations inside
+the files. `results/report.md` only links these configurations. Publication-only
+metadata belongs in JSON's top-level `publication_metadata`, without changing
+numeric runner fields or samples. Convert sensitive absolute home paths to
+repository-relative paths or explicit placeholders and document any conversion;
+never change timings for privacy. As-run snapshot paths/hashes are provenance, not current
+links. Do not add timestamp directories. Examples writing public paths overwrite
+that configuration; review metadata before retaining a replacement. Historical
+comparisons and internal experiments belong under `local/benchmarks/`, without
+public reports depending on private files. See the
+[shared publication convention](../README.md#retained-results).
 
 ### Explicit workload sampling plans
 
