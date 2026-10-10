@@ -4,7 +4,7 @@ from collections.abc import Iterable
 from math import prod
 
 import jax
-from jax import Array
+from jax import Array, core
 import jax.numpy as jnp
 from jax.typing import DTypeLike
 
@@ -34,7 +34,7 @@ def _strided_affine_transform(
     and F16/BF16/F32/F64/C64/C128 real/complex crossings. Coefficient AD requires
     F16/BF16/F32/F64/C64/C128 differentiated operands, including real/complex crossings.
     """
-    if not isinstance(source, (Array, jax.core.Tracer)):
+    if not isinstance(source, (Array, core.Tracer)):
         raise TypeError("affine transform source must be a JAX Array or Tracer")
     if source.ndim == 0:
         raise ValueError("affine transform source requires a storage dimension")
@@ -174,6 +174,7 @@ def _strided_grouped_transform(
             unpack_offset += block_size
         groups.append((group_pack_offset, block_size, transform))
 
+    result = None
     if direct_entries:
         result = _strided_affine_transform(
             source, source_subblocks=source_subblocks, destination_subblocks=destination_subblocks,
@@ -195,7 +196,7 @@ def _strided_grouped_transform(
         destination_rows = transform @ source_rows
         pieces.append(destination_rows.reshape((*batch_shape, destination_row_count * block_size)))
     arena = jnp.concatenate(pieces, axis=-1) if pieces else jnp.zeros((*batch_shape, 0), dtype=result_dtype)
-    if direct_entries:
+    if result is not None:
         return update_p.bind(arena, result, jnp.int32(1), jnp.int32(0), records=tuple(unpack_records))
     return copy_p.bind(
         arena, records=tuple(unpack_records), output_size=destination_layout.total_dim, dtype=result_dtype,
@@ -222,7 +223,7 @@ def _strided_tensortrace(
     retain their dtypes. Conjugation and production routing are not introduced
     by this adapter.
     """
-    if not isinstance(source, (Array, jax.core.Tracer)):
+    if not isinstance(source, (Array, core.Tracer)):
         raise TypeError("trace source must be a JAX Array or Tracer")
     if source.ndim == 0:
         raise ValueError("trace source requires a storage dimension")

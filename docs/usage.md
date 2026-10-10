@@ -5,6 +5,10 @@ deterministic examples that can be copied into tests or interactive sessions.
 
 ## Local Checkout Setup
 
+For a non-editable user install and build prerequisites, see
+[Installation](installation.md). The commands below are for contributors;
+[Development](development.md) explains compiler memory budgeting and verification.
+
 From the repository root:
 
 ```bash
@@ -829,7 +833,7 @@ Tensor0 currently does not include:
 - mutable block views or in-place public APIs
 - generic dense numerical execution for nontrivial sector families
 - native JAX kernels
-- performance guarantees or published benchmark reports
+- performance guarantees
 
 This guide only documents the public API behavior available in the current
 checkout.

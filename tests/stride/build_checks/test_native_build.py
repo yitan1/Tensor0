@@ -574,7 +574,7 @@ def test_real_cargo_relinks_changed_cuda_runtime_without_recompiling_objects(bui
     package = REPO_ROOT / "crates/tensor0-py"
     dependency = tomllib.loads((package / "Cargo.toml").read_text())["build-dependencies"]["jobserver"]
     (manifest / "Cargo.toml").write_text(
-        '[package]\nname = "cuda-runtime-test"\nversion = "0.0.0"\nedition = "2021"\n'
+        '[workspace]\n[package]\nname = "cuda-runtime-test"\nversion = "0.0.0"\nedition = "2021"\n'
         'build = ' + json.dumps(str(package / "build.rs")) + '\n'
         '[build-dependencies]\njobserver = ' + json.dumps(dependency) + '\n'
         '[[bin]]\nname = "runtime-test"\npath = "main.rs"\n'

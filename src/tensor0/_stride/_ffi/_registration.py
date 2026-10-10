@@ -39,7 +39,7 @@ def operation_target(operation: str, dtype) -> str:
             jax.devices("cpu")
             jax.ffi.register_ffi_type(
                 "tensor0_stride_prepared_v1",
-                {name: registration[name] for name in ("type_id", "type_info")},
+                {"type_id": registration["type_id"], "type_info": registration["type_info"]},
                 platform="cpu",
             )
         jax.ffi.register_ffi_target(
@@ -75,7 +75,7 @@ def cuda_copy_target(source_dtype, result_dtype) -> str:
         if not any(name.startswith("tensor0_stride_copy_") for name in _CUDA_REGISTERED):
             jax.ffi.register_ffi_type(
                 "tensor0_stride_cuda_copy_prepared_v1",
-                {name: registration[f"copy_{name}"] for name in ("type_id", "type_info")},
+                {"type_id": registration["copy_type_id"], "type_info": registration["copy_type_info"]},
                 platform="CUDA",
             )
         jax.ffi.register_ffi_target(
@@ -121,7 +121,7 @@ def cuda_update_target(source_dtype, base_dtype, alpha_dtype, beta_dtype) -> str
         if not any(name.startswith("tensor0_stride_update_") for name in _CUDA_REGISTERED):
             jax.ffi.register_ffi_type(
                 "tensor0_stride_cuda_update_prepared_v1",
-                {name: registration[f"update_{name}"] for name in ("type_id", "type_info")},
+                {"type_id": registration["update_type_id"], "type_info": registration["update_type_info"]},
                 platform="CUDA",
             )
         jax.ffi.register_ffi_target(
@@ -159,7 +159,7 @@ def cuda_accumulation_target(source_dtype, result_dtype, *coefficient_dtypes) ->
         if not any(name.startswith("tensor0_stride_accumulation_") for name in _CUDA_REGISTERED):
             jax.ffi.register_ffi_type(
                 "tensor0_stride_cuda_accumulation_prepared_v1",
-                {name: registration[f"accumulation_{name}"] for name in ("type_id", "type_info")},
+                {"type_id": registration["accumulation_type_id"], "type_info": registration["accumulation_type_info"]},
                 platform="CUDA",
             )
         jax.ffi.register_ffi_target(
@@ -192,7 +192,7 @@ def cuda_dot_target(source_dtype, right_dtype, result_dtype) -> str:
         if not any(name.startswith("tensor0_stride_dot_") for name in _CUDA_REGISTERED):
             jax.ffi.register_ffi_type(
                 "tensor0_stride_cuda_dot_prepared_v1",
-                {name: registration[f"dot_{name}"] for name in ("type_id", "type_info")},
+                {"type_id": registration["dot_type_id"], "type_info": registration["dot_type_info"]},
                 platform="CUDA",
             )
         jax.ffi.register_ffi_target(
@@ -230,7 +230,7 @@ def cuda_reduction_target(source_dtype, result_dtype, *coefficient_dtypes) -> st
         if not any(name.startswith("tensor0_stride_reduction_") for name in _CUDA_REGISTERED):
             jax.ffi.register_ffi_type(
                 "tensor0_stride_cuda_reduction_prepared_v1",
-                {name: registration[f"reduction_{name}"] for name in ("type_id", "type_info")},
+                {"type_id": registration["reduction_type_id"], "type_info": registration["reduction_type_info"]},
                 platform="CUDA",
             )
         jax.ffi.register_ffi_target(

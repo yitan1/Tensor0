@@ -1,116 +1,74 @@
 # Tensor0
 
-Tensor0 is an experimental symmetric tensor library with Rust-backed structural metadata and JAX-backed tensor storage; it is not yet a production-ready tensor-network framework, and the API may change while the core representation is being developed.
+Tensor0 is an experimental symmetric tensor library for Python, with Rust-backed
+structural metadata and JAX-backed storage and automatic differentiation. It is
+not yet a production-ready tensor-network framework; the pre-1.0 API may change.
 
-Documentation: <https://yitan1.github.io/Tensor0/>
+Use it for tensor algebra with conserved charges and other supported symmetries:
+work with symmetry-allowed blocks, then compose, contract or differentiate them
+using JAX. It provides tensor primitives rather than a complete simulation
+algorithm framework.
 
-## Features
+**[Documentation](https://yitan1.github.io/Tensor0/)** ·
+[Installation](docs/installation.md) · [Usage](docs/usage.md) ·
+[API](docs/api.md) · [Support policy](docs/support.md)
 
-- Built-in sector families including no-symmetry `Trivial`, `U1Irrep`,
-  `SU2Irrep`, cyclic `ZNIrrep` aliases, fermion parity, and selected
-  product-sector aliases.
-- `space(...)`, typed scalar `hom(...)`, public `ProductSpace`, and a focused
-  space-algebra facade.
-- `TensorMap` and structured `DiagonalTensorMap` storage backed by JAX arrays.
-- Block access, direct ordinary/diagonal composition, inverse, pseudoinverse,
-  oriented direct solves, compact SVD, and truncation helpers.
-- Canonical identity/isomorphism/unitary/isometry construction, explicit tensor
-  products, and random-normal/random-isometry construction with explicit JAX keys.
-- Compact QR/LQ- and SVD-backed orthogonalization plus full and truncated
-  Hermitian eigendecomposition with blockwise JAX linear algebra.
-- `permute`, `braid`, `transpose`, and `repartition` transform helpers.
-- Symmetry-aware index `flip` and `twist`, binary `tensorcontract`, single-tensor
-  `tensortrace`, named-label `contract`, and integer-label `ncon` operations.
-- Direct immutable dense-array conversion for Trivial tensors and
-  correctness-first dense conversion for other supported sectors.
-- JAX `jit` and `grad` support through pytree registration.
+## Install from source
 
-## Installation
+Source installation is the current distribution route. Published PyPI releases
+and prebuilt wheels are not currently offered as an installation path.
 
-Tensor0 is currently installed from source. It requires Python 3.11 or newer and
-a Rust toolchain. The current numerical execution baseline supports Linux CPU
-with JAX and JAXLIB 0.10.1. Tensor0 pins those versions because its native stride
-handler is compiled against the matching XLA FFI headers and validates the
-runtime versions exactly.
-
-An [experimental optional CUDA build](docs/cuda.md) provides same-dtype
-stride Copy, Update, Accumulation, Dot and Reduction for F32/F64/C64/C128, with a limited
-coefficient matrix and selected AD paths; it does not yet support the complete
-tensor API or full reverse AD. CPU-only builds do not require CUDA. Other backends and JAX/JAXLIB
-versions are not currently supported execution targets.
-Tensor0 does not silently replace unavailable native stride operations
-with element-address gather/scatter implementations; affected operations fail
-with an explicit no-route diagnostic. Native FFI calls still appear as
-`stablehlo.custom_call` operations in JAX compiler IR, but Tensor0 does not ship
-a separate pure-StableHLO stride execution backend.
-
-The recommended setup is to install Tensor0 into a virtual environment:
+The supported numerical baseline is **Linux CPU, Python 3.11, JAX and JAXLIB
+0.10.1**. Builds require **Rust 1.87 or newer** and a **C++20-capable compiler**.
+The native XLA FFI checks the JAX/JAXLIB versions exactly. Other Python versions
+are CI-tested only where explicitly recorded, not a blanket support guarantee.
 
 ```bash
 git clone https://github.com/yitan1/Tensor0.git
 cd Tensor0
-
-python -m venv .venv
+python3.11 -m venv .venv
 source .venv/bin/activate
-python -m pip install .
+CARGO_BUILD_JOBS=1 python -m pip install .
 ```
 
-If you manage your own Python environment, `python -m pip install .` can also
-be run without creating a virtual environment.
+Native compilation can use several GiB per heavy C++ unit. Serial compilation
+limits concurrency, not peak memory; see [build prerequisites and memory
+limits](docs/installation.md). CPU builds do not require CUDA.
+[Optional CUDA support](docs/cuda.md) is experimental and restricted to selected
+operations, dtypes and AD paths—not the full TensorMap API or full reverse AD.
 
-## Local Development
-
-From a checkout:
-
-```bash
-uv sync --group dev
-uv run maturin develop
-```
-
-Run the Python and Rust tests:
-
-```bash
-uv run pytest tests -q
-cargo test
-```
-
-Run the public example:
-
-```bash
-uv run python examples/basic_usage.py
-uv run python examples/contractions.py
-```
-
-## Minimal Example
+## A small symmetric tensor
 
 ```python
 import jax.numpy as jnp
-
 from tensor0 import TensorMap, U1Irrep, hom, space, storage_dim
 
 v = space(U1Irrep, {0: 2, 1: 3})
 h = hom((v,), (v,))
-
-total_dim = storage_dim(h)
-tensor = TensorMap(h, jnp.arange(total_dim, dtype=jnp.float32))
+tensor = TensorMap(h, jnp.arange(storage_dim(h), dtype=jnp.float32))
 
 for sector, block in tensor.blocks():
     print(sector, block.shape)
 ```
 
-See `docs/usage.md`, `docs/contractions.md`, and the two scripts under
-`examples/` for more examples.
+Tensor0 provides graded spaces and built-in sector families, ordinary and
+diagonal tensor maps, blockwise linear algebra and truncation, transforms and
+symmetry-aware contractions, and JAX `jit`/`grad` integration. See the
+[usage guide](docs/usage.md), [contraction guide](docs/contractions.md), and
+[executable examples](docs/examples.md) for capabilities and boundaries.
 
-## Benchmarks
+## Contributing and benchmarks
 
-See the [benchmark suites](benchmarks/README.md) and the
-[cross-backend CPU configuration reports](benchmarks/cross_backend/results/report.md).
-The retained cross-backend 1/4/8-worker results are from a shared Slurm Xeon
-node. New 4/8-worker results share a committed version and verified usable
-physical cores; the older 1-worker source differs, so these are not same-version
-1→4→8 scaling measurements. The standard suite remains an independent local
-Ryzen snapshot; reports disclose resource gates and limitations.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development and verification links,
+[CHANGELOG.md](CHANGELOG.md) for unreleased changes, and the
+[release checklist](docs/releasing.md) for installed-artifact acceptance.
+Reproducible [benchmark suites](benchmarks/README.md) and their reports document
+measured configurations and limitations; they are not performance guarantees.
 
 ## Acknowledgments
 
-Tensor0's main design and architecture are based on [TensorKit.jl](https://github.com/Jutho/TensorKit.jl). Tensor0 focuses on bringing these ideas to Python with JAX-backed tensor storage and automatic differentiation support.
+Tensor0's main design and architecture are based on
+[TensorKit.jl](https://github.com/Jutho/TensorKit.jl), bringing these ideas to
+Python with JAX-backed storage and automatic differentiation.
+
+For citation metadata, see [CITATION.cff](CITATION.cff).

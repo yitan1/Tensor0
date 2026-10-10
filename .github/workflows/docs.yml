@@ -1,50 +1,43 @@
 name: Documentation
 
 on:
+  pull_request:
   push:
-    branches:
-      - main
-    paths:
-      - ".github/workflows/docs.yml"
-      - "docs/**"
-      - "mkdocs.yml"
+    branches: [main]
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: pages
-  cancel-in-progress: false
+  group: docs-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  build:
-    name: Build documentation
-    runs-on: ubuntu-latest
+  check:
+    name: Strict documentation check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Set up uv
-        uses: astral-sh/setup-uv@v8.3.2
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v8.3.2
         with:
+          python-version: "3.11"
           enable-cache: true
-
-      - name: Build MkDocs site
-        run: uv run --with mkdocs==1.6.1 mkdocs build --strict
-
-      - name: Configure Pages
-        uses: actions/configure-pages@v5
-
+      - name: Build documentation without building Tensor0
+        run: uvx --python 3.11 --from mkdocs==1.6.1 mkdocs build --strict
       - name: Upload Pages artifact
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
         uses: actions/upload-pages-artifact@v4
         with:
           path: site
 
   deploy:
     name: Deploy documentation
-    needs: build
-    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     permissions:
       pages: write
       id-token: write
@@ -52,6 +45,7 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
+      - uses: actions/configure-pages@v5
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4

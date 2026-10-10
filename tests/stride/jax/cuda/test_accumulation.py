@@ -172,13 +172,13 @@ def test_partition_callbacks_preserve_platform(monkeypatch):
     mesh = Mesh(np.asarray(jax.devices("cpu")[:1]), ("batch",))
     sharding = NamedSharding(mesh, PartitionSpec("batch", None))
     shape = SimpleNamespace(shape=(1, 4), sharding=sharding)
-    _, function, _, _ = _jax._partition_accumulation((), 4, np.dtype("float32"), (), "cuda", mesh, (shape,), shape)
+    _, function, _, _ = _jax._partition_accumulation((), 4, np.dtype("float32"), (), False, "cuda", mesh, (shape,), shape)
     observed = []
     monkeypatch.setattr(_jax, "execute_accumulation", lambda *args, **kwargs: observed.append(kwargs))
     function(np.zeros((1, 4), np.float32))
     assert observed[0]["platform"] == "cuda"
-    assert _jax._infer_accumulation_sharding((), 4, np.dtype("float32"), (), "cuda", mesh, (shape,), shape) == sharding
-    assert _jax._propagate_accumulation_sharding((), 4, np.dtype("float32"), (), "cuda", mesh, shape) == sharding
+    assert _jax._infer_accumulation_sharding((), 4, np.dtype("float32"), (), False, "cuda", mesh, (shape,), shape) == sharding
+    assert _jax._propagate_accumulation_sharding((), 4, np.dtype("float32"), (), False, "cuda", mesh, shape) == sharding
 
 
 @pytest.mark.parametrize("storage,coefficient", MATRIX)

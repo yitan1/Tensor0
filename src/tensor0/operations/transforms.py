@@ -221,7 +221,9 @@ def _permute_to_adjoint_destination(
     # do not assume either group's tree ordering or packed offsets survive.
     destination_subblocks = []
     for index in range(len(parent_layout.subblockstructure)):
-        row_tree, column_tree = parent_sectors.fusiontree_pair_at(index)
+        tree_pair = parent_sectors.fusiontree_pair_at(index)
+        assert tree_pair is not None
+        row_tree, column_tree = tree_pair
         destination_index = destination_sectors.fusiontree_pair_index(column_tree, row_tree)
         if destination_index is None:
             raise ValueError("adjoint destination fusion-tree pair is missing")

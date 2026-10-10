@@ -192,10 +192,10 @@ def _contraction_candidate(
         )
     if reversed_operands:
         nleft, nright = map(len, open_axes)
-        output_permutation = tuple(
-            tuple(axis + nright if axis < nleft else axis - nleft for axis in group)
-            for group in output_permutation
-        )  # type: ignore[assignment]
+        output_permutation = (
+            tuple(axis + nright if axis < nleft else axis - nleft for axis in output_permutation[0]),
+            tuple(axis + nright if axis < nleft else axis - nleft for axis in output_permutation[1]),
+        )
     canonical_space = hom(
         left_space.permute(*left_permutation).codomain,
         right_space.permute(*right_permutation).domain,

@@ -7,9 +7,13 @@ theme:
   name: readthedocs
 nav:
   - Home: index.md
+  - Installation: installation.md
+  - Support and Compatibility: support.md
   - Usage: usage.md
   - Contractions: contractions.md
   - Concepts: concepts.md
   - API: api.md
   - Examples: examples.md
+  - Experimental CUDA: cuda.md
   - Development: development.md
+  - Release Checklist: releasing.md

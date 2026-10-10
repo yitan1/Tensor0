@@ -347,7 +347,7 @@ internal to the lowering/FFI boundary.
 
 ## Reproducible CUDA execution diagnostic
 
-The bounded script described in [benchmarks/README.md](../benchmarks/README.md)
+The bounded script described in [benchmarks/README.md](https://github.com/yitan1/Tensor0/blob/main/benchmarks/README.md)
 measures Copy, Update, Dot, Accumulation and Reduction on the installed CUDA
 backend. It covers short and long fibers, single and multiple owners, multiple
 Dot records and conjugated complex Dot. It checks an independent NumPy result,

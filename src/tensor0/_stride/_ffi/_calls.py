@@ -4,7 +4,7 @@ from functools import partial
 from math import prod
 
 import jax
-from jax import Array
+from jax import Array, core as jax_core
 from jax.extend import core
 from jax.interpreters import mlir, xla
 import numpy as np
@@ -17,7 +17,7 @@ from ._registration import cuda_reduction_target, cuda_accumulation_target, cuda
 def execute_dot(left: Array, right: Array, *, layout: np.ndarray, conjugate_left: bool, dtype=None, platform="cpu") -> Array:
     """Call Dot with flattened storage batches and one result per batch."""
     for name, value in (("left", left), ("right", right)):
-        if not isinstance(value, (Array, jax.core.Tracer)):
+        if not isinstance(value, (Array, jax_core.Tracer)):
             raise TypeError(f"{name} must be a JAX Array or Tracer")
         if value.ndim == 0:
             raise ValueError("dot storage must have at least one dimension")
@@ -54,7 +54,7 @@ def execute_copy(source: Array, *, layout: np.ndarray, output_size: int, dtype=N
     Layout producers must supply disjoint destination address sets across records;
     native validates injectivity within each record, not cross-record overlap.
     """
-    if not isinstance(source, (Array, jax.core.Tracer)):
+    if not isinstance(source, (Array, jax_core.Tracer)):
         raise TypeError("copy source must be a JAX Array or Tracer")
     if source.ndim == 0:
         raise ValueError("copy storage must have at least one dimension")
@@ -95,7 +95,7 @@ def execute_update(
     for exact base/result reuse. Caller donation is an outer JIT decision.
     """
     for name, value in (("source", source), ("base", base), ("alpha", alpha), ("beta", beta)):
-        if not isinstance(value, (Array, jax.core.Tracer)):
+        if not isinstance(value, (Array, jax_core.Tracer)):
             raise TypeError(f"{name} must be a JAX Array or Tracer with an explicit dtype")
     if source.ndim == 0 or base.ndim == 0:
         raise ValueError("update storage buffers must have at least one dimension")
@@ -179,13 +179,13 @@ def _execute_reduction(
     coefficient_records: tuple[int, ...], layout: np.ndarray, output_size: int, dtype, platform="cpu",
     outputs_disjoint=False,
 ) -> Array:
-    if not isinstance(source, (Array, jax.core.Tracer)):
+    if not isinstance(source, (Array, jax_core.Tracer)):
         raise TypeError("reduction source must be a JAX Array or Tracer")
     if source.ndim == 0:
         raise ValueError("reduction storage must have at least one dimension")
     batch_shape = source.shape[:-1]
     for coefficient in coefficients:
-        if not isinstance(coefficient, (Array, jax.core.Tracer)):
+        if not isinstance(coefficient, (Array, jax_core.Tracer)):
             raise TypeError("reduction coefficients must be JAX Arrays or Tracers with explicit dtypes")
         if coefficient.ndim != 0 and coefficient.shape not in ((1,), batch_shape):
             raise ValueError("reduction coefficients must be scalar, length-one, or match the batch shape")
@@ -233,7 +233,7 @@ def _cuda_copy_lowering(context, source, *, layout, output_size, dtype):
     packed = np.asarray(_native._stride_pack_owner_fiber("copy", words.tolist()), dtype=np.int64)
     # Emit i64 directly: tracing a JAX constant would narrow it when x64 is off.
     metadata = mlir.ir_constant(packed)
-    context = context.replace(avals_in=(*context.avals_in, jax.core.ShapedArray(packed.shape, packed.dtype)))
+    context = context.replace(avals_in=(*context.avals_in, jax_core.ShapedArray(packed.shape, packed.dtype)))
     return jax.ffi.ffi_lowering(
         target,
         operand_layouts=((1, 0), (0,)), result_layouts=((1, 0),),
@@ -257,7 +257,7 @@ def _cuda_update_lowering(context, source, base, alpha, beta, *, layout):
     # Emit i64 directly even when JAX x64 is disabled.
     metadata = mlir.ir_constant(packed)
     operand_layouts = tuple(tuple(reversed(range(value.ndim))) for value in context.avals_in)
-    context = context.replace(avals_in=(*context.avals_in, jax.core.ShapedArray(packed.shape, packed.dtype)))
+    context = context.replace(avals_in=(*context.avals_in, jax_core.ShapedArray(packed.shape, packed.dtype)))
     return jax.ffi.ffi_lowering(
         target, operand_layouts=(*operand_layouts, (0,)), result_layouts=((1, 0),),
         operand_output_aliases={1: 0},
@@ -284,9 +284,9 @@ def _cuda_accumulation_lowering(context, source, *coefficients, layout, output_s
     batches = context.avals_in[0].shape[0]
     if batches * capacity > np.iinfo(np.int64).max // np.dtype(dtype).itemsize:
         raise ValueError("CUDA accumulation scratch storage size overflows")
-    scratch = jax.core.ShapedArray((batches, capacity), dtype)
+    scratch = jax_core.ShapedArray((batches, capacity), dtype)
     avals = context.avals_in
-    ordered_avals = (avals[0], jax.core.ShapedArray(packed.shape, packed.dtype), *avals[1:])
+    ordered_avals = (avals[0], jax_core.ShapedArray(packed.shape, packed.dtype), *avals[1:])
     context = context.replace(avals_in=ordered_avals, avals_out=(*context.avals_out, scratch))
     results = jax.ffi.ffi_lowering(
         target, operand_layouts=tuple(tuple(reversed(range(value.ndim))) for value in ordered_avals),
@@ -315,10 +315,10 @@ def _cuda_dot_lowering(context, left, right, *, layout, conjugate_left, dtype):
     batches = context.avals_in[0].shape[0]
     if batches * capacity > np.iinfo(np.int64).max // np.dtype(dtype).itemsize:
         raise ValueError("CUDA dot scratch storage size overflows")
-    scratch = jax.core.ShapedArray((batches, capacity), dtype)
+    scratch = jax_core.ShapedArray((batches, capacity), dtype)
     metadata = mlir.ir_constant(packed)
     context = context.replace(
-        avals_in=(*context.avals_in, jax.core.ShapedArray(packed.shape, packed.dtype)),
+        avals_in=(*context.avals_in, jax_core.ShapedArray(packed.shape, packed.dtype)),
         avals_out=(*context.avals_out, scratch),
     )
     results = jax.ffi.ffi_lowering(
@@ -347,9 +347,9 @@ def _cuda_reduction_lowering(context, source, *coefficients, layout, output_size
     batches = context.avals_in[0].shape[0]
     if batches * capacity > np.iinfo(np.int64).max // np.dtype(dtype).itemsize:
         raise ValueError("CUDA reduction scratch storage size overflows")
-    scratch = jax.core.ShapedArray((batches, capacity), dtype)
+    scratch = jax_core.ShapedArray((batches, capacity), dtype)
     avals = context.avals_in
-    ordered_avals = (avals[0], jax.core.ShapedArray(packed.shape, packed.dtype), *avals[1:])
+    ordered_avals = (avals[0], jax_core.ShapedArray(packed.shape, packed.dtype), *avals[1:])
     context = context.replace(avals_in=ordered_avals, avals_out=(*context.avals_out, scratch))
     results = jax.ffi.ffi_lowering(
         target, operand_layouts=tuple(tuple(reversed(range(value.ndim))) for value in ordered_avals),

@@ -190,12 +190,25 @@ uv run maturin develop
 
 ## Verification
 
+Include the existing plotting dependencies with
+`uv sync --group dev --group bench` for benchmark plotting tests and type
+checking. Without the `bench` group, plotting tests skip rather than execute.
+
 ```bash
 cargo test
 uv run pytest tests -q
 uv run python examples/basic_usage.py
 uv run python examples/contractions.py
+uv run pyright src examples benchmarks
 ```
+
+Linux CPU CI runs these checks on Python 3.11 with a freshly built extension.
+The source, examples and benchmarks type check is blocking. The default
+`uv run pyright` also includes tests; it currently reports test typing debt,
+including dynamic test doubles and intentionally invalid inputs. CI retains
+this full check as an explicitly advisory report with its diagnostics uploaded,
+not as evidence that the complete typing scope passes. Do not widen production
+API types or disable diagnostic rules to accommodate negative tests.
 
 Native regression tests live in `tests/stride`, including the standalone C++
 sources in `tests/stride/native/cpp`. On Linux, `native/cpp/test_contracts.py` compiles them with a C++20

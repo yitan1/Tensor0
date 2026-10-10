@@ -8,6 +8,8 @@ rust-version = "1.87"
 version = "0.0.0"
 license = "MIT"
 description = "Rust core and Python extension support for Tensor0"
+repository = "https://github.com/yitan1/Tensor0"
+homepage = "https://yitan1.github.io/Tensor0/"
 
 [workspace.dependencies]
 indexmap = "2"

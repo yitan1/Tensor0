@@ -1,0 +1,92 @@
+name: Linux CPU CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Numerical C++ units can each consume several GiB. Share one Cargo slot.
+  CARGO_BUILD_JOBS: "1"
+  TENSOR0_CUDA: "0"
+  JAX_PLATFORMS: cpu
+
+jobs:
+  test:
+    name: Linux x86_64 / Python 3.11
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v8.3.2
+        with:
+          python-version: "3.11"
+          enable-cache: true
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install test dependencies, including benchmark plotting tests
+        run: uv sync --group dev --group bench --no-install-project
+      - name: Clean native CPU build
+        # No native target cache is restored: missing headers must not be masked.
+        run: uv run --no-sync maturin develop
+      - name: Rust workspace tests
+        run: cargo test --workspace
+      - name: Python tests (including native C++ and build checks)
+        run: uv run --no-sync pytest tests -q -ra
+      - name: Run public examples
+        run: |
+          uv run --no-sync python examples/basic_usage.py
+          uv run --no-sync python examples/contractions.py
+
+  typecheck:
+    name: Public-package Pyright (Python 3.11)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v8.3.2
+        with:
+          python-version: "3.11"
+          enable-cache: true
+      - name: Install type-check dependencies without building Tensor0
+        run: uv sync --group dev --group bench --no-install-project
+      - name: Blocking type check of source, examples and benchmarks
+        run: uv run --no-sync pyright src examples benchmarks
+      # Tests currently include intentional invalid-type calls and Optional GPU
+      # statistics debt. Report the complete configured scope without suppressing
+      # diagnostics, but do not treat this advisory report as a passing gate.
+      - name: Advisory full Pyright report (includes existing test typing debt)
+        id: full_pyright
+        if: always()
+        continue-on-error: true
+        shell: bash
+        run: uv run --no-sync pyright 2>&1 | tee pyright-full.log
+      - name: Upload advisory full Pyright diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: advisory-pyright-full-${{ github.sha }}
+          path: pyright-full.log
+          if-no-files-found: warn
+      - name: Summarize advisory typing outcome
+        if: always()
+        env:
+          REPORT_OUTCOME: ${{ steps.full_pyright.outcome }}
+        run: |
+          {
+            echo '## Advisory full Pyright report — not a blocking gate'
+            echo "Diagnostic step outcome: $REPORT_OUTCOME"
+            echo 'The blocking typing gate checks src, examples and benchmarks.'
+            echo 'The full configured scope also includes tests, where existing debt includes intentional invalid-input calls and Optional GPU statistics.'
+            echo 'See the advisory-pyright-full artifact for all diagnostics. A green job does not imply that the full configured Pyright scope passed.'
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$REPORT_OUTCOME" != success ]; then
+            echo '::warning::Advisory full Pyright report did not pass; inspect the diagnostic artifact. The blocking package typing gate has separate status.'
+          fi
