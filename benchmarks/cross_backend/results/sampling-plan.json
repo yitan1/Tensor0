@@ -1,0 +1,278 @@
+[
+  {
+    "workload_id": "tensor_networks.mpo.trivial.float64.d10x4x3",
+    "repeat": 100
+  },
+  {
+    "workload_id": "tensor_networks.mpo.trivial.float64.d40x4x3",
+    "repeat": 100
+  },
+  {
+    "workload_id": "tensor_networks.mpo.trivial.float64.d160x4x3",
+    "repeat": 100
+  },
+  {
+    "workload_id": "tensor_networks.mpo.trivial.float64.d640x4x3",
+    "repeat": 15
+  },
+  {
+    "workload_id": "tensor_networks.mpo.trivial.float64.d2560x4x3",
+    "repeat": 7
+  },
+  {
+    "workload_id": "tensor_networks.mpo.trivial.float64.d100x10x10",
+    "repeat": 67
+  },
+  {
+    "workload_id": "tensor_networks.mpo.trivial.float64.d200x10x10",
+    "repeat": 15
+  },
+  {
+    "workload_id": "tensor_networks.mpo.trivial.float64.d300x20x20",
+    "repeat": 7
+  },
+  {
+    "workload_id": "tensor_networks.mpo.z2.float64.d10x4x4",
+    "repeat": 100
+  },
+  {
+    "workload_id": "tensor_networks.mpo.z2.float64.d40x4x4",
+    "repeat": 100
+  },
+  {
+    "workload_id": "tensor_networks.mpo.z2.float64.d160x4x4",
+    "repeat": 100
+  },
+  {
+    "workload_id": "tensor_networks.mpo.z2.float64.d640x4x4",
+    "repeat": 15
+  },
+  {
+    "workload_id": "tensor_networks.mpo.z2.float64.d2560x4x4",
+    "repeat": 7
+  },
+  {
+    "workload_id": "tensor_networks.mpo.z2.float64.d100x10x10",
+    "repeat": 100
+  },
+  {
+    "workload_id": "tensor_networks.mpo.z2.float64.d200x10x10",
+    "repeat": 33
+  },
+  {
+    "workload_id": "tensor_networks.mpo.z2.float64.d300x20x20",
+    "repeat": 15
+  },
+  {
+    "workload_id": "tensor_networks.mpo.u1.float64.d40x5x3",
+    "repeat": 100
+  },
+  {
+    "workload_id": "tensor_networks.mpo.u1.float64.d160x5x3",
+    "repeat": 100
+  },
+  {
+    "workload_id": "tensor_networks.mpo.u1.float64.d640x5x3",
+    "repeat": 63
+  },
+  {
+    "workload_id": "tensor_networks.mpo.u1.float64.d2560x5x3",
+    "repeat": 15
+  },
+  {
+    "workload_id": "tensor_networks.mpo.u1.float64.d6120x5x3",
+    "repeat": 7
+  },
+  {
+    "workload_id": "tensor_networks.mpo.u1.float64.d200x20x20",
+    "repeat": 15
+  },
+  {
+    "workload_id": "tensor_networks.mpo.u1.float64.d400x20x20",
+    "repeat": 15
+  },
+  {
+    "workload_id": "tensor_networks.mpo.u1.float64.d400x40x40",
+    "repeat": 15
+  },
+  {
+    "workload_id": "tensor_networks.mpo.su2.float64.d40x5x3",
+    "repeat": 100
+  },
+  {
+    "workload_id": "tensor_networks.pepo.trivial.float64.d3x2x2x50",
+    "repeat": 16
+  },
+  {
+    "workload_id": "tensor_networks.pepo.trivial.float64.d3x3x3x100",
+    "repeat": 15
+  },
+  {
+    "workload_id": "tensor_networks.pepo.trivial.float64.d4x2x2x50",
+    "repeat": 15
+  },
+  {
+    "workload_id": "tensor_networks.pepo.trivial.float64.d4x3x3x100",
+    "repeat": 7
+  },
+  {
+    "workload_id": "tensor_networks.pepo.trivial.float64.d5x2x2x50",
+    "repeat": 15
+  },
+  {
+    "workload_id": "tensor_networks.pepo.trivial.float64.d5x2x3x100",
+    "repeat": 7
+  },
+  {
+    "workload_id": "tensor_networks.pepo.trivial.float64.d6x2x2x50",
+    "repeat": 15
+  },
+  {
+    "workload_id": "tensor_networks.pepo.trivial.float64.d6x3x2x100",
+    "repeat": 7
+  },
+  {
+    "workload_id": "tensor_networks.pepo.z2.float64.d4x2x2x50",
+    "repeat": 31
+  },
+  {
+    "workload_id": "tensor_networks.pepo.z2.float64.d4x4x4x100",
+    "repeat": 7
+  },
+  {
+    "workload_id": "tensor_networks.pepo.z2.float64.d5x2x2x50",
+    "repeat": 15
+  },
+  {
+    "workload_id": "tensor_networks.pepo.z2.float64.d5x3x4x100",
+    "repeat": 7
+  },
+  {
+    "workload_id": "tensor_networks.pepo.z2.float64.d6x2x2x50",
+    "repeat": 15
+  },
+  {
+    "workload_id": "tensor_networks.pepo.z2.float64.d6x2x4x100",
+    "repeat": 7
+  },
+  {
+    "workload_id": "tensor_networks.pepo.z2.float64.d8x2x2x50",
+    "repeat": 15
+  },
+  {
+    "workload_id": "tensor_networks.pepo.z2.float64.d8x3x2x100",
+    "repeat": 7
+  },
+  {
+    "workload_id": "tensor_networks.pepo.u1.float64.d4x2x2x100",
+    "repeat": 22
+  },
+  {
+    "workload_id": "tensor_networks.pepo.u1.float64.d4x4x4x200",
+    "repeat": 7
+  },
+  {
+    "workload_id": "tensor_networks.pepo.u1.float64.d6x2x2x100",
+    "repeat": 15
+  },
+  {
+    "workload_id": "tensor_networks.pepo.u1.float64.d6x3x4x200",
+    "repeat": 7
+  },
+  {
+    "workload_id": "tensor_networks.pepo.u1.float64.d8x2x2x100",
+    "repeat": 15
+  },
+  {
+    "workload_id": "tensor_networks.pepo.u1.float64.d8x2x4x200",
+    "repeat": 7
+  },
+  {
+    "workload_id": "tensor_networks.pepo.u1.float64.d10x2x2x50",
+    "repeat": 15
+  },
+  {
+    "workload_id": "tensor_networks.pepo.u1.float64.d10x3x2x100",
+    "repeat": 7
+  },
+  {
+    "workload_id": "tensor_networks.pepo.su2.float64.d4x2x2x100",
+    "repeat": 61
+  },
+  {
+    "workload_id": "tensor_networks.mera.trivial.float64.d2",
+    "repeat": 100
+  },
+  {
+    "workload_id": "tensor_networks.mera.trivial.float64.d3",
+    "repeat": 100
+  },
+  {
+    "workload_id": "tensor_networks.mera.trivial.float64.d4",
+    "repeat": 100
+  },
+  {
+    "workload_id": "tensor_networks.mera.trivial.float64.d8",
+    "repeat": 54
+  },
+  {
+    "workload_id": "tensor_networks.mera.trivial.float64.d12",
+    "repeat": 15
+  },
+  {
+    "workload_id": "tensor_networks.mera.trivial.float64.d16",
+    "repeat": 7
+  },
+  {
+    "workload_id": "tensor_networks.mera.z2.float64.d2",
+    "repeat": 100
+  },
+  {
+    "workload_id": "tensor_networks.mera.z2.float64.d4",
+    "repeat": 100
+  },
+  {
+    "workload_id": "tensor_networks.mera.z2.float64.d8",
+    "repeat": 100
+  },
+  {
+    "workload_id": "tensor_networks.mera.z2.float64.d12",
+    "repeat": 15
+  },
+  {
+    "workload_id": "tensor_networks.mera.z2.float64.d16",
+    "repeat": 7
+  },
+  {
+    "workload_id": "tensor_networks.mera.z2.float64.d20",
+    "repeat": 7
+  },
+  {
+    "workload_id": "tensor_networks.mera.u1.float64.d4",
+    "repeat": 100
+  },
+  {
+    "workload_id": "tensor_networks.mera.u1.float64.d8",
+    "repeat": 95
+  },
+  {
+    "workload_id": "tensor_networks.mera.u1.float64.d12",
+    "repeat": 18
+  },
+  {
+    "workload_id": "tensor_networks.mera.u1.float64.d16",
+    "repeat": 15
+  },
+  {
+    "workload_id": "tensor_networks.mera.u1.float64.d22",
+    "repeat": 7
+  },
+  {
+    "workload_id": "tensor_networks.mera.u1.float64.d28",
+    "repeat": 7
+  },
+  {
+    "workload_id": "tensor_networks.mera.su2.float64.d4",
+    "repeat": 100
+  }
+]

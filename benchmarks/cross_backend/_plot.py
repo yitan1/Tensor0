@@ -126,31 +126,6 @@ def _dimension_label(label: _WorkloadLabel) -> str:
     return label.dimensions.removeprefix("d").replace("x", "×")
 
 
-def _winner_label(
-    comparison: dict[str, Any] | None,
-) -> tuple[str, str | None]:
-    if comparison is None:
-        return "not compared", None
-    if comparison.get("validation") != "passed":
-        return "not validated", None
-    speedup = _positive_float(comparison.get("contender_speedup"))
-    baseline = comparison.get("baseline")
-    contender = comparison.get("contender")
-    if (
-        speedup is None
-        or not isinstance(baseline, str)
-        or not isinstance(contender, str)
-    ):
-        return "not compared", None
-    if speedup >= 1:
-        winner = contender
-        factor = speedup
-    else:
-        winner = baseline
-        factor = 1 / speedup
-    return f"{_backend_label(winner)}\n{factor:.2f}×", winner
-
-
 def _row_limits(
     labels: list[_WorkloadLabel],
     backend_names: list[str],
@@ -168,7 +143,7 @@ def _row_limits(
     upper = 10 ** math.ceil(math.log10(max(values)))
     if upper <= lower:
         upper = lower * 10
-    return lower, upper
+    return lower / 1.1, upper * 1.1
 
 
 def render_plot(payload: dict[str, Any], output: Path) -> Path:
@@ -186,6 +161,7 @@ def render_plot(payload: dict[str, Any], output: Path) -> Path:
     matplotlib.use("Agg", force=True)
     from matplotlib import pyplot as plt
     from matplotlib.patches import Patch
+    from matplotlib.lines import Line2D
 
     workload_ids = _workload_ids(payload)
     backend_names = _backend_names(payload)
@@ -308,7 +284,11 @@ def render_plot(payload: dict[str, Any], output: Path) -> Path:
                                 case_index + backend_offsets[backend_index]
                             )
                             record = records.get((label.id, backend))
-                            samples = _samples(record)
+                            validation_failed = validation == "failed" or (
+                                record is not None
+                                and record.get("validation", {}).get("status") == "failed"
+                            )
+                            samples = [] if validation_failed else _samples(record)
                             color = colors[backend]
                             if samples:
                                 axis.boxplot(
@@ -344,12 +324,19 @@ def render_plot(payload: dict[str, Any], output: Path) -> Path:
                                         "alpha": 0.45,
                                     },
                                 )
+                                axis.scatter(
+                                    [position], [_mean_ms(record)],
+                                    marker="D", s=22, facecolors="white",
+                                    edgecolors=color, linewidths=1.2, zorder=4,
+                                )
                             else:
                                 status = (
                                     str(record.get("status", "unavailable"))
                                     if isinstance(record, dict)
                                     else "unavailable"
                                 )
+                                if validation_failed:
+                                    status = "validation failed"
                                 axis.text(
                                     position,
                                     0.48,
@@ -362,32 +349,15 @@ def render_plot(payload: dict[str, Any], output: Path) -> Path:
                                     transform=axis.get_xaxis_transform(),
                                 )
 
-                        winner, winner_backend = _winner_label(
-                            comparison
-                            if isinstance(comparison, dict)
-                            else None
-                        )
-                        axis.text(
-                            case_index,
-                            0.98,
-                            winner,
-                            color=(
-                                colors.get(winner_backend, "#666666")
-                                if winner_backend is not None
-                                else "#666666"
-                            ),
-                            fontsize=6,
-                            fontweight="bold",
-                            ha="center",
-                            va="top",
-                            transform=axis.get_xaxis_transform(),
-                            bbox={
-                                "boxstyle": "round,pad=0.12",
-                                "facecolor": "white",
-                                "edgecolor": "none",
-                                "alpha": 0.78,
-                            },
-                        )
+                        if validation != "passed":
+                            axis.text(
+                                case_index, 0.98,
+                                "not compared" if validation == "not_run" else
+                                "validation failed" if validation == "failed" else
+                                validation.replace("_", " "),
+                                color="#666666", fontsize=6, ha="center", va="top",
+                                transform=axis.get_xaxis_transform(),
+                            )
 
                     validation_states = {
                         str(comparisons[label.id].get("validation", "not_run"))
@@ -467,10 +437,15 @@ def render_plot(payload: dict[str, Any], output: Path) -> Path:
                         label=_backend_label(backend),
                     )
                     for backend in backend_names
+                ] + [
+                    Line2D([], [], color="#111111", linewidth=1.5, label="Median"),
+                    Line2D([], [], color="#111111", marker="D",
+                           markerfacecolor="white", linestyle="none",
+                           markersize=5, label="Arithmetic mean (all timings)"),
                 ],
                 loc="upper center",
                 bbox_to_anchor=(0.5, 0.965),
-                ncol=len(backend_names),
+                ncol=len(backend_names) + 2,
                 frameon=False,
             )
             figure.text(
@@ -480,7 +455,8 @@ def render_plot(payload: dict[str, Any], output: Path) -> Path:
                     "Each x-axis group is one dimension-matched workload; "
                     "adjacent colors are the backends being compared. "
                     "Boxes show Q1–Q3, "
-                    "center lines are medians, and whiskers use 1.5× IQR. "
+                    "lines: medians; diamonds: arithmetic means of all timings. "
+                    "Whiskers: 1.5× IQR; outliers shown. "
                     "Lower latency is faster."
                 ),
                 ha="center",
@@ -493,3 +469,11 @@ def render_plot(payload: dict[str, Any], output: Path) -> Path:
         finally:
             plt.close(figure)
     return output
+
+
+def _mean_ms(record: dict[str, Any]) -> float:
+    """Use the stored mean, or derive it from all historical samples."""
+    if "mean_ms" in record:
+        return record["mean_ms"]
+    samples = record.get("samples_ms", [])
+    return math.fsum(samples) / len(samples) if samples else record["median_ms"]

@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from ._plot import _mean_ms
+
 
 def render_markdown(payload: dict[str, Any], *, command: str) -> str:
     config = payload["config"]
@@ -30,44 +32,50 @@ def render_markdown(payload: dict[str, Any], *, command: str) -> str:
         "",
         "## Results",
         "",
-        "| Workload | Backend | Status | Median ms | IQR ms | Validation |",
-        "| --- | --- | --- | ---: | ---: | --- |",
     ]
-    for record in payload["records"]:
-        median = (
-            f"{record['median_ms']:.6f}"
-            if "median_ms" in record
-            else "—"
-        )
-        iqr = f"{record['iqr_ms']:.6f}" if "iqr_ms" in record else "—"
-        lines.append(
-            f"| `{record['workload_id']}` | `{record['backend']}` | "
-            f"`{record['status']}` | {median} | {iqr} | "
-            f"`{record['validation']['status']}` |"
-        )
+    records = {(r["workload_id"], r["backend"]): r for r in payload["records"]}
 
-    if payload["pairwise"]:
-        lines.extend(
-            [
-                "",
-                "## Paired Comparison",
-                "",
-                "| Workload | Baseline | Contender | Contender speedup | Validation |",
-                "| --- | --- | --- | ---: | --- |",
-            ]
-        )
-        for comparison in payload["pairwise"]:
-            speedup = (
-                f"{comparison['contender_speedup']:.3f}×"
-                if comparison["validation"] == "passed"
-                else "—"
-            )
-            lines.append(
-                f"| `{comparison['workload_id']}` | "
-                f"`{comparison['baseline']}` | `{comparison['contender']}` | "
-                f"{speedup} | "
-                f"`{comparison['validation']}` |"
-            )
+    def latency(record):
+        if "median_ms" not in record:
+            return "—"
+        return f"{record['median_ms']:.6f} / {_mean_ms(record):.6f}"
+
+    compared_records = set()
+    topology = None
+    for comparison in payload["pairwise"]:
+        workload = comparison["workload_id"]
+        current = workload.split(".")[1]
+        if current != topology:
+            topology = current
+            lines.extend(["", f"### {topology.upper()}", "",
+                          "| Workload | Contender median / mean ms | Baseline median / mean ms | Median ratio | Mean ratio |",
+                          "| --- | ---: | ---: | ---: | ---: |"])
+        baseline = records[(workload, comparison["baseline"])]
+        contender = records[(workload, comparison["contender"])]
+        compared_records.update(((workload, comparison["baseline"]),
+                                 (workload, comparison["contender"])))
+        validated = comparison["validation"] == "passed"
+        median = f"{comparison['contender_speedup']:.3f}×" if validated else "—"
+        mean = f"{_mean_ms(baseline) / _mean_ms(contender):.3f}×" if validated else "—"
+        lines.append(f"| `{workload}` | {latency(contender)} | {latency(baseline)} | {median} | {mean} |")
+    unpaired_records = [record for key, record in records.items()
+                        if key not in compared_records]
+    if unpaired_records:
+        lines.extend(["", "| Workload | Backend | Median / mean ms |",
+                      "| --- | --- | ---: |"])
+        for record in unpaired_records:
+            lines.append(f"| `{record['workload_id']}` | `{record['backend']}` | {latency(record)} |")
+    lines.extend(["", "Baseline and contender are identified in Configuration. "
+                  "Ratios are baseline/contender; only passed comparisons have ratios.",
+                  "", "### Record and sample details", "",
+                  "| Workload | Backend | Status | Repeat per round | Samples | IQR ms | Validation |",
+                  "| --- | --- | --- | ---: | ---: | ---: | --- |"])
+    for record in payload["records"]:
+        iqr = f"{record['iqr_ms']:.6f}" if "iqr_ms" in record else "—"
+        lines.append(f"| `{record['workload_id']}` | `{record['backend']}` | "
+                     f"`{record['status']}` | {record.get('repeat_per_round', config['repeat'])} | "
+                     f"{len(record.get('samples_ms', []))} | {iqr} | "
+                     f"`{record['validation']['status']}` |")
 
     round_records = [r for r in payload["records"] if r.get("round_statistics")]
     if round_records:
@@ -143,7 +151,14 @@ def render_markdown(payload: dict[str, Any], *, command: str) -> str:
                 "- Validation reuses a timed invocation's returned scalar; it "
                 "does not execute the contraction again."
             ),
-            "- Raw samples are retained in the JSON result; the table reports pooled medians.",
+            "- Raw samples are retained in the JSON result; the table reports pooled medians "
+            "and unfiltered arithmetic mean latency (sum of all recorded timings / sample count). "
+            "All timings, including natural GC/scheduling tails, are included without filtering, "
+            "truncation or subtraction. The mean alone does not identify the cause of a tail.",
+            "- Median and mean ratios are baseline latency / contender latency "
+            "(TensorKit/Tensor0 with the default baseline). These descriptive summaries "
+            "are not independent throughput measurements, significance tests or causal evidence. "
+            "Latency plots show median lines and unfiltered arithmetic mean diamonds.",
             "- A speedup above one favors the contender. Direction inconsistency means "
             "paired round ratios occurred on both sides of one; ties are not reversals.",
             (

@@ -183,6 +183,7 @@ def _statistics(samples: list[float]) -> dict[str, float]:
     return {
         "min_ms": min(samples),
         "median_ms": statistics.median(samples),
+        "mean_ms": math.fsum(samples) / len(samples),
         "iqr_ms": 0.0 if quartiles is None else quartiles[2] - quartiles[0],
         "max_ms": max(samples),
     }
@@ -528,6 +529,11 @@ def run_comparison(
                     "contender_speedup": (
                         baseline_record["median_ms"]
                         / contender["median_ms"]
+                    ),
+                    "baseline_mean_ms": baseline_record["mean_ms"],
+                    "contender_mean_ms": contender["mean_ms"],
+                    "contender_mean_ratio": (
+                        baseline_record["mean_ms"] / contender["mean_ms"]
                     ),
                     "validation": contender["validation"]["status"],
                     "paired_rounds": paired_rounds,

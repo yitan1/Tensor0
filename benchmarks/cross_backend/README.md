@@ -2,7 +2,9 @@
 
 This suite compares independent tensor-library implementations on the same
 frozen, backend-neutral workloads. It is separate from Tensor0's standard
-performance-regression suite; Tensor0 is only one backend adapter.
+performance-regression suite; Tensor0 is only one backend adapter. Comparisons
+are auxiliary and run as needed. The costly full matrix is not a normal CI or
+release gate; retained snapshots do not describe current HEAD.
 
 The comparison model is:
 
@@ -49,26 +51,29 @@ Run the cost-aware half matrix with the default single-thread policy:
 ```sh
 uv run --group bench python -m benchmarks.cross_backend \
   --profile medium --threads 1 \
-  --json-output benchmarks/cross_backend/results/cpu-1t/results.json \
-  --markdown benchmarks/cross_backend/results/cpu-1t/report.md \
-  --plot benchmarks/cross_backend/results/cpu-1t/latency.svg
+  --json-output local/benchmarks/cross-medium-1t/results.json \
+  --markdown local/benchmarks/cross-medium-1t/report.md \
+  --plot local/benchmarks/cross-medium-1t/latency.svg
 ```
 
-For the retained four-worker medium policy, check core/sibling occupancy and
+For the retained four-worker full policy, check core/sibling occupancy and
 allowed cpuset first, then pin the whole orchestrator (CPU numbers are
 host-specific):
 
 ```sh
 env JAX_PLATFORMS=cpu JULIA_PKG_OFFLINE=true JULIA_PKG_PRECOMPILE_AUTO=0 \
-  taskset -c 1,2,4,7 .venv/bin/python -m benchmarks.cross_backend \
-  --profile medium --threads 4 --warmup 2 --repeat 7 --rounds 3 \
-  --json-output benchmarks/cross_backend/results/cpu-4t/results.json \
-  --markdown benchmarks/cross_backend/results/cpu-4t/report.md \
-  --plot benchmarks/cross_backend/results/cpu-4t/latency.svg
+  taskset -c 0,1,2,3 .venv/bin/python -m benchmarks.cross_backend \
+  --profile full --threads 4 --warmup 2 --repeat 7 --rounds 3 \
+  --sampling-plan benchmarks/cross_backend/results/sampling-plan.json \
+  --json-output local/benchmarks/cross-full-4t/results.json \
+  --markdown local/benchmarks/cross-full-4t/report.md \
+  --plot local/benchmarks/cross-full-4t/latency.svg
 ```
 
-This overwrites that configuration, not the one-worker snapshot. See its
-[report](results/cpu-4t/report.md) for artifact identity and interference limits.
+These outputs are temporary and do not overwrite the selected public snapshot.
+Review identity, validation and limitations before publishing a replacement.
+See the retained [report](results/cpu-4t/report.md) for artifact identity and
+interference limits.
 
 Run the complete matrix with eight CPU threads per backend process:
 
@@ -88,16 +93,20 @@ sector, and every SU2 extension.
 The `full` profile includes the complete comparison matrices: eight dimensions
 per MPO/PEPO Abelian sector and six per MERA Abelian sector, followed by one SU2
 extension per topology. Some cases intentionally reproduce the original
-large-memory regime; the largest cases may require 32–64 GB of RAM.
+large-memory regime. The retained full policy uses an exclusive 128 GiB-class node
+with >=96 GiB job memory plus margin; process/cgroup guards are required because
+GC and same-process caches can increase residency beyond isolated-case peaks.
 
 The plot groups all dimensions for one topology/sector in the same panel.
 Every x-axis group is one workload, and the adjacent colored boxplots are the
 backends executing that exact workload. Steady-state latency is the logarithmic
 vertical axis, so lower is faster. Rows group MPO, PEPO, and MERA; columns group
-Trivial, Z2, U1, and SU2. Each dimension group labels the faster backend and
-median speedup directly when numerical validation passes. Structural-only or
-failed validation and unavailable backend results are explicit and do not
-declare a faster backend. `--plot` accepts `.svg` and `.png`; SVG is recommended
+Trivial, Z2, U1, and SU2. Boxes show Q1–Q3, black lines show medians, and
+open diamonds show arithmetic means of all recorded timings. Whiskers use
+1.5× IQR and outliers remain visible. Backend colors, median lines and mean
+diamonds are identified in the legend; there are no per-workload winner labels.
+Structural-only or failed validation and unavailable results remain explicit;
+failed numerical validation has no latency distribution or mean marker. `--plot` accepts `.svg` and `.png`; SVG is recommended
 for reports.
 
 Run Tensor0 alone when developing or validating the protocol:
@@ -191,8 +200,8 @@ Official comparisons use only `steady_state`:
 - public-API dispatch performed by that kernel remains inside timing;
 - process startup is outside timing;
 - backend and workload order alternate between paired rounds;
-- raw samples, median, IQR, environment, versions, and workload hashes are
-  retained.
+- raw samples, median, unfiltered arithmetic mean latency, IQR, environment,
+  versions, and workload hashes are retained.
 
 The orchestrator defaults to a one-worker CPU budget. `--threads N` sets
 BLAS/OpenMP and Julia to `N`, and the Tensor0 CPU adapter calls the existing
@@ -221,7 +230,22 @@ Tensor0's native stride workers and are not strict one-worker baselines.
 baseline median / contender median
 ```
 
-Values greater than one mean the contender was faster.
+Values greater than one mean the contender had lower median latency.
+
+The orchestrator derives `mean_ms` as `math.fsum(samples_ms) / len(samples_ms)`
+from all recorded timings, including natural GC/scheduling long tails, without
+filtering, truncation or subtraction. Pooled means weight individual samples,
+not rounds equally. Pairwise `baseline_mean_ms` and `contender_mean_ms` retain
+these latencies; `contender_mean_ratio` is baseline mean / contender mean
+(TensorKit/Tensor0 with the default baseline). Values greater than one favor the
+contender. Reports show both median and mean latency/ratios; existing median/IQR
+and paired-round median definitions are unchanged. Historical publications mark
+post-measurement mean additions in `publication_metadata.derived_from_existing_samples`
+without changing raw samples, as-run responses or measured source/build identity.
+These are descriptive latency summaries, not independent throughput measurements,
+significance tests or causal evidence; the mean cannot identify GC or another
+cause of a tail. Latency plots retain median lines as the primary distribution
+summary and add arithmetic mean diamonds, with no timing samples filtered.
 
 ## Correctness
 
@@ -234,31 +258,38 @@ Values greater than one mean the contender was faster.
 
 ## Retained configurations
 
-See the [configuration overview](results/report.md) for retained medium CPU
+See the [configuration overview](results/report.md) for retained **full 69-workload** CPU
 snapshots: [one worker](results/cpu-1t/report.md),
 [four workers](results/cpu-4t/report.md) and
-[eight workers](results/cpu-8t/report.md). All use the shared Slurm node `n008`,
-Xeon E5-2680 v3 (Haswell, no SMT), with verified native/Julia/BLAS budgets.
-The new 4t/8t snapshots use the same committed `e5bd1f7` production source,
-release artifact and environment, sequentially on same-socket physical cores;
-pinned-process throughput and native/BLAS per-thread gates verified usable
-resources before timing. No quota throttling or steal was observed. The node
-was not exclusive and frequency was not locked; gate success does not imply
-full occupancy of every workload. **The 1t snapshot uses older `333de65`
-source, so these are not same-version 1→4→8 scaling measurements.** The 4t/8t
-comparison is descriptive, not a randomized scaling trial. No dirty production
-changes were measured. The standard suite remains local and independent.
+[eight workers](results/cpu-8t/report.md). They use the same committed source and
+fresh native build on exclusive Slurm node `n002`, Xeon E5-2680v3 (Haswell, SMT
+off), with nested same-socket physical-core affinities and verified
+native/Julia/BLAS budgets. A shared [sampling plan](results/sampling-plan.json)
+was frozen from complete six-configuration preflight medians before three formal
+paired rounds. Public JSON retains all raw timings, round statistics, true round
+indices and scalar-check summaries; complete as-run responses and per-round
+scalar pairs are retained privately. Thread order is
+balanced 1/4/8,4/8/1,8/1/4 with forward/reverse/forward backend/workload order.
+Independent pinned throughput and bounded runtime gates finish before timing.
+
+Scaling and latency summaries are descriptive, not significance claims. Each round
+is a separate exclusive allocation on the same node; frequency is unlocked,
+and OS/cache/thermal/history effects remain. Passing gates does not imply full
+occupancy of every case. No dirty production changes or GEMM strategy changes
+were measured. Reports distinguish this frozen-count policy from the pinned
+upstream network comparison's 100 outer calls. The standard suite is unchanged.
 
 Retain `report.md`, `results.json` and `latency.svg` under stable configuration
 paths `results/cpu-1t/`, `results/cpu-4t/` and `results/cpu-8t/`, with date, revision, loaded artifact
 identity, environment, worker/affinity policy, validation and limitations inside
-the files. `results/report.md` only links these configurations. Publication-only
+the files. `results/report.md` links and summarizes these configurations; the shared frozen
+plan is `results/sampling-plan.json`. Publication-only
 metadata belongs in JSON's top-level `publication_metadata`, without changing
 numeric runner fields or samples. Convert sensitive absolute home paths to
 repository-relative paths or explicit placeholders and document any conversion;
 never change timings for privacy. As-run snapshot paths/hashes are provenance, not current
-links. Do not add timestamp directories. Examples writing public paths overwrite
-that configuration; review metadata before retaining a replacement. Historical
+links. Do not add timestamp directories. Write new runs to temporary paths, then review
+metadata and limitations before publishing a replacement. Historical
 comparisons and internal experiments belong under `local/benchmarks/`, without
 public reports depending on private files. See the
 [shared publication convention](../README.md#retained-results).
@@ -299,3 +330,27 @@ occur both below and above one (exact ties are not reversals). A ratio above one
 favors the contender. These diagnostics describe observed round stability;
 they are **not significance tests**, and a lack of observed reversal is not a
 claim of statistical significance or stability beyond the measured rounds.
+
+### Re-render presentation without measuring
+
+The renderer uses the existing benchmark matplotlib dependency and reads only
+retained JSON. To reproduce the three latency plots without backend execution
+or changes to JSON and recorded timings:
+
+```sh
+.venv/bin/python - <<'PYCODE'
+import json
+from pathlib import Path
+from benchmarks.cross_backend._plot import render_plot
+root = Path('benchmarks/cross_backend/results')
+for threads in (1, 4, 8):
+    directory = root / f'cpu-{threads}t'
+    payload = json.loads((directory / 'results.json').read_text())
+    render_plot(payload, directory / 'latency.svg')
+PYCODE
+```
+
+The [overview](results/report.md) keeps median and mean ratio summaries and the
+complete direction-disagreement table. Each configuration has one latency plot;
+all raw samples remain in JSON. Means use all recorded timings, not filtered
+boxplot inliers, and do not establish throughput or the cause of slow calls.

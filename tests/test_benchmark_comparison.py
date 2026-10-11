@@ -565,6 +565,9 @@ def test_cross_backend_plot_renders_comparison_and_missing_results(
         assert b"Tensor0" in content
         assert b"TensorKit" in content
         assert b"not compared" in content
+        assert b"Median" in content
+        assert b"Arithmetic mean (all timings)" in content
+        assert b"1.5" in content
         assert b"structural only" in content
     else:
         assert content.startswith(b"\x89PNG\r\n\x1a\n")
@@ -823,3 +826,248 @@ def test_sampling_plan_rejects_duplicate_selected_workloads(monkeypatch):
         _orchestrator.run_comparison(profile='test', workloads=[workload, workload],
                                     backends=['tensor0'], baseline='tensor0',
                                     warmup=0, repeat=1, rounds=1)
+
+
+def test_unfiltered_mean_retains_outliers_and_weights_samples_not_rounds():
+    import math
+
+    rounds = [[1.0], [2.0, 2.0, 1000.0]]
+    samples = [sample for row in rounds for sample in row]
+    original = samples.copy()
+    stats = _orchestrator._statistics(samples)
+
+    assert stats['mean_ms'] == math.fsum(samples) / len(samples) == 251.25
+    assert stats['mean_ms'] != sum(
+        _orchestrator._statistics(row)['mean_ms'] for row in rounds
+    ) / len(rounds)
+    assert stats['median_ms'] == 2.0
+    assert stats['max_ms'] == 1000.0
+    assert samples == original  # Neither filtering nor sorting the raw data.
+    assert _orchestrator._statistics([1000.0])['mean_ms'] == 1000.0
+
+
+def test_orchestrator_and_report_include_unfiltered_mean_ratios(monkeypatch):
+    import math
+    from benchmarks.cross_backend._report import render_markdown
+
+    workload = next(iter(load_workloads().values()))
+
+    def invoke(name, request, *, threads):
+        samples = ([1.0, 1.0, 1000.0] if request['round'] == 0
+                   else [1.0, 1.0, 1.0]) if name == 'tensor0' else [2.0] * 3
+        return {
+            'backend': {'name': name, 'version': 'test', 'runtime': 'test'},
+            'results': [{'workload_id': workload['id'], 'status': 'ok',
+                         'samples_ms': samples,
+                         'output': {'real': 1.0, 'imag': 0.0}}],
+        }, None
+
+    monkeypatch.setattr(_orchestrator, '_invoke_backend', invoke)
+    monkeypatch.setattr(_orchestrator, '_environment', lambda _: {})
+    payload = _orchestrator.run_comparison(
+        profile='test', workloads=[workload],
+        backends=['tensor0', 'tensorkit'], baseline='tensorkit',
+        warmup=0, repeat=3, rounds=2,
+    )
+    for record in payload['records']:
+        assert record['mean_ms'] == math.fsum(record['samples_ms']) / 6
+        for row in record['round_statistics']:
+            start = row['round'] * 3
+            assert row['mean_ms'] == math.fsum(record['samples_ms'][start:start + 3]) / 3
+    tensor0 = next(r for r in payload['records'] if r['backend'] == 'tensor0')
+    assert tensor0['samples_ms'] == [1.0, 1.0, 1000.0, 1.0, 1.0, 1.0]
+    pair = payload['pairwise'][0]
+    assert pair['contender_speedup'] == 2.0  # Original median direction unchanged.
+    assert pair['baseline_mean_ms'] == 2.0
+    assert pair['contender_mean_ms'] == 167.5
+    assert pair['contender_mean_ratio'] == 2.0 / 167.5 < 1
+    report = render_markdown(payload, command='test')
+    assert 'Contender median / mean ms | Baseline median / mean ms' in report
+    assert 'Record and sample details' in report
+    assert 'Median ratio | Mean ratio' in report
+    assert '167.500000' in report
+    assert '0.012×' in report
+    assert 'unfiltered arithmetic mean latency' in report
+    assert 'not independent throughput measurements' in report
+
+    # Historical aggregate payloads can still render without derived fields.
+    for record in payload['records']:
+        record.pop('mean_ms')
+    pair.pop('contender_mean_ratio')
+    assert '0.012×' in render_markdown(payload, command='test')
+
+
+def test_latency_plots_preserve_all_formal_samples_and_means(tmp_path, monkeypatch):
+    import json
+    import math
+    import xml.etree.ElementTree as ET
+    from pathlib import Path
+    pytest.importorskip("matplotlib")
+    from matplotlib.axes import Axes
+    from benchmarks.cross_backend._plot import render_plot
+
+    means, boxes, axes = [], [], []
+    scatter, boxplot, set_yscale = Axes.scatter, Axes.boxplot, Axes.set_yscale
+
+    def capture_mean(self, x, y, **kwargs):
+        assert kwargs["marker"] == "D"
+        means.extend(y)
+        return scatter(self, x, y, **kwargs)
+
+    def capture_box(self, values, **kwargs):
+        assert kwargs["showfliers"] is True
+        boxes.extend(values)
+        return boxplot(self, values, **kwargs)
+
+    def capture_scale(self, value, **kwargs):
+        assert value == "log"
+        axes.append(self)
+        return set_yscale(self, value, **kwargs)
+
+    monkeypatch.setattr(Axes, "scatter", capture_mean)
+    monkeypatch.setattr(Axes, "boxplot", capture_box)
+    monkeypatch.setattr(Axes, "set_yscale", capture_scale)
+    root = Path("benchmarks/cross_backend/results")
+    for n in (1, 4, 8):
+        payload = json.loads((root / f"cpu-{n}t/results.json").read_text())
+        means.clear(); boxes.clear(); axes.clear()
+        output = render_plot(payload, tmp_path / f"latency-{n}.svg")
+        ET.parse(output)
+        from collections import Counter
+        assert Counter(w.split(".")[1] for w in payload["config"]["workloads"]) == {
+            "mpo": 25, "pepo": 25, "mera": 19,
+        }
+        assert len(payload["config"]["workloads"]) == 69
+        assert len(means) == len(boxes) == 138
+        assert len(axes) == 12
+        expected = {tuple(r["samples_ms"]): r for r in payload["records"]}
+        for samples, mean in zip(boxes, means):
+            record = expected[tuple(samples)]
+            assert mean == record["mean_ms"]
+            assert mean == math.fsum(samples) / len(samples)
+        for axis in axes:
+            lower, upper = axis.get_ylim()
+            assert all(lower <= y <= upper for collection in axis.collections
+                       for _, y in collection.get_offsets())
+            assert all(lower <= y <= upper for line in axis.lines
+                       for y in line.get_ydata())
+
+
+@pytest.mark.parametrize("stored_mean", [False, True])
+def test_latency_plot_mean_includes_outlier(tmp_path, monkeypatch, stored_mean):
+    pytest.importorskip("matplotlib")
+    from matplotlib.axes import Axes
+    from benchmarks.cross_backend._plot import render_plot
+    payload = _plot_payload()
+    payload["records"][0]["samples_ms"] = [1., 1., 100.]
+    if stored_mean:
+        payload["records"][0]["mean_ms"] = 34.
+    means = []
+    scatter = Axes.scatter
+
+    def capture(self, x, y, **kwargs):
+        means.extend(y)
+        return scatter(self, x, y, **kwargs)
+
+    monkeypatch.setattr(Axes, "scatter", capture)
+    render_plot(payload, tmp_path / "means.svg")
+    assert means[0] == 34.  # Not median=1 or an outlier-filtered mean.
+
+
+@pytest.mark.parametrize("failure_source", ["pairwise", "record"])
+def test_latency_plot_omits_failed_and_missing_backend_distributions(
+    tmp_path, monkeypatch, failure_source,
+):
+    pytest.importorskip("matplotlib")
+    from matplotlib.axes import Axes
+    from benchmarks.cross_backend._plot import render_plot
+    payload = _plot_payload()
+    payload["records"] = payload["records"][:2]
+    if failure_source == "pairwise":
+        payload["pairwise"][0]["validation"] = "failed"
+    else:
+        for record in payload["records"]:
+            record["validation"]["status"] = "failed"
+    means = []
+    scatter = Axes.scatter
+
+    def capture(self, x, y, **kwargs):
+        means.extend(y)
+        return scatter(self, x, y, **kwargs)
+
+    monkeypatch.setattr(Axes, "scatter", capture)
+    output = render_plot(payload, tmp_path / "failed.svg")
+    assert means == []
+    content = output.read_text()
+    assert "validation failed" in content
+    assert "unavailable" in content
+
+
+def test_published_report_layout_and_combined_tables():
+    from pathlib import Path
+    root = Path('benchmarks/cross_backend/results')
+    overview = (root / 'report.md').read_text()
+    assert 'Geomean median TK/T0 | Geomean mean TK/T0' in overview
+    assert 'arithmetic mean of all recorded timings' in overview
+    assert 'ratio.svg' not in overview
+    assert 'timeseries.svg' not in overview
+    assert 'Same-version scaling' in overview
+    for n in (1, 4, 8):
+        text = (root / f'cpu-{n}t/report.md').read_text()
+        assert text.count('| `tensor_networks.') == 69
+        assert all(f'### {topology}' in text for topology in ('MPO', 'PEPO', 'MERA'))
+        assert 'T0 median / mean ms | TK median / mean ms' in text
+        assert 'Preparation failures occurred before formal sampling' in text
+        assert 'no formal sample was omitted or replaced' in text
+
+
+def test_single_backend_report_retains_latency_summary():
+    from benchmarks.cross_backend._report import render_markdown
+    payload = {'config': {'profile': 'test', 'measurement': 'steady_state',
+                         'backends': ['tensor0'], 'baseline': 'tensor0',
+                         'threads': 1, 'warmup': 0, 'repeat': 2, 'rounds': 1},
+               'records': [{'workload_id': 'tensor_networks.mpo.z2.float64.d10x4x4',
+                            'backend': 'tensor0', 'status': 'ok', 'median_ms': 2.,
+                            'iqr_ms': 1., 'samples_ms': [1., 3.],
+                            'validation': {'status': 'not_run'}}],
+               'pairwise': [], 'failures': [], 'environment': {}, 'backend_metadata': {}}
+    report = render_markdown(payload, command='test')
+    assert '2.000000 / 2.000000' in report
+    assert '| `ok` | 2 | 2 | 1.000000 | `not_run` |' in report
+
+
+def test_mixed_paired_and_unpaired_report_retains_latencies_and_failures():
+    from benchmarks.cross_backend._report import render_markdown
+    payload = _plot_payload()
+    payload['config'].update(measurement='steady_state', threads=1,
+                             warmup=0, repeat=2, rounds=1)
+    payload.update(environment={}, backend_metadata={})
+    paired_workload = payload['pairwise'][0]['workload_id']
+    payload['pairwise'] = payload['pairwise'][:1]
+    paired_records = [r for r in payload['records']
+                      if r['workload_id'] == paired_workload]
+    unpaired = next(r.copy() for r in payload['records']
+                    if r['workload_id'] != paired_workload)
+    unpaired.update(status='ok', median_ms=4., samples_ms=[2., 6.],
+                    validation={'status': 'not_run'})
+    unpaired.pop('mean_ms', None)
+    failed = {'workload_id': unpaired['workload_id'],
+              'backend': next(b for b in payload['config']['backends']
+                              if b != unpaired['backend']),
+              'status': 'error', 'validation': {'status': 'not_run'}}
+    payload['records'] = paired_records + [unpaired, failed]
+    payload['failures'] = [{'backend': failed['backend'], 'round': 0,
+                            'kind': 'backend_error', 'error': 'test failure'}]
+    report = render_markdown(payload, command='test')
+    assert f"| `{paired_workload}` |" in report
+    assert f"| `{unpaired['workload_id']}` | `{unpaired['backend']}` | 4.000000 / 4.000000 |" in report
+    assert f"| `{failed['workload_id']}` | `{failed['backend']}` | — |" in report
+    assert '| `error` |' in report
+    assert 'test failure' in report
+    assert 'mean_ms' not in failed
+
+    # An absent backend record must not hide the successful backend either.
+    payload['records'].remove(failed)
+    report = render_markdown(payload, command='test')
+    assert f"| `{unpaired['workload_id']}` | `{unpaired['backend']}` | 4.000000 / 4.000000 |" in report
+    assert 'test failure' in report

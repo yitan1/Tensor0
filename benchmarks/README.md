@@ -7,6 +7,11 @@
 - `cross_backend/` compares independent libraries on frozen backend-neutral
   workloads. Tensor0 is one adapter rather than the owner of that suite.
 
+Standard is the primary suite for Tensor0's own regressions. Cross-backend
+comparisons are auxiliary, run as needed; the costly full matrix is not a normal
+CI or release gate. Retained results are selected snapshots, not measurements
+of current HEAD.
+
 The suites do not share workload definitions, inputs, runners, parameters, or
 result models:
 
@@ -39,15 +44,11 @@ Suites publish retained snapshots at stable configuration paths:
   [CPU eight-worker](cross_backend/results/cpu-8t/report.md) reports, raw samples
   and latency plots.
 
-Cross-backend CPU results use a shared Slurm Xeon E5-2680 v3 node (no SMT).
-The new four/eight-worker results share committed source `e5bd1f7`, artifact,
-environment and same-socket core allocation, with real throughput/native/BLAS
-resource gates. The one-worker result uses older `333de65`: it cannot serve as
-a same-version scaling baseline. Four/eight-worker comparisons are descriptive
-sequential observations, not randomized trials. No snapshot is exclusive or
-frequency-locked; runtime budgets do not imply full workload occupancy. The
-standard results remain an independent local Ryzen snapshot with observed
-interference. Reports distinguish source/artifact identity and limitations.
+The cross-backend overview documents the selected full CPU snapshots, sampling
+policy, environment and limitations. Public JSON retains all raw timings,
+round statistics and scalar-check summaries; complete as-run responses and
+per-round scalar pairs are retained privately. Standard results remain an
+independent local Ryzen snapshot, unchanged.
 
 Standard uses `results/report.md` and `results/results.json`. Cross-backend uses
 `results/{cpu-1t,cpu-4t,cpu-8t}/{report.md,results.json,latency.svg}` and a concise
