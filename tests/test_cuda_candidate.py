@@ -93,7 +93,10 @@ def test_bad_distributions(tmp_path, problem):
 
 def test_workflow_keeps_compile_route_and_reuses_manual_core():
     text = (SCRIPT.parents[1] / 'workflows/cuda-build.yml').read_text()
-    assert 'pull_request:' in text and 'push:' in text
+    triggers = '\n' + text.split('\non:\n')[1].split('\npermissions:\n')[0]
+    assert '\n  pull_request:\n    paths:\n' in triggers
+    assert '\n  workflow_dispatch:\n' in triggers
+    assert '\n  push:' not in triggers
     assert 'candidate_run_id:' in text and 'required: true' in text
     assert "if: github.event_name != 'workflow_dispatch'" in text
     assert 'name: tensor0-dist-${{ github.sha }}' in text
