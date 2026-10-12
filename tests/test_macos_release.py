@@ -73,6 +73,10 @@ def test_shared_source_and_full_macos_matrix_gate():
     assert 'maturin" sdist' not in mac_job and 'cuda12' not in mac_job
     assert '-I -m pip install --no-deps dist/*.whl' in mac_job
     assert '-I -m pytest tests -q -ra' in mac_job
+    assert "if: matrix.python == '3.11' || matrix.python == '3.14'" in mac_job
+    assert "if: matrix.python == '3.12' || matrix.python == '3.13'" in mac_job
+    assert '--ignore=tests/stride/native/cpp/test_contracts.py' in mac_job
+    assert 'pytest tests/stride/native/cpp/test_contracts.py' in mac_job
     assert 'macos_release.py installed dist/*.whl' in mac_job
     assert 'needs: [sdist, wheel, macos-wheel]' in workflow
     assert 'cuda_candidate.py files dist' in workflow

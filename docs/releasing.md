@@ -54,11 +54,39 @@ and use a fresh native target with no cache, `/usr/bin/clang++`, a 15.0 deployme
 target and one Cargo build slot. Native ARM64 Python/Rust, macOS 15, matching
 FFI headers, Mach-O architecture, wheel metadata, installed origin, wheel and
 native payload hashes, native CPU availability and pinned runtime are checked.
-Every macOS ABI runs the complete CPU suite and public examples against that
-original non-editable wheel; Rust core tests run once on 3.11. No CUDA extra is
-installed on macOS. Linux retains its installed smoke/examples and separate
-exact-commit full CPU CI matrix. Serial compilation can still exceed hosted
+All eight ABIs run public smoke/examples against the original non-editable
+wheel, with pinned native CPU FFI availability, installed origin, wheel hash and
+native payload equality checked. On each platform, Python 3.11 and 3.14 run the
+full installed-wheel Python suite (excluding only the standalone C++ contract
+file). Python 3.12 and 3.13 run bounded existing copy, update, reduction, dot and
+accumulation JIT/AD contracts instead; their wheel jobs remain mandatory.
+macOS Rust core and standalone C++ contracts run once on 3.11. Linux Rust
+workspace and standalone C++ contracts run once in required same-commit CI.
+No CUDA extra is installed on macOS. Serial compilation can still exceed hosted
 runner memory; configuration alone is not a successful run.
+
+Daily Linux CI runs full Python tests on 3.11 and 3.14, retaining all build-check
+files on both interpreters: these include Python-driven packaging and metadata
+checks, not just platform-independent compiler checks. Rust/C++ contracts run
+only on the baseline interpreter; the blocking Pyright job is unchanged.
+macOS remains a manual/release gate, not an additional daily build matrix.
+No numerical cases or tolerances are removed or relaxed.
+
+The intermediate-ABI contracts select these existing pytest functions (all
+parameters are retained):
+
+- `tests/stride/jax/ad/test_copy.py::test_broadcast_map_transpose_accumulates_and_supports_nested_ad`
+- `tests/stride/jax/ad/test_update.py::test_update_jvp_vjp_and_linear_transpose`
+- `tests/stride/jax/ad/test_reduction.py::test_mixed_reduction_forward_coefficient_ad_batch_and_nested_transpose`
+- `tests/stride/jax/ad/test_dot.py::test_vmap_symbolic_zero_and_native_lowering`
+- `tests/stride/jax/ad/test_accumulation.py::test_compact_vmap_and_float32_derivatives_use_native`
+
+These cover signed/broadcast copy and nested transpose, float32/complex64 update,
+half/bfloat16/float32/float64/complex reduction, real/mixed-complex dot and native
+float32 accumulation, including JIT, batching and forward/reverse AD. They are
+compatibility probes, not substitutes for endpoint numerical coverage.
+Changes to these gates apply only to future source commits; existing fixed-SHA
+runs must be assessed using their own workflows and verification scripts.
 
 The custom archive check only covers Tensor0-specific contents: native build
 inputs, Python/type files, declared license files and excluded private/build
@@ -289,14 +317,16 @@ runner or remote driver modification is added.
 - [ ] Select successful manual own-repository `main` runs: CPU `artifacts.yml`
   and same-commit CUDA `cuda-build.yml`. Record both run IDs. Automatic push/PR
   CUDA artifacts are not release candidates.
-- [ ] Confirm same-commit successful push CPU CI for Python 3.11–3.14 and the
+- [ ] Confirm same-commit successful push CPU CI for Python 3.11 and 3.14 and the
   blocking `Public-package Pyright (Python 3.11)` job. Advisory typing is not
   a substitute. The candidate commit must be an ancestor of `main`.
 - [ ] Verify the immutable stable tag and all three source versions agree.
   Never move an existing tag to another candidate.
 - [ ] Require all eight CPU producer wheel jobs and assembly to succeed. Each
-  macOS 15 ARM64 ABI job must pass the complete installed-wheel CPU suite;
-  skipped or missing macOS jobs are rejected by publication verification.
+  ABI must pass exact installed-wheel smoke/examples and native CPU contracts:
+  full Python suites on 3.11/3.14, bounded major-operation JIT/AD tests on
+  3.12/3.13. Rust/C++ contracts run once per platform as described above.
+  Skipped or missing wheel jobs are rejected by publication verification.
 - [ ] Check CUDA build and `verify-candidate` jobs and all four
   `Exact CPU candidate + same addon / Python 3.X (no GPU)` jobs succeed.
   Artifact upload and `release_candidate=true` alone are insufficient: upload

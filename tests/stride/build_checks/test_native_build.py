@@ -276,7 +276,16 @@ def test_parallel_compilation_is_bounded_and_preserves_link_order(build, jobs):
     assert json.loads(state.read_text()) == [0, jobs]
     assert f"checking {run.unit_count} units with up to {jobs} workers" in result.stderr
     assert result.stderr.count("tensor0-native: compiling ") == run.unit_count
-    assert len(re.findall(r"tensor0-native: compiled native/\S+ in \d+\.\d{2}s", result.stderr)) == run.unit_count
+    completed = re.findall(r"tensor0-native: compiled native/\S+ in \d+\.\d{2}s", result.stderr)
+    if len(completed) != run.unit_count:
+        sources = [command[command.index("-c") + 1] for command in commands]
+        # Avoid pytest's truncated assertion repr when diagnosing missing log lines.
+        pytest.fail(
+            f"NUM_JOBS={jobs}: expected {run.unit_count} completion messages, got {len(completed)}\n"
+            f"Compiled sources: {sources!r}\nMatched completions: {completed!r}\n"
+            f"Full build-script stderr:\n{result.stderr}",
+            pytrace=False,
+        )
     assert "tensor0-native: native objects ready in " in result.stderr
     links = [line for line in result.stdout.splitlines()
              if line.startswith("cargo:rustc-link-arg=")]

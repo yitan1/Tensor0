@@ -42,7 +42,8 @@ def test_independent_sdist_and_platform_wheel(tmp_path):
             process = subprocess.run(command, stdout=stream, stderr=subprocess.STDOUT,
                                      timeout=120, **kwargs)
         assert process.returncode == 0, log.read_text()
-    run([uv, "build", "--offline", "--no-sources", "--sdist", str(REPO_ROOT / "crates/tensor0-cuda12"),
+    # Isolated PEP 517 builds resolve declared build dependencies on cold runners.
+    run([uv, "build", "--no-sources", "--sdist", str(REPO_ROOT / "crates/tensor0-cuda12"),
          "--out-dir", str(dist)], cwd=tmp_path)
     sdist, = dist.glob("*.tar.gz")
     with tarfile.open(sdist) as archive:
@@ -89,7 +90,7 @@ else:
     toolkit = tmp_path / "toolkit/lib"
     toolkit.mkdir(parents=True)
     (toolkit / "libcudart.so").write_bytes(b"fixture runtime")
-    run([uv, "build", "--offline", "--no-sources", "--wheel", str(source), "--out-dir", str(dist)],
+    run([uv, "build", "--no-sources", "--wheel", str(source), "--out-dir", str(dist)],
         cwd=tmp_path, env=dict(os.environ, CXX=str(compiler), NVCC=str(compiler),
                               CUDA_HOME=str(toolkit.parent)))
     wheel, = dist.glob("*.whl")
@@ -116,7 +117,7 @@ else:
         assert "Root-Is-Purelib: false" in archive.read(wheel_metadata).decode()
     # Also build directly from the checkout: CUDA and shared inputs have different owners.
     checkout_dist = tmp_path / "checkout-dist"
-    run([uv, "build", "--offline", "--no-sources", "--wheel",
+    run([uv, "build", "--no-sources", "--wheel",
          str(REPO_ROOT / "crates/tensor0-cuda12"), "--out-dir", str(checkout_dist)],
         cwd=tmp_path, env=dict(os.environ, CXX=str(compiler), NVCC=str(compiler),
                               CUDA_HOME=str(toolkit.parent)))

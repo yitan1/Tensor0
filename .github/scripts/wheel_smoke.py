@@ -1,7 +1,13 @@
 """Verify installed public CPU operations; run with python -I outside the checkout."""
 
 from pathlib import Path
+import hashlib
+import importlib.metadata
+import json
 import sys
+from urllib.parse import unquote, urlparse
+import zipfile
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -11,7 +17,29 @@ import tensor0._native as native
 
 assert Path(tensor0.__file__).resolve().is_relative_to(Path(sys.prefix))
 assert Path(native.__file__).resolve().is_relative_to(Path(sys.prefix))
+assert sys.flags.isolated and sys.prefix != sys.base_prefix
+assert jax.__version__ == importlib.metadata.version('jaxlib') == '0.10.1'
+assert native._stride_ffi_available()
+assert native._stride_ffi_build_versions() == ('0.10.1', '0.10.1')
 assert jax.default_backend() == 'cpu'
+# Release jobs supply the original wheel; manual smoke callers need no argument.
+if len(sys.argv) > 1:
+    wheel_arg, = sys.argv[1:]
+    wheel = Path(wheel_arg)
+    version = wheel.name.split('-')[1]
+    abi = f'cp{sys.version_info.major}{sys.version_info.minor}'
+    assert wheel.name.split('-')[2:4] == [abi, abi]
+    assert tensor0.__version__ == native.native_version() == importlib.metadata.version('tensor0') == version
+    direct = json.loads(importlib.metadata.distribution('tensor0').read_text('direct_url.json'))
+    assert not direct.get('dir_info')
+    url = urlparse(direct['url'])
+    assert url.scheme == 'file' and Path(unquote(url.path)).name == wheel.name
+    assert direct['archive_info']['hashes']['sha256'] == hashlib.sha256(wheel.read_bytes()).hexdigest()
+    with zipfile.ZipFile(wheel) as archive:
+        binary, = (name for name in archive.namelist()
+                   if name.startswith('tensor0/_native') and name.endswith('.so'))
+        assert Path(native.__file__).read_bytes() == archive.read(binary)
+    print('Exact installed wheel:', wheel.name, direct)
 target = hom((Vect(2),), (Vect(2),))
 data = jnp.arange(1, 5, dtype=jnp.float32).reshape(2, 2)
 tensor = from_dense(target, data)

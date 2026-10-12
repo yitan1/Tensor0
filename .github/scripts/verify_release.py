@@ -93,7 +93,7 @@ def verify_provenance(repository, cpu_id, cuda_id, tag):
                  {'verify-candidate', 'CUDA 12.9 / sm_80 / CPython 3.11 (compile and CPU smoke only)'}
                  | {f'Exact CPU candidate + same addon / Python {v} (no GPU)'
                     for v in ('3.11', '3.12', '3.13', '3.14')})
-    required = {f'Linux x86_64 / Python {v}' for v in ('3.11', '3.12', '3.13', '3.14')}
+    required = {f'Linux x86_64 / Python {v}' for v in ('3.11', '3.14')}
     required.add('Public-package Pyright (Python 3.11)')
     workflow = api(f'repos/{repository}/actions/workflows/ci.yml')
     checks = api(f'repos/{repository}/actions/workflows/ci.yml/runs?branch=main&event=push&status=success&head_sha={sha}&per_page=100')

@@ -290,7 +290,7 @@ def provenance(monkeypatch):
     cpu_jobs += [f'CPython {v} / {platform}' for v in ('3.11', '3.12', '3.13', '3.14')
                  for platform in ('manylinux_2_28 x86_64', 'macOS 15 ARM64 CPU')]
     records = {'1': [dict(name=n, conclusion='success') for n in cpu_jobs], '2': [dict(name=n, conclusion='success') for n in cuda_jobs],
-               '3': [dict(name=f'Linux x86_64 / Python {v}', conclusion='success') for v in ('3.11', '3.12', '3.13', '3.14')]
+               '3': [dict(name=f'Linux x86_64 / Python {v}', conclusion='success') for v in ('3.11', '3.14')]
                     + [dict(name='Public-package Pyright (Python 3.11)', conclusion='success')]}
     def api(path):
         if '/jobs?' in path:
@@ -342,6 +342,29 @@ def test_provenance_rejections(provenance, change):
         tag = 'v0.2.0.dev0'
     with pytest.raises(ValueError):
         release.verify_provenance(REPO, '1', '2', tag)
+
+
+@pytest.mark.parametrize('version', ['3.11', '3.14'])
+@pytest.mark.parametrize('problem', ['missing', 'failure', 'skipped'])
+def test_required_ci_endpoints(provenance, version, problem):
+    _, jobs = provenance
+    name = f'Linux x86_64 / Python {version}'
+    if problem == 'missing':
+        jobs['3'][:] = [job for job in jobs['3'] if job['name'] != name]
+    else:
+        next(job for job in jobs['3'] if job['name'] == name)['conclusion'] = problem
+    with pytest.raises(ValueError):
+        release.verify_provenance(REPO, '1', '2', 'v0.2.0')
+
+
+@pytest.mark.parametrize('platform', ['manylinux_2_28 x86_64', 'macOS 15 ARM64 CPU'])
+@pytest.mark.parametrize('version', ['3.12', '3.13'])
+def test_intermediate_wheel_jobs_still_required(provenance, platform, version):
+    _, jobs = provenance
+    name = f'CPython {version} / {platform}'
+    jobs['1'][:] = [job for job in jobs['1'] if job['name'] != name]
+    with pytest.raises(ValueError):
+        release.verify_provenance(REPO, '1', '2', 'v0.2.0')
 
 
 def test_core_hash_from_unique_wheel(candidate):

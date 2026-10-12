@@ -26,7 +26,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python: ["3.11", "3.12", "3.13", "3.14"]
+        python: ["3.11", "3.14"]
     steps:
       - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v8.3.2
@@ -39,10 +39,16 @@ jobs:
       - name: Clean native CPU build
         # No native target cache is restored: missing headers must not be masked.
         run: uv run --no-sync maturin develop
-      - name: Rust workspace tests
+      - name: Require the pinned native CPU FFI backend
+        run: uv run --no-sync python -c 'from tests.stride.support.availability import native_available; assert native_available()'
+      - name: Rust workspace tests (once on Linux)
+        if: matrix.python == '3.11'
         run: cargo test --workspace
-      - name: Python tests (including native C++ and build checks)
-        run: uv run --no-sync pytest tests -q -ra
+      - name: Standalone native C++ contracts (once on Linux)
+        if: matrix.python == '3.11'
+        run: uv run --no-sync pytest tests/stride/native/cpp/test_contracts.py -q -ra
+      - name: Full Python tests (including ABI-dependent build checks)
+        run: uv run --no-sync pytest tests -q -ra --ignore=tests/stride/native/cpp/test_contracts.py
       - name: Run public examples
         run: |
           uv run --no-sync python examples/basic_usage.py
