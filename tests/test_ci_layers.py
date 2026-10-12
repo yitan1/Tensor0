@@ -43,3 +43,19 @@ def test_release_keeps_eight_wheels_and_identical_bounded_contracts():
         selections.append(nodes)
     assert selections[0] == selections[1]
     assert 'test "$(find dist -name \'*.whl\' | wc -l)" -eq 8' in workflow
+
+
+def test_release_host_fetch_reuses_shared_sdist_lock_before_offline_fixtures():
+    workflow = (ROOT / '.github/workflows/artifacts.yml').read_text()
+    job = workflow.split('  wheel:\n')[1].split('  macos-wheel:\n')[0]
+    name = 'Resolve locked host Cargo dependencies for offline build fixtures'
+    step = job.split(f'      - name: {name}\n')[1].split('      - name:')[0]
+    assert "if: matrix.python == '3.11' || matrix.python == '3.14'" in step
+    copy = 'cp artifact-source/source/Cargo.lock Cargo.lock'
+    fetch = 'cargo fetch --locked'
+    assert copy in step
+    assert fetch in step
+    assert step.index(copy) < step.index(fetch)
+    extract = '--extract artifact-source'
+    full_suite = 'Full installed-wheel Python suite (baseline and highest ABI)'
+    assert job.index(extract) < job.index(copy) < job.index(fetch) < job.index(full_suite)

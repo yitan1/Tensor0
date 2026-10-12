@@ -103,8 +103,11 @@ jobs:
         if: matrix.python == '3.11' || matrix.python == '3.14'
       - name: Resolve locked host Cargo dependencies for offline build fixtures
         if: matrix.python == '3.11' || matrix.python == '3.14'
+        # Reuse the producer's lockfile; checkout does not track Cargo.lock.
         # The wheel build ran in manylinux, not necessarily the host Cargo cache.
-        run: cargo fetch --locked
+        run: |
+          cp artifact-source/source/Cargo.lock Cargo.lock
+          cargo fetch --locked
       - name: Full installed-wheel Python suite (baseline and highest ABI)
         if: matrix.python == '3.11' || matrix.python == '3.14'
         # Linux Rust/C++ contracts run once in the required same-commit CI.
