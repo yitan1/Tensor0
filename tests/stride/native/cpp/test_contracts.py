@@ -16,7 +16,7 @@ from tests.stride.support.data import REDUCTION_DTYPES
 from tests.stride.support.paths import REPO_ROOT
 
 
-pytestmark = pytest.mark.skipif(sys.platform != 'linux', reason='native CPU contracts require Linux')
+pytestmark = pytest.mark.skipif(sys.platform not in ('linux', 'darwin'), reason='native CPU contracts require Linux or macOS')
 
 
 SOURCES = REPO_ROOT / "tests/stride/native/cpp"

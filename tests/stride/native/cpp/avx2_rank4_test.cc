@@ -69,8 +69,8 @@ void Check(const layout::Record& record, const std::vector<float>& source,
   kernels::ExecuteMapRecord(optimized, source.data(), result.data(), operation);
   check();
   if (layout::ElementCount(record) == 0) return;
-  std::array<std::size_t, 4> axes;
 #if defined(TENSOR0_STRIDE_HAS_AVX2_TARGET)
+  std::array<std::size_t, 4> axes;
   if (tensor0::stride::simd::CpuSupportsAvx2() && layout::IsRank4TwoPairCandidate(optimized, &axes)) {
     kernels::ExecuteRank4TwoPair(optimized, axes, source.data(), result.data(), operation);
     check();

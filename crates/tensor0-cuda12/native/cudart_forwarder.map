@@ -1,0 +1,14 @@
+{
+  local:
+    cudaGetErrorString;
+    cudaGetLastError;
+    cudaMemcpyAsync;
+    cudaMemsetAsync;
+    cudaLaunchKernel;
+    __cudaPushCallConfiguration;
+    __cudaPopCallConfiguration;
+    __cudaRegisterFatBinary;
+    __cudaRegisterFatBinaryEnd;
+    __cudaRegisterFunction;
+    __cudaUnregisterFatBinary;
+};

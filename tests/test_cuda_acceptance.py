@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import sys
 import subprocess
+import zipfile
 from types import SimpleNamespace
 
 import pytest
@@ -20,7 +21,9 @@ spec.loader.exec_module(acceptance)
 @pytest.fixture
 def wheel_info(tmp_path):
     wheel = tmp_path / "tensor0-test.whl"
-    wheel.write_bytes(b"a wheel archive")
+    with zipfile.ZipFile(wheel, 'w') as archive:
+        archive.writestr('tensor0/_native.so', b'unchanged core')
+        archive.writestr('tensor0_cuda12/_stride_cuda.so', b'unchanged core')
     build = dict.fromkeys(acceptance.BUILD_FIELDS, "test")
     build.update(wheel=wheel.name, sha256=hashlib.sha256(wheel.read_bytes()).hexdigest())
     direct = {"url": wheel.as_uri(), "archive_info": {"hashes": {"sha256": build["sha256"]}}}
@@ -81,25 +84,35 @@ def test_environment(monkeypatch):
 
 
 @pytest.mark.parametrize("problem", [None, "noenv", "not_isolated", "dirty", "commit", "origin",
-                                     "cuda", "versions", "registration", "gpu", "cpu", "driver"])
-def test_preflight(monkeypatch, wheel_info, problem):
+                                     "cuda", "versions", "registration", "gpu", "cpu", "driver",
+                                     "addon_version", "core_changed", "baseline_failed", "companion_origin", "native_version",
+                                     "core_payload", "addon_payload", "other_prefix", "other_executable", "other_native"])
+def test_preflight(monkeypatch, wheel_info, problem, tmp_path):
     wheel, build, direct = wheel_info
     monkeypatch.setattr(acceptance, "sys", SimpleNamespace(
         prefix="/venv", base_prefix="/venv" if problem == "noenv" else "/base",
-        flags=SimpleNamespace(isolated=problem != "not_isolated"), version=sys.version))
+        flags=SimpleNamespace(isolated=problem != "not_isolated"), version=sys.version, executable='/venv/bin/python'))
     monkeypatch.setattr(acceptance.subprocess, "check_output", lambda cmd, **kw:
                         ("dirty" if problem == "dirty" else "") if "status" in cmd
                         else ("wrong" if problem == "commit" else build["source_commit"]))
     monkeypatch.setattr(acceptance.metadata, "distribution", lambda name:
-                        SimpleNamespace(read_text=lambda filename: json.dumps(direct)))
-    monkeypatch.setattr(acceptance.metadata, "version", lambda name: "test")
+                        SimpleNamespace(read_text=lambda filename: json.dumps(direct),
+                                        locate_file=lambda filename: ("/checkout/" if problem == "companion_origin" else "/venv/") + filename))
+    monkeypatch.setattr(acceptance.metadata, "version", lambda name:
+                        "wrong" if problem == "addon_version" and name == "tensor0-cuda12" else "test")
+    binary = tmp_path / "native.so"
+    binary.write_bytes(b"unchanged core")
+    monkeypatch.setattr(acceptance.Path, "read_bytes", lambda self:
+                        b'changed payload' if (problem == 'core_payload' and self.name == 'native.so')
+                        or (problem == 'addon_payload' and self.name == '_stride_cuda.so') else b"unchanged core")
     native = SimpleNamespace(
         __file__="/checkout/native.so" if problem == "origin" else "/venv/native.so",
+        native_version=lambda: "wrong" if problem == "native_version" else "test",
         _stride_cuda_available=lambda: problem != "cuda",
         _stride_ffi_build_versions=lambda: ("wrong", "test") if problem == "versions" else ("test", "test"),
         _stride_cuda_registration=lambda: {} if problem == "registration" else {"target": object()},
     )
-    package = SimpleNamespace(__file__="/venv/tensor0/__init__.py", _native=native)
+    package = SimpleNamespace(__file__="/venv/tensor0/__init__.py", __version__="test", _native=native)
     monkeypatch.setitem(sys.modules, "tensor0", package)
     monkeypatch.setitem(sys.modules, "tensor0._native", native)
     monkeypatch.setitem(sys.modules, "jax", SimpleNamespace(
@@ -109,14 +122,22 @@ def test_preflight(monkeypatch, wheel_info, problem):
                         SimpleNamespace(returncode=int(problem == "driver"), stdout="driver", stderr=""))
     # Restore the environment after preflight sets JAX_PLATFORMS.
     monkeypatch.setattr(acceptance.os, "environ", dict(acceptance.os.environ))
+    build.update(cuda_wheel=wheel.name, cuda_sha256=build["sha256"])
+    baseline = {"accepted": problem != "baseline_failed", "mode": "cpu", "sha256": build["sha256"],
+                "core_binary_sha256": "wrong" if problem == "core_changed" else hashlib.sha256(b"unchanged core").hexdigest(),
+                "checkout": {"root": str(acceptance.ROOT), "commit": build["source_commit"]},
+                "prefix": '/other-venv' if problem == 'other_prefix' else '/venv',
+                "executable": '/other-venv/bin/python' if problem == 'other_executable' else '/venv/bin/python',
+                "origins": {'native': '/other-venv/native.so' if problem == 'other_native' else '/venv/native.so'}}
     if problem:
         with pytest.raises(RuntimeError):
-            acceptance.preflight(wheel, build, {})
+            acceptance.preflight(wheel, wheel, build, {}, baseline)
     else:
         report = {}
-        acceptance.preflight(wheel, build, report)
+        acceptance.preflight(wheel, wheel, build, report, baseline)
         assert report["devices"] == {"cpu": ["device"], "cuda": ["device"]}
         assert report["sha256"] == build["sha256"]
+        assert report['core_binary_sha256'] == report['cuda_binary_sha256'] == hashlib.sha256(b'unchanged core').hexdigest()
 
 
 def test_main_failure_report_and_existing_output(tmp_path, monkeypatch):
@@ -124,7 +145,10 @@ def test_main_failure_report_and_existing_output(tmp_path, monkeypatch):
     build.write_text('{}')
     output = tmp_path / "results"
     monkeypatch.setattr(acceptance, "preflight", lambda *args: (_ for _ in ()).throw(RuntimeError("no GPU")))
-    args = ["--wheel", str(tmp_path / "test.whl"), "--build-info", str(build), "--output", str(output)]
+    # This unit test exercises failure reporting, not the Git preflight.
+    monkeypatch.setattr(acceptance.subprocess, "run", lambda *args, **kwargs:
+                        SimpleNamespace(returncode=0, stdout="", stderr=""))
+    args = ["--cuda-wheel", "addon.whl", "--cpu-report", str(build), "--wheel", str(tmp_path / "test.whl"), "--build-info", str(build), "--output", str(output)]
     assert acceptance.main(args) == 1
     report = json.loads((output / "report.json").read_text())
     assert not report["accepted"] and "no GPU" in report["error"]
@@ -155,7 +179,7 @@ def test_fixed_suites_all_run_and_each_needs_passes(tmp_path, monkeypatch, empty
         return SimpleNamespace(returncode=0)
 
     monkeypatch.setattr(acceptance.subprocess, "run", run)
-    assert acceptance.main(["--wheel", "test.whl", "--build-info", str(build),
+    assert acceptance.main(["--cuda-wheel", "addon.whl", "--cpu-report", str(build), "--wheel", "test.whl", "--build-info", str(build),
                             "--output", str(output)]) == int(empty_suite)
     assert calls == list(acceptance.SUITES)
     report = json.loads((output / "report.json").read_text())
@@ -175,3 +199,52 @@ def test_real_pytest_junit_skip_format(tmp_path):
     result = acceptance.junit_result(xml, process.returncode)
     assert result["accepted"], process.stdout + process.stderr
     assert result["passed"] == 1 and len(result["skipped"]) == 1
+
+
+@pytest.mark.parametrize("change", ["bytes", "basename", "installed_hash"])
+def test_addon_wheel_binding_rejects(wheel_info, change):
+    wheel, build, direct = wheel_info
+    build.update(cuda_wheel=wheel.name, cuda_sha256=build["sha256"])
+    assert acceptance.verify_wheel(wheel, build, direct, cuda=True) == build["cuda_sha256"]
+    if change == "bytes":
+        wheel.write_bytes(b"changed addon")
+    elif change == "basename":
+        build["cuda_wheel"] = "other.whl"
+    else:
+        direct["archive_info"]["hashes"]["sha256"] = "0" * 64
+    with pytest.raises(RuntimeError):
+        acceptance.verify_wheel(wheel, build, direct, cuda=True)
+
+
+def test_cpu_baseline_mode_records_smoke_without_running_gpu_suites(tmp_path, monkeypatch):
+    build = tmp_path / "build.json"
+    build.write_text('{}')
+    output = tmp_path / "cpu-results"
+    monkeypatch.setattr(acceptance, "preflight", lambda *args: None)
+    commands = []
+    def run(command, **kwargs):
+        commands.append(command)
+        if command[0] != "git":
+            assert kwargs["env"]["JAX_PLATFORMS"] == "cpu"
+            assert command[-1].endswith("wheel_smoke.py")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+    monkeypatch.setattr(acceptance.subprocess, "run", run)
+    assert acceptance.main(["--cpu-only", "--wheel", "core.whl", "--build-info", str(build),
+                            "--output", str(output)]) == 0
+    report = json.loads((output / "report.json").read_text())
+    assert report["accepted"] and report["mode"] == "cpu" and report["suites"] == []
+    assert len(commands) == 2
+
+
+@pytest.mark.parametrize('cuda', [False, True])
+def test_unique_wheel_binary_payload(wheel_info, cuda):
+    wheel, _, _ = wheel_info
+    assert acceptance.wheel_binary_hash(wheel, cuda=cuda) == hashlib.sha256(b'unchanged core').hexdigest()
+    with zipfile.ZipFile(wheel, 'a') as archive:
+        if cuda:
+            with pytest.warns(UserWarning, match='Duplicate name'):
+                archive.writestr('tensor0_cuda12/_stride_cuda.so', b'other addon')
+        else:
+            archive.writestr('tensor0/_native.other.so', b'other core')
+    with pytest.raises(RuntimeError, match='exactly one native'):
+        acceptance.wheel_binary_hash(wheel, cuda=cuda)

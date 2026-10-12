@@ -124,7 +124,9 @@ from .operations.transforms import (
     twist,
 )
 
-__version__ = "0.0.0"
+from importlib.metadata import version as _distribution_version
+
+__version__ = _distribution_version("tensor0")
 
 __all__ = [
     "ComplexSpace",

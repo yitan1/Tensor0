@@ -291,6 +291,7 @@ def render_plot(payload: dict[str, Any], output: Path) -> Path:
                             samples = [] if validation_failed else _samples(record)
                             color = colors[backend]
                             if samples:
+                                assert record is not None
                                 axis.boxplot(
                                     [samples],
                                     positions=[position],

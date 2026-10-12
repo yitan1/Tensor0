@@ -4,17 +4,18 @@ build-backend = "maturin"
 
 [project]
 name = "tensor0"
-version = "0.1.0"
+version = "0.2.0"
 description = "Rust-backed metadata and JAX-backed symmetric TensorMap core"
 readme = "README.md"
 requires-python = ">=3.11"
-license = "MIT"
-license-files = ["LICENSE", "src/tensor0/_licenses/*"]
+license = "MIT AND Apache-2.0"
+license-files = ["LICENSE", "crates/tensor0-py/vendor/jaxlib-0.10.1/LICENSE.txt"]
 keywords = ["jax", "tensor", "symmetry", "tensor-network"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
     "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS :: MacOS X",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Rust",
@@ -24,6 +25,13 @@ dependencies = [
     "jax==0.10.1",
     "jaxlib==0.10.1",
     "numpy>=2.0",
+]
+
+[project.optional-dependencies]
+cuda12 = [
+    "tensor0-cuda12==0.2.0",
+    "jax[cuda12]==0.10.1",
+    "nvidia-cuda-runtime-cu12>=12.9.79,<13",
 ]
 
 [project.urls]
@@ -48,9 +56,8 @@ module-name = "tensor0._native"
 manifest-path = "crates/tensor0-py/Cargo.toml"
 python-source = "src"
 features = ["pyo3/extension-module"]
+exclude = ["src/tensor0/_stride_cuda.so", "crates/tensor0-cuda12/**"]
 include = [
-    { path = "crates/tensor0-py/native/**/*.cu", format = "sdist" },
-    { path = "crates/tensor0-py/native/**/*.cuh", format = "sdist" },
     { path = "crates/tensor0-py/native/**/*.cc", format = "sdist" },
     { path = "crates/tensor0-py/native/**/*.h", format = "sdist" },
 ]
@@ -66,3 +73,6 @@ reportUnnecessaryCast = "error"
 reportUnnecessaryTypeIgnoreComment = "error"
 venvPath = "."
 venv = ".venv"
+
+[tool.uv.sources]
+tensor0-cuda12 = { path = "crates/tensor0-cuda12", editable = false }

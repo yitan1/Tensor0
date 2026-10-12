@@ -12,8 +12,9 @@ Package metadata:
 - license: Apache-2.0
 - source include root: `jaxlib/include`
 
-Only the transitive quoted-include closure required by
-`native/stride_ffi.cc` is retained:
+Only the transitive quoted-include closure required by the native FFI handlers
+in `crates/tensor0-py/native/ffi/` and `crates/tensor0-cuda12/native/cuda/`
+is retained:
 
 | File | SHA-256 |
 | --- | --- |
@@ -25,3 +26,13 @@ Only the transitive quoted-include closure required by
 `build.rs` embeds the exact build JAX/JAXLIB version identity. Python disables
 native target registration unless the runtime JAX and JAXLIB versions match
 that identity exactly.
+
+Tensor0-owned code remains MIT-licensed. Both distributions incorporate these
+Apache-2.0 FFI headers and declare `MIT AND Apache-2.0` in their license metadata.
+Both wheels carry the canonical, unmodified `LICENSE.txt` under
+`.dist-info/licenses/` alongside Tensor0's `LICENSE`. The upstream license file
+also contains notices for other jaxlib components; shipping it intact does not
+mean those components are included in Tensor0. No separate NOTICE file is
+present in this vendored snapshot; the headers retain their upstream copyright
+and license notices. This metadata does not cover separately supplied CUDA
+toolchain, runtime or driver components.

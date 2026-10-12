@@ -125,53 +125,117 @@ transpose drops it because repeated source reads can become gradient write
 conflicts. CUDA ignores this CPU scheduling metadata and retains generic sums.
 The worker granularity remains 32K; this is not a GPU performance optimization.
 
+## Experimental macOS ARM64 core validation
+
+The CPU build permits macOS and links Apple's `libc++`; it keeps the existing
+scalar fallback on ARM64, without adding NEON kernels or changing numerical/AD
+semantics. This is an experimental build path, not a released platform guarantee.
+Windows and macOS CUDA are outside its scope.
+
+A source-snapshot wheel has been built and tested on Apple M5 / macOS 27 with
+Apple Clang 21, CPython 3.11 and JAX/JAXLIB 0.10.1. Installed-wheel CPU tests,
+all 42 standalone C++ contracts, JIT/gradient smoke checks and the public examples
+passed. This establishes that tested configuration only, not macOS 15 runtime
+compatibility or hosted-runner memory suitability. No macOS wheel is published.
+
+`.github/workflows/macos.yml` is an independent, **manual-only** validation
+workflow on the standard `macos-15` ARM64 runner with native ARM64 Python 3.11
+and CPU JAX/JAXLIB 0.10.1. Its first target has an explicit macOS 15 deployment
+minimum; older macOS versions are not being validated. It uses one Cargo build
+job because numerical C++ units can consume several GiB; even serial compilation
+may exceed the runner's memory, which must be checked in an actual hosted run.
+
+The workflow compares the three installed JAXLIB FFI headers with the vendored
+headers, builds one release core wheel from a fresh sdist outside the checkout,
+checks its ARM64 Mach-O binary/tag and installed origin/hash, and requires native
+CPU availability before running the complete Python CPU suite, public examples,
+and Rust `tensor0-core` tests. The Rust extension is not rebuilt by workspace
+tests. Standalone C++ contracts retain UBSan and run on Linux and macOS;
+Linux-only CUDA loading/ELF fixtures skip, while metadata preflight checks remain
+cross-platform. No CUDA extra or GPU execution is involved.
+
+The `macos-core-validation-<sha>` artifact contains experimental wheels and
+validation logs/JUnit evidence only. It is not a release candidate or an input
+to publishing; it does not replace the unified release producer. Configuration
+and Linux target-OS mocks do not prove Apple Clang compilation, hosted test
+success, or macOS release readiness. Changing `build.rs` invalidates native
+object fingerprints, so earlier core artifacts do not include this build path.
+
+For 0.2.0, `artifacts.yml` is the sole release producer for Linux and macOS:
+it builds one shared core sdist and eight wheels (CPython 3.11–3.14 on each
+platform). Each `macos-15` ARM64 job builds from that shared sdist outside the
+checkout with a fresh target and `/usr/bin/clang++`, verifies the original
+Mach-O and installed binary/wheel hashes, then runs the complete CPU suite and
+examples against the installed wheel. The deployment target is 15.0, not
+universal2. Rust core tests run once on macOS 3.11. No CUDA extras, native
+cache or extension rebuild is used. All four macOS jobs gate assembly and
+publication. Actual macOS 15 runtime/toolchain/memory acceptance remains pending;
+the M5 result above is not evidence for these hosted jobs. See
+[Releasing](releasing.md) for the fixed nine-core/eleven-final artifact contract.
+
 ## Optional CUDA stride build
 
-Linux builds are CPU-only by default and do not discover or link CUDA. To enable
-CUDA affine Copy, Update, Accumulation, Dot and Reduction for F32, F64, C64 and C128, use an existing CUDA toolkit
-with a C++20-capable `nvcc`:
+The unified `tensor0` wheel always builds CPU native execution and a lazy CUDA
+loader. It never compiles CUDA or stages a sidecar in the source package;
+`TENSOR0_CUDA` is no longer a core build option. The optional companion project
+is `crates/tensor0-cuda12`, using standard setuptools and a std-only Rust builder
+(no PyO3 extension or Cargo crate). With an existing CUDA 12 toolkit:
 
 ```bash
-TENSOR0_CUDA=1 CUDA_HOME=/usr/local/cuda TENSOR0_CUDA_ARCH=sm_80 \
-    uv run maturin develop --release
+uv build --sdist crates/tensor0-cuda12 --out-dir /tmp/addon-dist
+# Extract the sdist outside the checkout, then build that extracted project:
+CUDA_HOME=/usr/local/cuda TENSOR0_CUDA_ARCH=sm_80 \
+    uv build --wheel /absolute/extracted/tensor0_cuda12-0.2.0 --out-dir /tmp/addon-dist
 ```
 
-`TENSOR0_CUDA` accepts `0` (also the unset default) or `1`. An explicitly requested
-CUDA build fails rather than silently producing a CPU-only extension when the
-compiler or required headers are unavailable. `NVCC` selects the compiler;
-otherwise it is `$CUDA_HOME/bin/nvcc`, or `nvcc` from `PATH` when `CUDA_HOME` is
-unset. `CUDA_HOME` selects the toolkit root for runtime-library lookup (`lib64`
-or `lib`); by default it is inferred from the resolved NVCC path. The toolkit must
-provide `libcudart_static.a`. Opted-in builds link this static CUDA runtime plus
-`dl`, `rt` and `pthread`, avoiding a runtime search path for `libcudart.so`.
-Running CUDA operations still requires a compatible NVIDIA driver. CPU-only
-builds do not link the CUDA runtime.
+Build dependencies are provisioned in isolation. The sdist copies canonical CUDA
+sources, shared layout/FFI helpers, vendored XLA headers, builder and root MIT license;
+it does not depend on the original monorepo. The wheel contains
+`tensor0_cuda12/_stride_cuda.so` and the root MIT license, has no Python ABI, and uses
+a raw `py3-none-linux_x86_64` build tag. The release route then runs
+`auditwheel repair --plat manylinux_2_28_x86_64 --only-plat` without exclusions; only the
+repaired addon enters the candidate directory. No NVIDIA runtime/driver is
+bundled and the linker adds no RPATH. Actual repair/ELF inspection, not a
+setuptools retag, must establish compliance. The core continues to use maturin.
 
-`CXX` selects both the CPU compiler and NVCC's host compiler (passed explicitly as
-`-ccbin`); it defaults to `/usr/bin/c++`. `NVCC_CCBIN` is cleared for the NVCC
-invocation. The selected host compiler path, resolved executable contents and
-version are included in the CUDA fingerprint, with the same Cargo file watches
-used for CPU compilation. Replacing the host compiler at the same path therefore
-invalidates both CPU and CUDA objects.
+Both Python distributions and Cargo use the planned stable version `0.2.0`,
+with exact reciprocal dependency pins (the core pin is in its `cuda12` extra).
+The unpublished `tensor0[cuda12]` extra selects the addon and
+`jax[cuda12]==0.10.1`; the addon requires external
+`nvidia-cuda-runtime-cu12>=12.9.79,<13`. Published CPU 0.1.0 cannot be paired with
+this addon. Splitting does not establish PyPI readiness or compatibility.
 
-`TENSOR0_CUDA_ARCH` is passed as NVCC's single `-arch` argument and defaults to
-`sm_80`; select an architecture supported by both your toolkit and target GPU.
-Changing the compiler, architecture, CUDA environment inputs, source or discovered
-headers invalidates the CUDA object cache. The selected `libcudart_static.a` is
-watched separately: replacing it triggers relinking without recompiling unchanged
-native objects. Other toolkit internals, such as an independently replaced
-`ptxas`, are not individually fingerprinted; perform a clean rebuild after such
-updates. CUDA optimization follows the selected C++ optimization level, except
-size levels `s` and `z` map to NVCC `-O2`.
-CUDA compiles Copy, Update, Accumulation, Dot and Reduction serially after all CPU workers have finished and
-returned their jobserver tokens, using the build script's implicit Cargo slot.
-It does not start a separate worker pool.
+`CXX` defaults to `/usr/bin/c++` and selects NVCC's explicit `-ccbin` host compiler;
+`NVCC_CCBIN` is cleared for that invocation. `NVCC` selects the CUDA compiler,
+otherwise `$CUDA_HOME/bin/nvcc` or `nvcc` from PATH. `CUDA_HOME` selects SDK
+headers for the host forwarder and defaults to the resolved NVCC root.
+`TENSOR0_CUDA_ARCH` defaults to `sm_80`. Addon compilation is serial and defaults
+to O3; `TENSOR0_CXX_OPT_LEVEL` uses the same accepted levels as the core (size
+levels map to NVCC O2). Cache fingerprints cover source/dependency contents,
+compiler bytes/version/flags, SDK headers, the forwarder and version script.
+Runtime library replacement is not a build/link input. Toolkit internals such as independently replaced
+`ptxas` still require a clean rebuild.
 
-The private `_stride_cuda_available()` export reports build-time support, not
-whether a usable GPU is present. `_stride_cuda_registration()` returns twenty
-execution-handler capsules plus Copy, Update, Accumulation, Dot and Reduction instantiate handlers
-and their independent state type ids/type infos (35 entries), or an empty dictionary
-in CPU-only builds. These five operations own immutable host metadata per executable;
+The core discovers the installed addon through distribution metadata, not module
+search paths. `_stride_cuda_available()` probes presence only, without loading
+ELF/runtime libraries or querying devices. Missing addon means registration `{}`
+and statistics `None`. A present but broken/version-mismatched addon fails
+registration explicitly; matching actual distribution versions are required
+before any CDLL load. The loader loads the pip runtime by absolute path with
+`RTLD_GLOBAL`, rejects resident cudart SONAME conflicts and preflights all 11
+symbols before companion constructors run. The constructor-safe native resolver
+uses `pthread_once`, `RTLD_NOLOAD` and `dlsym` on that real runtime handle; a
+version script localizes only the CUDA wrappers. `-z defs` rejects new unknown
+NVCC imports (including device-variable registration, which production does not
+use). The loader checks the fixed `Tensor0CudaForwarder*V1` status/identity ABI
+before caching or exposing capsules. Runtime/preflight failures remain retryable;
+a failed companion validation requires a clean-process restart. All loaded
+handles, including NOLOAD references and rejected companions, remain retained
+for process lifetime so NVCC finalizers cannot reference an unloaded runtime. Installing the addon enables the same unchanged core binary.
+Registration returns 35 handler/type capsules; kernel execution additionally
+requires compatible GPU JAX, driver and device.
+
+These five operations own immutable host metadata per executable;
 Reduction owns explicit-role map/fiber schedules, descriptor cursors and sparse coefficient mapping. `_stride_cuda_copy_prepared_stats()`,
 `_stride_cuda_update_prepared_stats()`, `_stride_cuda_accumulation_prepared_stats()`,
 `_stride_cuda_dot_prepared_stats()` and `_stride_cuda_reduction_prepared_stats()` expose separate creation/destruction counts for lifecycle tests, or `None` without
@@ -181,17 +245,42 @@ same-type Copy, Update, Accumulation, Dot and Reduction, not dtype
 conversion or complete reverse-mode differentiation. See [CUDA support](cuda.md)
 for the supported coefficient types and limited AD paths.
 
-The artifact-only `cuda-build.yml` workflow compiles a release CUDA wheel from
-its sdist on a free hosted CPU runner (CUDA 12.9.1 container, CPython 3.11,
-`sm_80`) and checks registration and CPU smoke behavior without a GPU. Its
-`--compatibility linux` wheel is not manylinux-verified and is not published.
-Path-filtered PR/`main` runs and manual dispatch do not provide GPU coverage.
-Use [manual installed-wheel acceptance](cuda.md#manual-installed-wheel-acceptance)
-on an existing GPU machine; no paid GPU or self-hosted/cloud GPU runner is part
-of this route. Source-native CUDA contracts are optional complementary checks,
-not wheel acceptance. CUDA remains experimental.
+The artifact-only `cuda-build.yml` workflow keeps automatic push/PR compile
+checks separate from final candidates. Automatic runs build a standalone CPython
+3.11 core for validation and are marked `release_candidate: false`.
+A manual run on `main` requires `candidate_run_id`: a successful manual
+`artifacts.yml` run at the **exact same commit**. It verifies repository,
+workflow identity, event, branch, result and commit before downloading
+`tensor0-dist-<sha>`, then verifies all nine distribution checksums and source
+version. It reuses the eight core wheels and core sdist without rebuilding them.
+
+The companion is built once from its independent sdist on the digest-pinned
+manylinux_2_28 baseline with verified CUDA 12.9.1 components, then genuinely
+repaired without exclusions. CPython 3.11–3.14 jobs install each exact Linux CPU wheel,
+run CPU smoke before adding the same addon with `--no-deps`, check missing-runtime
+behavior, then install only the external runtime for registration/statistics.
+These checks verify unchanged core native hashes; no GPU kernels execute.
+The build job also inspects ELF dependencies. `build-info.json` records the CPU
+producer run, source commit, exact CPython 3.11 pair hashes and sdist hashes;
+`SHA256SUMS` covers all eleven final distributions. All jobs must succeed before
+using a manual candidate. Configuration is not evidence of hosted execution,
+publication or portability. Use
+[manual installed-wheel acceptance](cuda.md#manual-installed-wheel-acceptance)
+for exact-pair GPU validation. Earlier combined-wheel A100 results validate the
+numerical prototype only, not this new package pair. CUDA remains experimental.
 
 ## Local Setup
+
+`[tool.uv.sources]` resolves the unpublished optional `tensor0-cuda12` dependency
+from `crates/tensor0-cuda12` as a non-editable local project. This is a checkout-only
+resolution rule, not a published direct-URL dependency. Default sync resolves the
+extra's metadata but does **not** install/build the companion or require NVCC.
+The default core build still requires Rust and a C++ compiler. Only an explicitly
+selected CUDA extra needs the companion build and GPU dependencies. Release
+builds use `--no-sources`; published metadata retains exact version pins.
+Do not use `--no-sources` to resolve the unpublished extra from PyPI.
+The local `uv.lock` is ignored, not a tracked release input; regenerate it with
+`uv sync` when source metadata changes rather than force-adding it.
 
 ```bash
 uv sync --group dev
@@ -298,7 +387,7 @@ paths are also relative to `tests/stride/`. JAX AD, partitioning and CUDA GPU
 integration checks have their own `jax/ad/`, `jax/partitioning/` and `jax/cuda/`
 subdirectories; abstract evaluation, lowering, batching and donation checks
 remain at the JAX test root. `ffi/test_cuda_lowering.py` checks the host-to-MLIR
-boundary without running a GPU kernel; `native/cuda/` owns standalone CUDA
+boundary without running a GPU kernel; `tests/stride/native/cuda/` owns standalone CUDA
 contract sources and binaries, separate from the JAX GPU integration tests.
 Root TensorMap integration tests remain separate from the packed-adapter fixtures.
 `jax/ad/test_support.py` owns the coefficient AD harness trace-reuse regression.
@@ -310,6 +399,10 @@ mock compiler/NVCC to inspect invalidation and scheduling. Selected cases actual
 compile/link small C++ and Cargo fixtures (including CUDA-linkage simulation with
 C++ stubs), not the production CUDA kernels. `test_cpp_cache.py` uses a mock
 compiler; `test_vendor.py` checks files and declarations without compilation.
+`test_cuda_package.py` builds a self-contained companion sdist and an out-of-tree
+wheel using a fake compiler; it checks installed package origins and canonical
+MIT `LICENSE` in standard `.dist-info/licenses/` metadata.
+This packaging fixture is not a production binary or GPU acceptance result.
 `build_checks` avoids pytest's default exclusion of directories named `build`.
 All these directories are part of the normal `pytest tests/stride` collection.
 
@@ -353,7 +446,7 @@ Select the layer and environment that matches the contract:
 | Host metadata, FFI lowering and CPU native execution | Built CPU extension and project test environment; no GPU required | `uv run pytest tests/stride/metadata tests/stride/ffi/test_cuda_lowering.py tests/stride/native -q` |
 | Standalone C++ executable contracts | Linux C++20 compiler and UBSan; selected binaries execute even when cached | `uv run pytest tests/stride/native/cpp/test_contracts.py -q` |
 | CUDA native executable contracts | CUDA toolkit/NVCC and compatible GPU | `uv run pytest tests/stride/native/cuda -q` |
-| JAX GPU primitives and lifecycle | CUDA-enabled extension, compatible driver/GPU and JAX GPU backend | `uv run pytest tests/stride/jax/cuda -q` |
+| JAX GPU primitives and lifecycle | Installed matching companion, compatible driver/GPU and JAX GPU backend | `uv run pytest tests/stride/jax/cuda -q` |
 | Isolated JAX workers | Required devices (two for partitioning) and subprocess-accessible environment | `uv run pytest tests/stride/jax/partitioning -q` |
 | Coefficient AD harness trace reuse | Built CPU extension and JAX test environment; no GPU required (skips without native extension) | `uv run pytest tests/stride/jax/ad/test_support.py -q` |
 | Build-script cache, jobserver and CUDA-linkage checks | Linux, Cargo with cached offline `jobserver` dependency (`cargo fetch` first if needed); C++20 compiler and `ar` for real compile/link cases; no CUDA toolkit/GPU required | `uv run pytest tests/stride/build_checks/test_native_build.py -q` |

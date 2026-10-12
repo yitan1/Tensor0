@@ -8,7 +8,7 @@ import pytest
 from tests.stride.support.cpp_cache import compile_cached
 
 
-pytestmark = pytest.mark.skipif(sys.platform != 'linux', reason='native build cache requires Linux')
+pytestmark = pytest.mark.skipif(sys.platform not in ('linux', 'darwin'), reason='native build cache requires Linux or macOS')
 
 
 @pytest.fixture

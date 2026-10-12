@@ -1,4 +1,4 @@
-name: Linux CPU CI
+name: CI
 
 on:
   pull_request:
@@ -16,7 +16,6 @@ concurrency:
 env:
   # Numerical C++ units can each consume several GiB. Share one Cargo slot.
   CARGO_BUILD_JOBS: "1"
-  TENSOR0_CUDA: "0"
   JAX_PLATFORMS: cpu
 
 jobs:

@@ -68,7 +68,7 @@ def cuda_copy_target(source_dtype, result_dtype) -> str:
         if (not hasattr(_native, "_stride_cuda_registration")
                 or not hasattr(_native, "_stride_cuda_available")
                 or not _native._stride_cuda_available()):
-            raise RuntimeError("native CUDA copy is unavailable; rebuild the extension with CUDA support")
+            raise RuntimeError("native CUDA copy is unavailable; install 'tensor0[cuda12]'")
         if _native._stride_ffi_build_versions() != (jax.__version__, version("jaxlib")):
             raise RuntimeError("native was built for different JAX versions; rebuild the extension")
         registration = _native._stride_cuda_registration()
@@ -114,7 +114,7 @@ def cuda_update_target(source_dtype, base_dtype, alpha_dtype, beta_dtype) -> str
         if (not hasattr(_native, "_stride_cuda_registration")
                 or not hasattr(_native, "_stride_cuda_available")
                 or not _native._stride_cuda_available()):
-            raise RuntimeError("native CUDA update is unavailable; rebuild the extension with CUDA support")
+            raise RuntimeError("native CUDA update is unavailable; install 'tensor0[cuda12]'")
         if _native._stride_ffi_build_versions() != (jax.__version__, version("jaxlib")):
             raise RuntimeError("native was built for different JAX versions; rebuild the extension")
         registration = _native._stride_cuda_registration()
@@ -152,7 +152,7 @@ def cuda_accumulation_target(source_dtype, result_dtype, *coefficient_dtypes) ->
         if (not hasattr(_native, "_stride_cuda_registration")
                 or not hasattr(_native, "_stride_cuda_available")
                 or not _native._stride_cuda_available()):
-            raise RuntimeError("native CUDA accumulation is unavailable; rebuild the extension with CUDA support")
+            raise RuntimeError("native CUDA accumulation is unavailable; install 'tensor0[cuda12]'")
         if _native._stride_ffi_build_versions() != (jax.__version__, version("jaxlib")):
             raise RuntimeError("native was built for different JAX versions; rebuild the extension")
         registration = _native._stride_cuda_registration()
@@ -185,7 +185,7 @@ def cuda_dot_target(source_dtype, right_dtype, result_dtype) -> str:
         if (not hasattr(_native, "_stride_cuda_registration")
                 or not hasattr(_native, "_stride_cuda_available")
                 or not _native._stride_cuda_available()):
-            raise RuntimeError("native CUDA dot is unavailable; rebuild the extension with CUDA support")
+            raise RuntimeError("native CUDA dot is unavailable; install 'tensor0[cuda12]'")
         if _native._stride_ffi_build_versions() != (jax.__version__, version("jaxlib")):
             raise RuntimeError("native was built for different JAX versions; rebuild the extension")
         registration = _native._stride_cuda_registration()
@@ -223,7 +223,7 @@ def cuda_reduction_target(source_dtype, result_dtype, *coefficient_dtypes) -> st
         if (not hasattr(_native, "_stride_cuda_registration")
                 or not hasattr(_native, "_stride_cuda_available")
                 or not _native._stride_cuda_available()):
-            raise RuntimeError("native CUDA reduction is unavailable; rebuild the extension with CUDA support")
+            raise RuntimeError("native CUDA reduction is unavailable; install 'tensor0[cuda12]'")
         if _native._stride_ffi_build_versions() != (jax.__version__, version("jaxlib")):
             raise RuntimeError("native was built for different JAX versions; rebuild the extension")
         registration = _native._stride_cuda_registration()

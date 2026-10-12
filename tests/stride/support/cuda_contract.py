@@ -19,8 +19,19 @@ def build_contract(name, tmp_path_factory):
     if compiler is None:
         pytest.skip("CUDA toolkit nvcc is unavailable")
 
-    native = REPO_ROOT / "crates" / "tensor0-py" / "native"
-    executable = tmp_path_factory.mktemp(f"cuda-{name}-contract") / f"{name}_contract"
+    build = tmp_path_factory.mktemp(f"cuda-{name}-contract")
+    native = build / "native"
+    # Mirror the companion's staged include tree; shared sources remain core-owned.
+    shutil.copytree(REPO_ROOT / "crates/tensor0-cuda12/native/cuda", native / "cuda")
+    for directory, names in (
+        ("ffi", ("errors.h", "buffers.h")),
+        ("layout", ("descriptor.cc", "descriptor.h", "record.cc", "record.h", "owner_fiber.h")),
+    ):
+        (native / directory).mkdir()
+        for filename in names:
+            shutil.copy2(REPO_ROOT / "crates/tensor0-py/native" / directory / filename,
+                         native / directory / filename)
+    executable = build / f"{name}_contract"
     command = [
         compiler, "-std=c++20", "-O0", "--cudart=static",
         "-arch=" + os.environ.get("TENSOR0_CUDA_ARCH", "sm_80"),

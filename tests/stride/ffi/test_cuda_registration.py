@@ -10,6 +10,19 @@ from tensor0 import _native
 from tensor0._stride._ffi import _registration
 
 
+@pytest.mark.parametrize("operation,arity", [
+    ("copy", 2), ("update", 4), ("accumulation", 2), ("dot", 3), ("reduction", 2),
+])
+def test_missing_cuda_companion_suggests_installation(monkeypatch, operation, arity):
+    monkeypatch.setattr(_registration, "_CUDA_REGISTERED", set())
+    monkeypatch.setattr(_native, "_stride_cuda_available", lambda: False)
+    monkeypatch.setattr(_native, "_stride_cuda_registration",
+                        lambda: pytest.fail("must not register a missing companion"))
+    target = getattr(_registration, f"cuda_{operation}_target")
+    with pytest.raises(RuntimeError, match=r"install 'tensor0\[cuda12\]'"):
+        target(*([np.dtype("float32")] * arity))
+
+
 @pytest.mark.parametrize("dtype,suffix", [
     ("float32", "f32"), ("float64", "f64"), ("complex64", "c64"), ("complex128", "c128"),
 ])

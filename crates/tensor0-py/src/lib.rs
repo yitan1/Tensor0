@@ -29,8 +29,8 @@ use transform::{
 };
 
 #[pyfunction]
-fn native_version() -> &'static str {
-    tensor0_core::native_version()
+fn native_version() -> String {
+    tensor0_core::native_version().replace("-dev.", ".dev")
 }
 
 #[pymodule]

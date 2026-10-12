@@ -21,8 +21,19 @@ def test_vendored_ffi_headers_and_license_match_frozen_hashes():
     vendor_root = _REPO_ROOT / "crates" / "tensor0-py" / "vendor" / "jaxlib-0.10.1"
     for relative_path, expected in _VENDORED_FFI_FILE_HASHES.items():
         assert hashlib.sha256((vendor_root / relative_path).read_bytes()).hexdigest() == expected
-    packaged_license = _REPO_ROOT / "src" / "tensor0" / "_licenses" / "JAXLIB_FFI_LICENSE.txt"
-    assert hashlib.sha256(packaged_license.read_bytes()).hexdigest() == _VENDORED_FFI_FILE_HASHES["LICENSE.txt"]
+    assert not (_REPO_ROOT / "src/tensor0/_licenses").exists()
+
+
+def test_declared_license_files_use_standard_metadata_layout():
+    for path, vendor_license in (
+        ("pyproject.toml", "crates/tensor0-py/vendor/jaxlib-0.10.1/LICENSE.txt"),
+        ("crates/tensor0-cuda12/pyproject.toml", "vendor/jaxlib-0.10.1/LICENSE.txt"),
+    ):
+        project = tomllib.loads((_REPO_ROOT / path).read_text())
+        assert project["project"]["license-files"] == ["LICENSE", vendor_license]
+        assert project["project"]["license"] == "MIT AND Apache-2.0"
+    addon = tomllib.loads((_REPO_ROOT / "crates/tensor0-cuda12/pyproject.toml").read_text())
+    assert addon["tool"]["setuptools"]["package-data"]["tensor0_cuda12"] == ["_stride_cuda.so"]
 
 
 def test_declared_jax_runtime_matches_vendored_ffi_version():

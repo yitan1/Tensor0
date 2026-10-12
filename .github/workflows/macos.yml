@@ -1,0 +1,158 @@
+name: Experimental macOS ARM64 CPU validation
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-core-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_BUILD_JOBS: "1"
+  JAX_PLATFORMS: cpu
+  OPENBLAS_NUM_THREADS: "1"
+  OMP_NUM_THREADS: "1"
+  MACOSX_DEPLOYMENT_TARGET: "15.0"
+
+jobs:
+  core:
+    runs-on: macos-15
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v8.3.2
+        with:
+          python-version: "3.11"
+          enable-cache: false
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Prepare CPU-only test environment without building the project
+        run: uv sync --group dev --group bench --no-install-project
+      - name: Record architecture and toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p macos-validation
+          {
+            uname -a
+            sw_vers
+            sysctl hw.memsize hw.ncpu
+            rustc -vV
+            /usr/bin/c++ --version
+            xcodebuild -version
+            .venv/bin/python -c 'import platform, sys; print(sys.version, sys.platform, platform.machine()); assert sys.platform == "darwin" and platform.machine() == "arm64"'
+            test "$(uname -m)" = arm64
+            rustc -vV | grep 'host: aarch64-apple-darwin'
+            echo "source_commit=$GITHUB_SHA"
+            echo "deployment_target=$MACOSX_DEPLOYMENT_TARGET"
+          } 2>&1 | tee macos-validation/provenance.log
+      - name: Verify installed JAXLIB headers against the vendored CPU FFI headers
+        shell: bash
+        run: |
+          set -euo pipefail
+          .venv/bin/python - <<'PY' 2>&1 | tee macos-validation/ffi-headers.log
+          from pathlib import Path
+          import hashlib
+          import jax, jaxlib
+          assert jax.__version__ == jaxlib.__version__ == "0.10.1"
+          installed = Path(jaxlib.__file__).parent / "include/xla/ffi/api"
+          vendor = Path("crates/tensor0-py/vendor/jaxlib-0.10.1/include/xla/ffi/api")
+          for name in ("api.h", "c_api.h", "ffi.h"):
+              assert (installed / name).read_bytes() == (vendor / name).read_bytes(), name
+              print(name, hashlib.sha256((installed / name).read_bytes()).hexdigest())
+          PY
+      - name: Build one release core wheel from a fresh out-of-checkout sdist
+        shell: bash
+        run: |
+          set -euo pipefail
+          work=$(mktemp -d "$RUNNER_TEMP/macos-core.XXXXXX")
+          echo "MACOS_CORE_WORK=$work" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_DIR=$work/target" >> "$GITHUB_ENV"
+          export CARGO_TARGET_DIR="$work/target"
+          python="$GITHUB_WORKSPACE/.venv/bin/python"
+          maturin="$GITHUB_WORKSPACE/.venv/bin/maturin"
+          "$maturin" sdist --out "$work/sdist" 2>&1 | tee macos-validation/sdist.log
+          "$python" - "$work" <<'PY'
+          import sys, tarfile
+          from pathlib import Path
+          work = Path(sys.argv[1])
+          sdist, = (work / "sdist").glob("*.tar.gz")
+          with tarfile.open(sdist) as archive:
+              archive.extractall(work / "source", filter="data")
+          PY
+          source=$(find "$work/source" -mindepth 1 -maxdepth 1 -type d)
+          (cd "$source" && "$maturin" build --release -i "$python" --out "$GITHUB_WORKSPACE/macos-validation") 2>&1 | tee macos-validation/build.log
+      - name: Inspect and install the exact ARM64 wheel
+        shell: bash
+        run: |
+          set -euo pipefail
+          .venv/bin/python - <<'PY' 2>&1 | tee macos-validation/wheel-inspection.log
+          import hashlib, subprocess, zipfile
+          from pathlib import Path
+          wheels = list(Path("macos-validation").glob("*.whl"))
+          wheel, = wheels
+          assert "macosx_15_0_arm64" in wheel.name, wheel.name
+          assert "universal2" not in wheel.name
+          print(wheel.name, hashlib.sha256(wheel.read_bytes()).hexdigest())
+          with zipfile.ZipFile(wheel) as archive:
+              assert not any("_stride_cuda" in name or "tensor0_cuda12" in name for name in archive.namelist())
+              native, = (name for name in archive.namelist() if name.startswith("tensor0/_native") and name.endswith(".so"))
+              output = Path("macos-validation/native-inspection.so")
+              output.write_bytes(archive.read(native))
+          subprocess.run(["file", str(output)], check=True)
+          subprocess.run(["otool", "-L", str(output)], check=True)
+          assert subprocess.check_output(["lipo", "-archs", str(output)], text=True).strip() == "arm64"
+          output.unlink()
+          PY
+          uv pip install --python .venv/bin/python pip
+          .venv/bin/python -I -m pip install --no-deps macos-validation/*.whl
+          .venv/bin/python -I - <<'PY' 2>&1 | tee macos-validation/installed-origin.log
+          import hashlib, importlib.metadata, json, sys
+          from pathlib import Path
+          import hashlib
+          import jax, jaxlib, tensor0
+          assert Path(tensor0.__file__).resolve().is_relative_to(Path(sys.prefix).resolve())
+          assert Path(tensor0._native.__file__).resolve().is_relative_to(Path(sys.prefix).resolve())
+          assert tensor0._native._stride_ffi_available()
+          assert tensor0._native._stride_ffi_build_versions() == ("0.10.1", "0.10.1")
+          assert jax.__version__ == jaxlib.__version__ == "0.10.1"
+          assert not tensor0._native._stride_cuda_available()
+          assert all(device.platform == "cpu" for device in jax.devices())
+          direct = json.loads(importlib.metadata.distribution("tensor0").read_text("direct_url.json"))
+          assert not direct.get("dir_info", {}).get("editable", False)
+          wheel, = Path("macos-validation").glob("*.whl")
+          assert direct["archive_info"]["hashes"]["sha256"] == hashlib.sha256(wheel.read_bytes()).hexdigest()
+          print(tensor0.__file__, tensor0._native.__file__, direct)
+          PY
+      - name: Installed-wheel CPU JIT and gradient smoke outside the checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd "$MACOS_CORE_WORK" && "$GITHUB_WORKSPACE/.venv/bin/python" -I "$GITHUB_WORKSPACE/.github/scripts/wheel_smoke.py") 2>&1 | tee macos-validation/cpu-smoke.log
+      - name: Rust core tests (no extension rebuild)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test -p tensor0-core 2>&1 | tee macos-validation/rust-tests.log
+      - name: Complete installed-wheel CPU Python suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          .venv/bin/python -I -m pytest tests -q -ra --junitxml=macos-validation/pytest.xml 2>&1 | tee macos-validation/pytest.log
+      - name: Public examples with the installed wheel
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            .venv/bin/python -I examples/basic_usage.py
+            .venv/bin/python -I examples/contractions.py
+          } 2>&1 | tee macos-validation/examples.log
+      - name: Upload experimental validation evidence (not release candidates)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-core-validation-${{ github.sha }}
+          path: macos-validation/
+          if-no-files-found: warn

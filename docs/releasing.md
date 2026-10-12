@@ -34,7 +34,9 @@ Do not tag or publish merely to exercise packaging.
 
 The [artifact workflow](https://github.com/yitan1/Tensor0/blob/main/.github/workflows/artifacts.yml)
 is an artifact-only validation route, not PyPI publishing. The current wheel
-target is Linux x86_64 CPU, CPython **3.11–3.14**, manylinux_2_28 (glibc >=2.28).
+target for 0.2.0 is CPython **3.11–3.14** on both Linux x86_64 CPU
+(manylinux_2_28, glibc >=2.28) and macOS **15+ ARM64 CPU**
+(`macosx_15_0_arm64`, not universal2). macOS 15 hosted execution is still pending.
 Verify this matrix anew for each release. Wheels must be built from the extracted
 sdist, inspected and tested in isolated installed environments. Consult the
 actual workflow configuration, run logs and artifacts: a target matrix is not
@@ -42,14 +44,26 @@ an assertion that hosted jobs have passed. Smoke checks do not replace the full
 CPU suite or validate CUDA, other architectures or untested Python wheel ABIs.
 
 Candidate preparation is manual on `main`. The workflow assembles one sdist,
-four interpreter-specific wheels and `SHA256SUMS` into
+eight interpreter/platform-specific wheels and `SHA256SUMS` into
 `tensor0-dist-<sha>`, where `<sha>` is the full candidate commit hash. It does
 not create tags or publish.
 
+The Linux job builds the single shared core sdist once. All eight wheel jobs
+consume those exact source bytes; the four macOS jobs extract outside the checkout
+and use a fresh native target with no cache, `/usr/bin/clang++`, a 15.0 deployment
+target and one Cargo build slot. Native ARM64 Python/Rust, macOS 15, matching
+FFI headers, Mach-O architecture, wheel metadata, installed origin, wheel and
+native payload hashes, native CPU availability and pinned runtime are checked.
+Every macOS ABI runs the complete CPU suite and public examples against that
+original non-editable wheel; Rust core tests run once on 3.11. No CUDA extra is
+installed on macOS. Linux retains its installed smoke/examples and separate
+exact-commit full CPU CI matrix. Serial compilation can still exceed hosted
+runner memory; configuration alone is not a successful run.
+
 The custom archive check only covers Tensor0-specific contents: native build
 inputs, Python/type files, declared license files and excluded private/build
-paths. It reads license patterns from `pyproject.toml` rather than duplicating
-package version or dependency constraints. Maturin generates metadata and wheel
+paths. It reads version and license patterns from `pyproject.toml` and checks the fixed
+release ABI/platform tags against wheel metadata. Maturin generates metadata and wheel
 tags, auditwheel checks binary compatibility, and isolated installation plus
 `uv pip check` verifies dependency consistency. License-file presence is not a
 legal compliance review; metadata still needs maintainer review before release.
@@ -71,7 +85,7 @@ they do not themselves establish portability or manylinux compliance.
   license files and correct metadata. Check that private files, caches and
   local benchmark outputs are absent.
 - [ ] Record artifact filenames and SHA-256 hashes, source commit, Python,
-  Rust/C++ toolchains, Linux architecture and build settings.
+  Rust/C++ toolchains, OS/architecture and build settings.
 - [ ] Rebuild a wheel **from the unpacked sdist**, in isolation from the original
   checkout, to prove the source archive is sufficient. Do not reuse the original
   checkout's extension or Cargo build outputs as acceptance evidence.
@@ -114,20 +128,85 @@ python3.11 -m venv /tmp/tensor0-candidate
   do not replace wheel tests. A CPU pass does not establish CUDA support; do not
   generalize beyond the documented [CUDA matrix](cuda.md).
 
-The separate `cuda-build.yml` route produces `tensor0-cuda-build-<sha>` with
-`build-info.json` and `SHA256SUMS`; its free hosted CPU runner compiles CUDA and
-checks registration/CPU smoke, **not GPU execution**. Its CPython 3.11,
-CUDA 12.9.1, `sm_80` Linux wheel is not manylinux-verified. GPU acceptance is
-manual/offline with separately pre-provisioned dependencies, not an automatic
-CI gate. There is no paid GPU or self-hosted/cloud GPU runner requirement.
-The current `publish.yml` workflow remains **CPU-only** and does not consume
-these CUDA artifacts. Passing manual acceptance does not add a CUDA publishing
-path or authorize publication; any CUDA release proposal needs separate
-maintainer approval and must retain the experimental scope.
+The separate `cuda-build.yml` route retains automatic push/PR compile validation,
+which is **not** a final release candidate. For a final candidate, manually run
+it on `main` with the successful CPU `candidate_run_id` from `artifacts.yml` at
+exactly the same commit. The workflow verifies the producer's repository,
+workflow ID/path, manual event, main branch, completed success and source SHA,
+then downloads `tensor0-dist-<sha>` and validates its exact nine-file distribution
+set plus `SHA256SUMS` against the current source version. **No core rebuild**
+occurs in this mode; `artifacts.yml` remains the sole final CPU producer.
+
+The addon is built once from its independent sdist on the pinned manylinux_2_28
+baseline with verified CUDA components. Its raw `py3-none-linux_x86_64` wheel
+must undergo genuine `auditwheel repair --plat manylinux_2_28_x86_64 --only-plat`
+without exclusions. Only the repaired addon is a candidate; no NVIDIA libraries
+may be bundled. The fixed local forwarder eliminates CUDA `DT_NEEDED`, not by
+binary patching or blind retagging. Configured repair is not actual compliance
+evidence. The resulting `tensor0-cuda-build-<sha>` contains eight unchanged core
+wheels, core sdist, addon wheel, addon sdist, `build-info.json` and `SHA256SUMS`.
+The manifest covers all eleven distributions. Provenance binds the CPU producer
+run ID/URL, commit, exact **Linux** CPython 3.11 pair hashes and both sdist hashes.
+
+Require successful CPython 3.11–3.14 installed checks with each **Linux** CPU wheel and the
+**same** addon: CPU smoke before adding the addon with `--no-deps`, actionable
+missing-runtime failure, then runtime-only registration/statistics and unchanged
+core native hash. No GPU kernels execute and no packages publish in this route.
+Artifacts uploaded by the build job are not accepted until all ABI jobs succeed.
+Retain those run results and exact-pair GPU evidence separately. Duplicate core
+files in the CUDA artifact are acceptance conveniences, not a second publishing
+input; publish the original verified CPU bytes only once.
+
+Both distributions and Cargo now target stable version `0.2.0`, with precise
+pairing pins. This version selection is not publication approval. Published
+CPU 0.1.0 and its immutable artifacts remain untouched. The extra selects the
+addon and GPU JAX automatically, but this unpublished split is not a PyPI-ready
+release. Earlier combined-wheel CPU/A100 acceptance does not validate the pair.
+Require independent out-of-tree sdist builds, actual run evidence, then
+[exact-pair acceptance](cuda.md#manual-installed-wheel-acceptance): install the
+core for CPU regression first, add only addon/dependencies to the SAME environment,
+and verify unchanged core bytes before GPU tests. Both installed direct URLs,
+wheel hashes and clean source provenance are mandatory. No GPU runner or remote
+driver modification is required by this implementation phase.
+
+The future `publish.yml` path stages **both distributions** from these exact
+candidates, without rebuild or repair. `release_candidate=true` identifies a
+manual candidate only: publication also requires completed successful runs and
+all four ABI jobs, plus separate production CPU/GPU acceptance. Implementing
+this path does not authorize a commit, push, dispatch or publication. The current
+Python/addon and Cargo version is now `0.2.0`; fresh final-version artifacts and
+all acceptance evidence are still required before publication. Earlier development-version
+artifacts do not validate the final release pair.
+
+## CUDA distribution licensing
+
+Tensor0's own code remains MIT. The dynamic CUDA prototype ships an optional
+companion with 11 fixed, SDK-typed local CUDA forwarders to external
+`libcudart.so.12`, not an embedded static runtime. It has no CUDA `DT_NEEDED`.
+Neither cudart nor the NVIDIA driver may be bundled in these wheels. The external
+runtime is supplied by `nvidia-cuda-runtime-cu12>=12.9.79,<13`; JAX's CUDA
+dependencies are also provisioned separately. CPU-only binaries do not link CUDA.
+
+As with other third-party components, before release a maintainer must review
+rights and notices against the **actual candidate contents and source
+provenance**, including applicable CUDA terms. Inspect the actual wheel/sdist payload and license metadata,
+exclude runtime/driver and standalone toolchain files, and resolve any remaining
+rights questions before approval. Do not infer NVIDIA sample-source use merely
+from runtime linkage. License-file presence and numerical acceptance are not
+legal clearance. Publishing requires separate maintainer approval for both projects.
 
 ## Publish only after approval
 
-Configure PyPI Trusted Publishing for the following exact GitHub identity:
+The future publisher is a **unified two-project release**, not a CPU-only mode.
+Historical CPU 0.1.0 artifacts and its tag remain unchanged. Version 0.2.0
+has been selected for the core, companion and Cargo packages, but has not been
+published. Final candidate artifacts, exact-pair acceptance and publication
+approval remain pending. The literal stable
+`vX.Y.Z` tag must match Python, Cargo and addon source versions at the candidate
+commit; development versions are deliberately rejected, not normalized.
+
+Configure PyPI Trusted Publishing for **both `tensor0` and `tensor0-cuda12`**
+with this exact GitHub identity:
 
 | Publisher field | Value |
 | --- | --- |
@@ -135,67 +214,143 @@ Configure PyPI Trusted Publishing for the following exact GitHub identity:
 | Workflow filename | `publish.yml` |
 | GitHub environment | `pypi` |
 
-Before the first publication, the intended PyPI project owner's account must
-configure a pending Trusted Publisher for the new project with the identity
-above. For an existing project, its owner must add the publisher in that
-project's settings. A missing public project page does not reserve its name or
-establish ownership.
+Each project's owner must configure its Trusted Publisher (a pending publisher
+for a new project, or a publisher in an existing project's settings). The addon
+project name/ownership and publisher require user setup; a missing public page
+does not reserve the name. The action can upload both projects using the same
+workflow/environment identity only when **both** publishers are configured.
+No API mutation or credential provisioning is performed by the verifier.
 
-Create the GitHub `pypi` environment, restrict deployments to `main`, and
-configure a required reviewer for manual maintainer approval before upload. Referencing `environment: pypi` in workflow
-YAML does **not** configure reviewer protection or guarantee approval. Trusted
-Publishing uses OIDC rather than a stored PyPI API token. Verify these settings
-before each release; workflow YAML alone is not evidence that publisher or
-environment protections remain correctly configured.
+Create the GitHub `pypi` environment, restrict deployments to `main`, and configure
+a required reviewer before upload. Referencing the environment in YAML does
+**not** enable approval protection. Trusted Publishing uses OIDC, not a stored
+PyPI token. The maintainer must check both publishers and environment protections;
+the workflow does not assume or prove their external configuration.
 
-- [ ] Resolve failures and disclose untested configurations. Preserve candidate
-  evidence and hashes; an artifact-building CI job is not automatically a full
-  numerical or portability certification.
-- [ ] Select `tensor0-dist-<sha>` from a successful manual `artifacts.yml` run
-  on this repository's `main`, recording its run ID, source commit and hashes.
-  The commit must remain an ancestor of `main`.
-- [ ] Confirm successful same-commit **push** CI on `main`: Linux x86_64 CPU
-  jobs for Python 3.11–3.14 and the blocking public-package Pyright job. Advisory
-  test typing reports do not replace the blocking check.
-- [ ] Confirm the new release tag points at exactly the candidate commit and
-  matches both its Python and Rust source versions.
-  Release tags are immutable; never move an existing tag to a new candidate.
-- [ ] Confirm maintainer approval, destination, version and artifact selection
-  before any tag or upload. Never upload test artifacts under an intended release
-  version without coordinating that release.
-- [ ] Manually dispatch [publish.yml](https://github.com/yitan1/Tensor0/blob/main/.github/workflows/publish.yml)
-  on `main` with `candidate_run_id` and `release_tag`. It verifies the candidate,
-  tag, source versions and same-commit CI, then checks the exact distribution
-  set and `SHA256SUMS`. The approved `pypi` job uploads those verified bytes.
-  **Do not rebuild for publication** or substitute artifacts from another run.
-- [ ] Only after publication, update the changelog status and installation links
-  to artifacts that really exist and describe their verified scope. Add a
-  release date only when known. Recheck a fresh install of the published
-  artifact, not just the local build.
+### Manual evidence transport and review
+
+Use the existing release for the intended immutable stable tag, preferably still
+**draft**, to attach one manually prepared asset named `cuda-acceptance.tar.gz`.
+A published release for the same tag is also allowed; changing its publication
+status does not waive any gate. Do not supply an arbitrary external URL. Run the
+production [installed-wheel acceptance](cuda.md#manual-installed-wheel-acceptance)
+on the clean candidate commit with the exact build-info and **Linux** CPython 3.11 pair:
+first CPU-only smoke before installing the addon, then GPU acceptance in the
+same environment using that CPU report. Never substitute an experimental report.
+
+Package the two output directories with these exact archive-relative files:
+
+```text
+cpu/report.json
+cpu/preflight.log
+cpu/cpu-smoke.log
+gpu/report.json
+gpu/preflight.log
+gpu/suite-0.log
+gpu/suite-0.xml
+gpu/suite-1.log
+gpu/suite-1.xml
+gpu/suite-2.log
+gpu/suite-2.xml
+```
+
+Do not add an outer archive directory, alternate reports, links or unrelated
+files. Preserve original reports and logs unchanged. The CPU runner reports an
+empty `suites` list and writes one `cpu-smoke.log`; it does not write CPU JUnit.
+The production clean-source check is performed in preflight: the report records
+`checkout.commit`/`checkout.root`, and consumes `checkout_status` rather than
+emitting a `source.is_clean` field. The publisher follows this actual schema.
+
+Review all logs/JUnit, source provenance, driver/device scope and skips before
+recording the uploaded asset's numeric ID and the archive's lowercase SHA-256.
+The verifier fetches the asset through authenticated GitHub API, checks membership
+in the selected tag's release and verifies the pinned archive bytes. It reads
+members without extracting or executing them. Reports must have production
+`accepted=true`, correct CPU/CUDA modes, exact source/build-info, installed
+versions/origins and direct URL wheel hashes. Both core binary hashes must match
+the unique native `.so` bytes inside the verified **Linux** CPython 3.11 wheel, not merely
+each other. The addon binary hash must likewise match `tensor0_cuda12/_stride_cuda.so`
+in the verified addon wheel. Production preflight checks both installed payloads
+against their wheel bytes, and records `cuda_binary_sha256` for the addon. CPU
+and GPU reports must retain the same environment prefix, interpreter and native
+core origin; installing the addon must not substitute a second virtual environment.
+The GPU suites must be exactly the three production paths, each once, with zero
+exit status, nonzero passes and no failures/errors. Only the two production
+CPU-only skip reasons are allowed; XML and report statistics must agree.
+
+These manually supplied reports are **not cryptographic execution attestation**.
+An accepted flag and a pinned hash cannot prove that a human did not fabricate a
+report. The archive hash binds reviewed bytes, not independent GPU execution.
+The required reviewer must examine source and logs; no automatic GPU CI, cloud
+runner or remote driver modification is added.
+
+### Dispatch and exact-artifact handoff
+
+- [ ] Select successful manual own-repository `main` runs: CPU `artifacts.yml`
+  and same-commit CUDA `cuda-build.yml`. Record both run IDs. Automatic push/PR
+  CUDA artifacts are not release candidates.
+- [ ] Confirm same-commit successful push CPU CI for Python 3.11–3.14 and the
+  blocking `Public-package Pyright (Python 3.11)` job. Advisory typing is not
+  a substitute. The candidate commit must be an ancestor of `main`.
+- [ ] Verify the immutable stable tag and all three source versions agree.
+  Never move an existing tag to another candidate.
+- [ ] Require all eight CPU producer wheel jobs and assembly to succeed. Each
+  macOS 15 ARM64 ABI job must pass the complete installed-wheel CPU suite;
+  skipped or missing macOS jobs are rejected by publication verification.
+- [ ] Check CUDA build and `verify-candidate` jobs and all four
+  `Exact CPU candidate + same addon / Python 3.X (no GPU)` jobs succeed.
+  Artifact upload and `release_candidate=true` alone are insufficient: upload
+  occurs before the ABI matrix finishes. Skipped/missing/failed jobs are rejected.
+- [ ] Review production acceptance and upload its archive to the selected release;
+  record the asset ID and SHA-256. Confirm rights/metadata and destination.
+- [ ] Dispatch `publish.yml` on `main` with `candidate_run_id`,
+  `cuda_candidate_run_id`, `release_tag`, `acceptance_asset_id` and
+  `acceptance_sha256` only after explicit approval and external publisher setup.
+
+The verify job downloads the two identified artifacts, validates basename-only
+unique manifests, rejects extra distributions, and compares all nine duplicate
+core files byte-for-byte. It checks wheel/sdist names and metadata versions,
+wheel tags, addon core pin and external runtime bound, rejects direct URL
+metadata dependencies, and binds build-info to both producer runs and hashes.
+It stages **exactly eleven files**: eight original CPU ABI/platform wheels, original CPU
+sdist, the repaired `py3-none-manylinux_2_28_x86_64` addon wheel and addon sdist.
+No raw Linux addon is accepted. No build or repair occurs in publishing.
+
+The immutable `verified-pypi-dist-<sha>` artifact is the only input to the
+review-gated publish job, which has **no checkout or build**, only artifact
+download and the Trusted Publishing action. Reports and verification hashes
+are saved separately as `verified-release-evidence-<sha>` (14-day CI retention);
+they are never sent to PyPI. Distribution staging has 7-day CI retention. Keep
+the pinned release asset and durable acceptance records beyond CI expiry.
+
+### Partial upload and retries
+
+Uploading two projects/eleven files is **not atomic**. If some files upload and a
+later upload fails, do not rebuild, overwrite files, move the tag or blindly
+retry with `skip-existing`. Review the existing PyPI filenames and SHA-256 values
+against `verification.json` and the immutable staging artifact for both projects.
+If any existing file differs, stop and investigate; PyPI versions cannot be
+replaced. Only missing files with the exact previously verified bytes may be
+retried through a separately reviewed recovery procedure. This workflow does
+not add a generic recovery mode or silently skip existing files.
 
 ### Maintainer command examples
 
-**Examples only—not instructions to publish now.** After maintainer approval
-for a future candidate:
+**Examples only—not authorization to build or publish now.** After explicit
+approval for a future stable candidate, record the successful CPU run and use it
+as the input to manual CUDA candidate preparation. With the matching tag,
+reviewed release evidence asset and both publishers configured:
 
 ```bash
-gh workflow run artifacts.yml --repo yitan1/Tensor0 --ref main
-gh run list --repo yitan1/Tensor0 --workflow artifacts.yml --branch main
-```
-
-Record the selected successful candidate run ID and commit; verify the required
-same-commit CI. Only after explicit release approval, an existing matching tag,
-and confirmed PyPI publisher and required-reviewer environment configuration:
-
-```bash
-# Replace the run ID and tag with the approved future release values.
+# Replace every placeholder with reviewed future release values.
 gh workflow run publish.yml --repo yitan1/Tensor0 --ref main \
-  -f candidate_run_id=123456789 -f release_tag=vX.Y.Z
+  -f candidate_run_id=123456789 -f cuda_candidate_run_id=234567890 \
+  -f release_tag=vX.Y.Z -f acceptance_asset_id=345678901 \
+  -f acceptance_sha256=REVIEWED_LOWERCASE_SHA256
 ```
 
-Dispatch does not replace the required review of the `pypi` deployment. Neither
-a tag nor a GitHub release automatically publishes. These examples do not
-establish acceptance or publication of any future release.
-
-No signing, reproducible-byte builds, universal wheel portability or release
-automation guarantees are implied by this checklist.
+Dispatch does not replace the required `pypi` deployment review. Neither a tag
+nor a GitHub release automatically publishes. Only after actual publication,
+update release status/date and installation links and recheck fresh installs of
+the published files. No signing, reproducible-byte builds, universal wheel
+portability or independent execution-attestation guarantee is implied.

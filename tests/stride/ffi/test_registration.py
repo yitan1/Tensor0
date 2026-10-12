@@ -1,6 +1,6 @@
 """Native registration, availability and fail-closed routing."""
 
-from importlib.metadata import version
+from importlib.metadata import PackageNotFoundError, version
 
 import jax
 import jax.numpy as jnp
@@ -42,6 +42,17 @@ def test_extension_exposes_only_native_stride_registration() -> None:
 
 
 def test_cuda_registration_exact_exports() -> None:
+    if _native._stride_cuda_available():
+        try:
+            version("nvidia-cuda-runtime-cu12")
+        except PackageNotFoundError:
+            # A CUDA-capable wheel still supports a runtime-free CPU installation.
+            with pytest.raises(RuntimeError, match="CUDA runtime is missing"):
+                _native._stride_cuda_registration()
+            for operation in ("copy", "update", "accumulation", "dot", "reduction"):
+                with pytest.raises(RuntimeError, match="CUDA runtime is missing"):
+                    getattr(_native, f"_stride_cuda_{operation}_prepared_stats")()
+            return
     registration = _native._stride_cuda_registration()
     if not _native._stride_cuda_available():
         assert registration == {}

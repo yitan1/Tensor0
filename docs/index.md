@@ -11,13 +11,20 @@ environment; supported prebuilt wheels require no Rust or C++ compiler.
 
 ## Runtime Compatibility
 
-The current numerical execution baseline supports Linux CPU with JAX and
+The released numerical execution baseline supports Linux CPU with JAX and
 JAXLIB 0.10.1. The tested 0.1.0 wheel matrix covers CPython 3.11–3.14 on
 Linux x86_64 with glibc >=2.28; Python 3.11 remains the baseline interpreter.
 The Python >=3.11 metadata does not imply support for future interpreters.
-The native stride handler is compiled against that exact XLA FFI header version and rejects mismatched runtimes. Other platforms and versions
-are not currently supported execution targets, and missing native routes are
-reported explicitly rather than hidden by an element-address fallback.
+The upcoming 0.2.0 source also has experimental CPU validation on Apple M5 /
+macOS 27 / CPython 3.11. No macOS wheel is published, and macOS 15 hosted-runner
+validation remains pending. The 0.2.0 release target adds macOS 15+ ARM64 CPU
+wheels for all four CPython ABIs, built from the same core sdist as Linux;
+this is not yet published coverage. See [Support and compatibility](support.md) for
+platform scope.
+
+The native stride handler is compiled against that exact XLA FFI header version
+and rejects mismatched runtimes. Missing native routes are reported explicitly
+rather than hidden by an element-address fallback.
 Native stride operations lower through JAX as `stablehlo.custom_call`
 operations. Tensor0 does not ship a separate pure-StableHLO stride backend.
 

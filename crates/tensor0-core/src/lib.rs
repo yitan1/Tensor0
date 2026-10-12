@@ -7,5 +7,5 @@ pub mod space;
 pub mod transform;
 
 pub fn native_version() -> &'static str {
-    "0.0.0"
+    env!("CARGO_PKG_VERSION")
 }

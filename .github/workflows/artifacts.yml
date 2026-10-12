@@ -1,4 +1,4 @@
-name: Linux CPU release artifacts
+name: CPU release artifacts (Linux + macOS ARM64)
 
 # Manual preparation only: no publishing, tag creation or release uploads.
 on:
@@ -13,7 +13,6 @@ concurrency:
 
 env:
   CARGO_BUILD_JOBS: "1"
-  TENSOR0_CUDA: "0"
   JAX_PLATFORMS: cpu
 
 jobs:
@@ -67,7 +66,7 @@ jobs:
           maturin-version: "1.13.1"
           manylinux: "2_28"
           # AlmaLinux 8's default /usr/bin/c++ is too old for our C++20 code.
-          before-script-linux: export CXX=g++; export CARGO_BUILD_JOBS=1; export TENSOR0_CUDA=0; g++ --version
+          before-script-linux: export CXX=g++; export CARGO_BUILD_JOBS=1; g++ --version
           working-directory: artifact-source/source
           command: build
           args: >-
@@ -76,7 +75,7 @@ jobs:
             --out ../../dist
       - name: Check wheel contents and binary compatibility
         run: |
-          uv run --no-project python .github/scripts/check_artifacts.py dist/*.whl
+          uv run --no-project python .github/scripts/check_artifacts.py dist/*.whl --release-core
           uvx --from auditwheel auditwheel show dist/*.whl
       - name: Install wheel in an isolated environment
         run: |
@@ -96,12 +95,94 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  macos-wheel:
+    name: CPython ${{ matrix.python }} / macOS 15 ARM64 CPU
+    needs: sdist
+    runs-on: macos-15
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12", "3.13", "3.14"]
+    env:
+      CXX: /usr/bin/clang++
+      MACOSX_DEPLOYMENT_TARGET: "15.0"
+      OPENBLAS_NUM_THREADS: "1"
+      OMP_NUM_THREADS: "1"
+      MPLBACKEND: Agg
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v8.3.2
+        with:
+          python-version: ${{ matrix.python }}
+          enable-cache: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/download-artifact@v4
+        with:
+          name: tensor0-sdist-${{ github.sha }}
+          path: dist
+      - name: Prepare CPU-only test dependencies without installing the project
+        run: uv sync --group dev --group bench --no-install-project
+      - name: Verify macOS 15 ARM64 host, Rust and pinned FFI headers
+        run: |
+          uname -a
+          sw_vers
+          sysctl hw.memsize hw.ncpu
+          /usr/bin/clang++ --version
+          xcodebuild -version
+          .venv/bin/python -I .github/scripts/macos_release.py host
+      - name: Inspect and extract the producer's shared sdist outside checkout
+        run: |
+          work=$(mktemp -d "$RUNNER_TEMP/macos-release.XXXXXX")
+          echo "MACOS_CORE_WORK=$work" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_DIR=$work/target" >> "$GITHUB_ENV"
+          .venv/bin/python .github/scripts/check_artifacts.py dist/*.tar.gz --extract "$work/source"
+      - name: Build one wheel from the shared sdist with a fresh native target
+        run: |
+          cd "$MACOS_CORE_WORK/source/source"
+          "$GITHUB_WORKSPACE/.venv/bin/maturin" build --release --locked --strip \
+            -i "$GITHUB_WORKSPACE/.venv/bin/python" --out "$GITHUB_WORKSPACE/dist"
+      - name: Inspect and install the original ARM64 wheel (no repacking)
+        run: |
+          .venv/bin/python .github/scripts/check_artifacts.py dist/*.whl --release-core
+          .venv/bin/python -I .github/scripts/macos_release.py inspect dist/*.whl
+          uv pip install --python .venv/bin/python pip
+          .venv/bin/python -I -m pip install --no-deps dist/*.whl
+          uv pip check --python .venv/bin/python
+          .venv/bin/python -I .github/scripts/macos_release.py installed dist/*.whl
+      - name: Installed-wheel CPU smoke and examples outside checkout
+        working-directory: ${{ runner.temp }}
+        run: |
+          "$GITHUB_WORKSPACE/.venv/bin/python" -I "$GITHUB_WORKSPACE/.github/scripts/wheel_smoke.py"
+          "$GITHUB_WORKSPACE/.venv/bin/python" -I "$GITHUB_WORKSPACE/examples/basic_usage.py"
+          "$GITHUB_WORKSPACE/.venv/bin/python" -I "$GITHUB_WORKSPACE/examples/contractions.py"
+      - name: Rust core tests (one macOS ABI; no extension rebuild)
+        if: matrix.python == '3.11'
+        run: cargo test -p tensor0-core
+      - name: Complete CPU suite against the exact installed wheel on every ABI
+        run: .venv/bin/python -I -m pytest tests -q -ra --junitxml=macos-pytest.xml
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tensor0-wheel-macos-${{ matrix.python }}-${{ github.sha }}
+          path: dist/*.whl
+          if-no-files-found: error
+          retention-days: 30
+      - name: Preserve macOS test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tensor0-macos-tests-${{ matrix.python }}-${{ github.sha }}
+          path: macos-pytest.xml
+          if-no-files-found: warn
+          retention-days: 30
+
   assemble:
     name: Assemble tested distributions (no rebuild)
-    needs: [sdist, wheel]
+    needs: [sdist, wheel, macos-wheel]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
+      - uses: actions/checkout@v6
       - uses: actions/download-artifact@v4
         with:
           name: tensor0-sdist-${{ github.sha }}
@@ -115,17 +196,20 @@ jobs:
         shell: bash
         run: |
           test "$(find dist -name '*.tar.gz' | wc -l)" -eq 1
-          test "$(find dist -name '*.whl' | wc -l)" -eq 4
+          test "$(find dist -name '*.whl' | wc -l)" -eq 8
           for abi in cp311 cp312 cp313 cp314; do
-            test "$(find dist -name "*-${abi}-${abi}-*.whl" | wc -l)" -eq 1
+            for platform in manylinux_2_28_x86_64 macosx_15_0_arm64; do
+              test "$(find dist -name "*-${abi}-${abi}-${platform}.whl" | wc -l)" -eq 1
+            done
           done
           (cd dist && sha256sum *.tar.gz *.whl > SHA256SUMS)
+          python .github/scripts/cuda_candidate.py files dist
           {
-            echo '## Tested Linux x86_64 CPU candidate'
+            echo '## Tested Linux x86_64 + macOS ARM64 CPU candidate'
             echo "Source commit: $GITHUB_SHA"
             echo "Candidate run: $GITHUB_RUN_ID"
-            echo 'One sdist and four wheels: CPython 3.11–3.14, manylinux_2_28.'
-            echo 'Each wheel passed archive/auditwheel checks, isolated smoke and public examples.'
+            echo 'One shared sdist and eight wheels: CPython 3.11–3.14, manylinux_2_28 x86_64 + macOS 15 ARM64.'
+            echo 'Linux wheels passed archive/auditwheel checks and isolated smoke/examples; all four macOS wheels passed native ARM64 inspection and complete installed-wheel CPU tests.'
             echo 'Publish only this assembled artifact; no rebuild. No publication occurs here.'
           } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4

@@ -1,15 +1,17 @@
 # Tensor0
 
-Tensor0 is an experimental symmetric tensor library for Python, with Rust-backed
-structural metadata and JAX-backed storage and automatic differentiation. It is
-not yet a production-ready tensor-network framework. Before 1.0, public API
-patch releases remain backward-compatible; breaking changes require a minor
-release and migration notes.
+**Symmetry-aware tensors for Python, powered by Rust and JAX.**
 
-Use it for tensor algebra with conserved charges and other supported symmetries:
-work with symmetry-allowed blocks, then compose, contract or differentiate them
-using JAX. It provides tensor primitives rather than a complete simulation
-algorithm framework.
+[![PyPI version](https://img.shields.io/pypi/v/tensor0)](https://pypi.org/project/tensor0/)
+[![CI](https://github.com/yitan1/Tensor0/actions/workflows/ci.yml/badge.svg?branch=main&event=push)](https://github.com/yitan1/Tensor0/actions/workflows/ci.yml)
+[![Documentation](https://img.shields.io/badge/docs-online-blue)](https://yitan1.github.io/Tensor0/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
+Work with conserved charges and symmetry-allowed tensor blocks, then compose,
+contract or differentiate them using JAX. Rust handles structural metadata;
+JAX handles numerical storage and automatic differentiation.
+
+> **Pre-1.0 software.** [CUDA support](docs/cuda.md) is experimental.
 
 **[Documentation](https://yitan1.github.io/Tensor0/)** ·
 [Installation](docs/installation.md) · [Usage](docs/usage.md) ·
@@ -17,24 +19,20 @@ algorithm framework.
 
 ## Installation
 
-**[Tensor0 0.1.0](https://pypi.org/project/tensor0/0.1.0/) was published on
-2026-10-10.** Tested CPU wheels are available for **CPython 3.11–3.14 on
-Linux x86_64 with glibc >=2.28**. Install in a virtual environment:
+Install from PyPI in a virtual environment:
 
 ```bash
-python3.11 -m venv .venv
-source .venv/bin/activate
-python -m pip install tensor0==0.1.0
+# CPU
+python -m pip install tensor0
+
+# CUDA 12 (experimental)
+python -m pip install "tensor0[cuda12]"
 ```
 
-These wheels require **no Rust or C++ compiler**. JAX and JAXLIB remain pinned to
-**0.10.1**; the native XLA FFI checks these versions exactly. CPU installation
-does not require CUDA.
-
-For source builds, **Rust >=1.87** and a **C++20-capable compiler** are required;
-see [source installation and memory limits](docs/installation.md#source-install).
-[Optional CUDA support](docs/cuda.md) is experimental and restricted to selected
-operations, dtypes and AD paths—not the full TensorMap API or full reverse AD.
+See [CUDA support](docs/cuda.md) for GPU requirements and supported operations.
+Prebuilt wheels require no Rust or C++ compiler. See the
+[installation guide](docs/installation.md) for available platforms, supported
+Python versions, GPU setup and source builds.
 
 ## A small symmetric tensor
 
@@ -50,19 +48,27 @@ for sector, block in tensor.blocks():
     print(sector, block.shape)
 ```
 
-Tensor0 provides graded spaces and built-in sector families, ordinary and
-diagonal tensor maps, blockwise linear algebra and truncation, transforms and
-symmetry-aware contractions, and JAX `jit`/`grad` integration. See the
-[usage guide](docs/usage.md), [contraction guide](docs/contractions.md), and
-[executable examples](docs/examples.md) for capabilities and boundaries.
+## Main capabilities
+
+- **Symmetry-aware tensors** — graded spaces, built-in sector families, and
+  ordinary and diagonal tensor maps with symmetry-allowed blocks.
+- **Tensor algebra** — transforms, contractions, blockwise linear algebra,
+  decompositions and truncation.
+- **JAX integration** — `jit` and automatic differentiation within documented
+  operation-specific limits.
+
+Start with the [usage guide](docs/usage.md), [contraction guide](docs/contractions.md)
+and [executable examples](docs/examples.md). Before 1.0, documented public API
+patch releases remain backward-compatible; breaking changes require a minor
+release and migration notes. See the [support policy](docs/support.md).
 
 ## Contributing and benchmarks
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development and verification links,
 [CHANGELOG.md](CHANGELOG.md) for release changes, and the
 [release checklist](docs/releasing.md) for installed-artifact acceptance.
-Reproducible [benchmark suites](benchmarks/README.md) and their reports document
-measured configurations and limitations; they are not performance guarantees.
+See the reproducible [benchmark suites](benchmarks/README.md) for measurements
+and tested configurations.
 
 ## Acknowledgments
 

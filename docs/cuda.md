@@ -241,9 +241,25 @@ unverified, not silently classified as passing.
 ## Execution and ownership
 
 Compilation platform determines the CPU or CUDA target, including through custom
-partitioning. Installing GPU JAX does not enable native CUDA execution in a
-CPU-only Tensor0 extension; rebuild with CUDA explicitly enabled. JAX and JAXLIB
-must match the pinned native FFI header versions (0.10.1).
+partitioning. The unified core always contains CPU execution and the dynamic
+loader. Installing matching `tensor0-cuda12` enables CUDA without rebuilding or
+replacing the core. The planned `tensor0[cuda12]` extra pins
+`tensor0-cuda12==0.2.0` and `jax[cuda12]==0.10.1`; both distributions target
+stable version `0.2.0`, not yet published. Published CPU 0.1.0 does not support this discovery contract.
+
+The addon contains only the C-ABI `tensor0_cuda12/_stride_cuda.so` backend and
+the root MIT license, with external `nvidia-cuda-runtime-cu12>=12.9.79,<13`. Distribution
+metadata locates its library and matching actual core/addon versions are checked
+before CDLL. Presence probes do not load libraries or query devices. Missing
+addon retains CPU-only registration/statistics; wrong versions or missing ELF,
+runtime, and resident cudart conflicts fail explicitly when registration is
+requested. CPU operations do not need CUDA. Driver/GPU and GPU JAX are needed
+only for execution. JAX/JAXLIB must match vendored headers 0.10.1.
+
+This split is experimental and unpublished. A previous combined Linux x86_64
+CPython 3.11 prototype passed CPU regression and bounded A100 acceptance with
+runtime 12.9.79; those results do not validate the new two-wheel artifacts.
+Splitting does not establish manylinux/PyPI readiness or universal compatibility.
 
 CUDA lowering calls native semantic preparation before emitting compact i64
 metadata. All five operations use the validated semantic result as the host
@@ -257,13 +273,13 @@ the native packer; use stride primitives rather than hand-crafted FFI calls.
 
 The native CUDA implementation separates three responsibilities:
 
-- `native/cuda/*.cu` adapts the XLA FFI call, validates metadata and invocation
+- `crates/tensor0-cuda12/native/cuda/*.cu` adapts the XLA FFI call, validates metadata and invocation
   buffers, and contains exceptions at the call boundary.
-- `native/cuda/execute/` owns CUDA scheduling, output initialization, coefficient
+- `crates/tensor0-cuda12/native/cuda/execute/` owns CUDA scheduling, output initialization, coefficient
   dispatch and ordered kernel launches.
-- `native/cuda/kernels/` implements device address traversal and numerical work.
+- `crates/tensor0-cuda12/native/cuda/kernels/` implements device address traversal and numerical work.
 
-Both backends use `native/layout/descriptor.{h,cc}` for descriptor decoding and
+Both backends use `crates/tensor0-py/native/layout/descriptor.{h,cc}` for descriptor decoding and
 semantic validation. Reduction records compose an address layout with explicit
 axis roles; roles are never inferred from zero strides. Native lowering preparation
 validates the complete original protocol before transforming or encoding it.
@@ -369,71 +385,80 @@ Primitive GPU integration tests are in `tests/stride/jax/cuda/test_copy.py`,
 `tests/stride/jax/cuda/test_accumulation.py`, `tests/stride/jax/cuda/test_dot.py`,
 `tests/stride/jax/cuda/test_reduction.py`. Standalone native CUDA contracts live
 in `tests/stride/native/cuda/`, separate from JAX GPU integration. Tests requiring
-native GPU support skip without a CUDA-enabled extension/device. The standalone
+native GPU support skip without a installed matching addon/device. The standalone
 Copy/Update/Accumulation/Dot/Reduction contracts instead need an existing toolkit/device, accept
 `NVCC`,
 `CUDA_HOME` and `TENSOR0_CUDA_ARCH` (default `sm_80`), and exercise actual buffer
 alias rejection and stream dependency ordering. A skip is not a validation pass.
 
-Run against an isolated CUDA-enabled candidate, and run CPU stride regressions
+Run against an isolated core/addon candidate pair, and run CPU stride regressions
 with CPU placement separately. Registration/build tests cover CPU-only and
 requested-but-unavailable configurations. No speedup, sanitizer validation or
 universal toolkit compatibility is implied by the optional build.
 
 ### Manual installed-wheel acceptance
 
-CUDA remains experimental. The
-[CUDA build workflow](https://github.com/yitan1/Tensor0/blob/main/.github/workflows/cuda-build.yml)
-uses a free hosted Ubuntu CPU runner with `nvidia/cuda:12.9.1-devel-ubuntu24.04`,
-CPython 3.11 and `sm_80`. It builds a real release CUDA wheel from the sdist with
-`--compatibility linux`, then checks CUDA registration and installed CPU smoke
-behavior without a GPU. This is **not manylinux verification or GPU acceptance**.
-It runs on path-filtered pull requests and pushes to `main`, and manual dispatch;
-it has no publishing path. No paid GPU, self-hosted runner or cloud GPU runner is
-required: GPU acceptance is manual on an existing compatible machine.
+CUDA remains experimental. The core is built with maturin; the independent
+setuptools addon initially uses a raw **py3-none-linux_x86_64** tag, targeting
+`sm_80` by default; the candidate route repairs it to **manylinux_2_28_x86_64**.
+Build each wheel from its own extracted sdist outside the checkout. See
+[development.md](development.md#optional-cuda-stride-build) for the source build
+and the [CUDA build workflow](https://github.com/yitan1/Tensor0/blob/main/.github/workflows/cuda-build.yml)
+for the digest-pinned glibc 2.28 / GCC 14 baseline and SHA-256-verified CUDA
+12.9.1 components (NVCC 12.9.86, cudart 12.9.79, CCCL 12.9.27).
+The 11 local SDK-typed forwarders use the verified pip runtime by explicit
+`RTLD_NOLOAD`/`dlsym`, with no CUDA ELF dependency. The loader preflights every
+required symbol and validates native status/runtime identity before registration.
+Constructor failures require restart; missing-runtime preflight remains retryable.
+Auditwheel repairs the raw addon without exclusions. No NVIDIA libraries are
+bundled and the linker adds no RPATH. The production artifact still requires
+actual repair, ELF inspection and exact-pair CPU/GPU acceptance. Final publication is unified with the original CPU producer artifacts, without
+rebuilding them. Configured workflows are not successful run evidence.
 
-The candidate artifact is `tensor0-cuda-build-<sha>`. Its `build-info.json`
-records the source commit, wheel filename/SHA-256, CUDA architecture, toolchain
-versions and workflow run URL; `SHA256SUMS` binds the wheel bytes. A configured
-workflow is not evidence of a successful build or GPU execution.
+A final manual `tensor0-cuda-build-<sha>` reuses all nine core distributions
+(eight Linux/macOS wheels and one shared sdist) and adds the repaired Linux addon
+wheel and sdist: eleven distributions, `SHA256SUMS`, and
+`build-info.json` with `wheel`/`sha256` for the core and
+`cuda_wheel`/`cuda_sha256` for the addon, source commit and toolchain provenance.
+Rebuilding or repackaging requires new exact-byte acceptance; version equality
+is not provenance. Complete the [licensing review](releasing.md#cuda-distribution-licensing)
+before any proposed public release. macOS core wheels accompany the candidate
+but are not CUDA inputs; never install the addon on macOS or select a core using
+an ambiguous `cp311-cp311-*.whl` glob. Automatic push/PR compile artifacts remain
+non-release validation and do not contain the full core matrix.
 
-1. Before using a machine, check GPU, CPU and memory occupancy (for example,
-   `nvidia-smi`, `uptime`, `free -h` and process listings). Do not disturb other
-   workloads. Use an independent `runs/<timestamp>-cuda-acceptance/` directory
-   outside the checkout for artifacts, environment and results.
-2. Download the artifact from a trusted run and inspect its provenance and
-   `SHA256SUMS`. Use a separate **clean checkout of the exact
-   `build-info.json` source commit**. For a pull-request run this can be the PR
-   merge commit, not its head commit; do not substitute the latter.
-3. Create a fresh isolated CPython 3.11 venv. With permission, provision compatible
-   GPU JAX and pytest dependencies separately, retaining **jax==0.10.1 and
-   jaxlib==0.10.1**. Do not modify the current environment. Dependencies must
-   already be available before acceptance; the acceptance script does not
-   install, build, access the network or use SSH.
-4. Install the exact candidate by absolute local path, without rebuilding or
-   resolving dependencies, then invoke the script from the matching checkout.
-   Replace all placeholders below; the report directory must not already exist:
+1. Check GPU/CPU/memory occupancy; do not disturb other workloads. Use a new
+   independent run directory and a clean checkout of the exact source commit.
+2. Verify both artifact hashes and provenance. Create an isolated CPython 3.11
+   venv with CPU JAX 0.10.1 and test dependencies provisioned separately. Install
+   **only the exact Linux CPython 3.11 core wheel** named by `build-info.json`,
+   outside the checkout, and run full CPU regression
+   plus the baseline gate below. Retain logs and origin/version checks.
+3. Add only the exact companion wheel and compatible runtime/GPU JAX dependencies
+   to that same environment; do not reinstall or rebuild the core. Verify the core
+   binary SHA-256 remains unchanged. Published 0.1.0 is not an acceptable core.
+4. Run the GPU gate with both wheels and the retained CPU report:
 
-   ```bash
-   /absolute/runs/<timestamp>-cuda-acceptance/venv/bin/python -m pip install \
-       --no-index --no-deps /absolute/runs/<timestamp>-cuda-acceptance/artifacts/candidate.whl
-   /absolute/runs/<timestamp>-cuda-acceptance/venv/bin/python -m pip check
-   /absolute/runs/<timestamp>-cuda-acceptance/venv/bin/python -I \
-       /absolute/matching-checkout/.github/scripts/cuda_acceptance.py \
-       --wheel /absolute/runs/<timestamp>-cuda-acceptance/artifacts/candidate.whl \
-       --build-info /absolute/runs/<timestamp>-cuda-acceptance/artifacts/build-info.json \
-       --output /absolute/runs/<timestamp>-cuda-acceptance/reports
-   ```
+```bash
+/absolute/venv/bin/python -I /absolute/checkout/.github/scripts/cuda_acceptance.py \
+    --cpu-only --wheel /absolute/core.whl --build-info /absolute/build-info.json \
+    --output /absolute/cpu-baseline
+# After adding the addon/runtime/GPU JAX to the same environment:
+/absolute/venv/bin/python -I /absolute/checkout/.github/scripts/cuda_acceptance.py \
+    --wheel /absolute/core.whl --cuda-wheel /absolute/addon.whl \
+    --cpu-report /absolute/cpu-baseline/report.json \
+    --build-info /absolute/build-info.json --output /absolute/gpu-reports
+```
 
-The script checks wheel bytes and the installed `direct_url.json` hash, installed
-import origins, matching clean source commit, native/JAX versions and both CUDA
-and CPU backends. It runs GPU primitive/lifecycle, FFI boundary and bounded public
-TensorMap tests, retaining `report.json`, preflight diagnostics and per-suite
-logs/JUnit reports. Only the two CPU-only-extension skip reasons
-`requires a CPU-only extension` and `requires CPU-only extension` are allowed;
-all other skips fail acceptance. Retain these outputs with the artifact hashes
-and driver/device information. A passing result establishes only the tested
-candidate and bounded matrix, not general GPU support.
+The offline gate performs no install/build/network actions. It binds BOTH wheel
+hashes to installed `direct_url.json`, clean source commit, package origins,
+matching distribution/native versions, unchanged core binary hash, CPU baseline
+and CPU/CUDA backends. GPU suites cover primitive/lifecycle, FFI boundary and
+bounded TensorMap tests. Reports preserve failures, logs/JUnit and driver/device
+information. Only `requires a CPU-only extension` and `requires CPU-only extension`
+skips are allowed; other skips fail. CPU smoke alone does not replace full CPU
+regression or establish GPU support. No remote driver change, paid GPU runner
+or automatic GPU CI gate is part of this route.
 
 ### Optional source-native contracts
 

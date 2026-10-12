@@ -6,6 +6,24 @@ notes. See [Support and compatibility](docs/support.md).
 
 ## Unreleased
 
+### Packaging
+
+- Expand the 0.2.0 CPU release target to macOS 15+ ARM64 and Linux x86_64,
+  each on CPython 3.11–3.14. One shared core sdist feeds all eight original
+  wheels; every macOS ABI requires complete installed-wheel CPU tests.
+  Hosted macOS 15 acceptance remains pending; CUDA stays Linux-only.
+
+- Prepare an optional, separately version-paired `tensor0-cuda12` companion;
+  the unified CPU core remains usable without CUDA. The companion uses local
+  typed forwarders to an external pip CUDA runtime, not bundled NVIDIA runtime
+  or driver libraries.
+- Add a manual dual-package publication verifier that reuses the original CPU
+  candidate and repaired addon distributions without rebuild, requires all four
+  ABI checks and reviewed exact-pair CPU/GPU acceptance, and stages eleven files
+  for review-gated Trusted Publishing. This is preparation, not publication:
+  Python core, companion and Cargo versions are set to 0.2.0, but final candidate
+  artifacts, exact-pair acceptance and publication approval remain pending.
+
 ## 0.1.0 — 2026-10-10
 
 Initial public release, available on [PyPI](https://pypi.org/project/tensor0/0.1.0/)

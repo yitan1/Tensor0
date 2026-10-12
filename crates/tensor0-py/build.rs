@@ -1,7 +1,7 @@
 use std::collections::hash_map::DefaultHasher;
 use std::env;
 use std::fs;
-use std::hash::{Hash, Hasher};
+use std::hash::Hash;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::mpsc;
@@ -52,159 +52,27 @@ fn jax_build_info(manifest_dir: &Path) -> Option<JaxBuildInfo> {
 }
 
 
-// -MT fixes the target name, so only the dependency side needs Make unescaping.
-fn dependencies(path: &Path, manifest_dir: &Path) -> Option<Vec<PathBuf>> {
-    let text = fs::read_to_string(path).ok()?.replace("\\\n", "");
-    let (_, words) = text.split_once(':')?;
-    let mut paths = Vec::new();
-    let mut word = String::new();
-    let mut chars = words.chars().peekable();
-    while let Some(ch) = chars.next() {
-        match ch {
-            '\\' => word.push(chars.next()?),
-            '$' if chars.peek() == Some(&'$') => { chars.next(); word.push('$'); }
-            c if c.is_whitespace() => {
-                if !word.is_empty() {
-                    paths.push(manifest_dir.join(&word));
-                    word.clear();
-                }
-            }
-            c => word.push(c),
-        }
-    }
-    if !word.is_empty() { paths.push(manifest_dir.join(word)); }
-    if paths.is_empty() { None } else { Some(paths) }
-}
-
-fn fingerprint(seed: &DefaultHasher, paths: &[PathBuf]) -> Option<String> {
-    let mut inputs = seed.clone();
-    for path in paths {
-        path.hash(&mut inputs);
-        fs::read(path).ok()?.hash(&mut inputs);
-    }
-    Some(format!("{:016x}", inputs.finish()))
-}
-
-fn compiler_path(compiler: &std::ffi::OsStr) -> PathBuf {
-    let path = Path::new(compiler);
-    if path.components().count() > 1 {
-        return env::current_dir().expect("current directory").join(path);
-    }
-    env::split_paths(&env::var_os("PATH").unwrap_or_default())
-        .map(|directory| directory.join(path))
-        .find(|candidate| candidate.is_file())
-        .unwrap_or_else(|| panic!("compiler {compiler:?} was not found in PATH"))
-}
-
-// Run serially after the CPU pool, using the build script's implicit Cargo slot.
-fn compile_cuda(
-    manifest_dir: &Path, output_dir: &Path, include_dir: &Path, opt_level: &str,
-    host_compiler: &Path, host_identity: &DefaultHasher,
-) {
-    let nvcc = env::var_os("NVCC").unwrap_or_else(|| {
-        env::var_os("CUDA_HOME").map(|root| PathBuf::from(root).join("bin/nvcc").into_os_string())
-            .unwrap_or_else(|| "nvcc".into())
-    });
-    let selected = compiler_path(&nvcc);
-    let resolved = fs::canonicalize(&selected).expect("resolve NVCC");
-    let cuda_home = env::var_os("CUDA_HOME").map(PathBuf::from)
-        .unwrap_or_else(|| resolved.parent().unwrap().parent().unwrap().to_path_buf());
-    let version = Command::new(&selected).arg("--version").output().expect("failed to identify NVCC");
-    assert!(version.status.success(), "failed to identify NVCC");
-    for source in ["native/cuda/copy.cu", "native/cuda/update.cu", "native/cuda/accumulation.cu", "native/cuda/dot.cu", "native/cuda/reduction.cu"] {
-        let object = output_dir.join(source.replace('/', "_").replace(".cu", ".o"));
-        let depfile = object.with_extension("d");
-        let stamp = object.with_extension("fingerprint");
-        let arch = env::var("TENSOR0_CUDA_ARCH").unwrap_or_else(|_| "sm_80".into());
-        let mut command = Command::new(&selected);
-        command.env_remove("NVCC_CCBIN")
-            .arg("-ccbin").arg(host_compiler)
-            .args(["-std=c++20", "-DNDEBUG", "-Xcompiler", "-fPIC"])
-            // NVCC has no size-optimization level; keep its optimization explicit.
-            .arg(format!("-O{}", if matches!(opt_level, "s" | "z") { "2" } else { opt_level }))
-            .arg(format!("-arch={arch}"))
-            .arg("-I").arg(include_dir)
-            .args(["-MD", "-MT", "tensor0-object", "-MF"]).arg(&depfile)
-            .arg("-c").arg(source).arg("-o").arg(&object).current_dir(manifest_dir);
-        let mut inputs = host_identity.clone();
-        include_bytes!("build.rs").hash(&mut inputs);
-        format!("{command:?}").hash(&mut inputs);
-        version.stdout.hash(&mut inputs);
-        version.stderr.hash(&mut inputs);
-        for name in ["NVCC", "CUDA_HOME", "TENSOR0_CUDA_ARCH", "PATH", "CPATH", "CPLUS_INCLUDE_PATH",
-                     "COMPILER_PATH", "GCC_EXEC_PREFIX", "NVCC_PREPEND_FLAGS", "NVCC_APPEND_FLAGS", "NVCC_CCBIN"] {
-            println!("cargo:rerun-if-env-changed={name}");
-            env::var_os(name).hash(&mut inputs);
-        }
-        for path in [&selected, &resolved] {
-            println!("cargo:rerun-if-changed={}", path.display());
-            path.hash(&mut inputs);
-            fs::read(path).expect("read NVCC").hash(&mut inputs);
-        }
-        let previous = dependencies(&depfile, manifest_dir);
-        let expected = previous.as_ref().and_then(|paths| fingerprint(&inputs, paths));
-        if !object.is_file() || expected.is_none() || fs::read_to_string(&stamp).ok() != expected {
-            fs::write(&stamp, "").expect("invalidate CUDA fingerprint");
-            eprintln!("tensor0-native: compiling {source}");
-            let started = Instant::now();
-            let status = command.status().expect("failed to launch NVCC; TENSOR0_CUDA=1 requires a CUDA toolkit");
-            eprintln!("tensor0-native: {} {source} in {:.2}s",
-                if status.success() { "compiled" } else { "failed" }, started.elapsed().as_secs_f64());
-            assert!(status.success(), "failed to compile Tensor0 CUDA stride FFI");
-            assert!(object.is_file(), "NVCC did not produce CUDA object");
-            let paths = dependencies(&depfile, manifest_dir).expect("read NVCC dependency file");
-            fs::write(&stamp, fingerprint(&inputs, &paths).expect("read CUDA dependencies"))
-                .expect("save CUDA fingerprint");
-        } else {
-            eprintln!("tensor0-native: cached {source}");
-        }
-        for path in dependencies(&depfile, manifest_dir).expect("read NVCC dependency file") {
-            println!("cargo:rerun-if-changed={}", path.display());
-        }
-        println!("cargo:rustc-link-arg={}", object.display());
-    }
-    let runtime_dir = ["lib64", "lib"].into_iter().map(|name| cuda_home.join(name))
-        .find(|directory| directory.join("libcudart_static.a").is_file())
-        .expect("TENSOR0_CUDA=1 requires libcudart_static.a under CUDA_HOME/lib64 or CUDA_HOME/lib");
-    println!("cargo:rerun-if-changed={}", runtime_dir.join("libcudart_static.a").display());
-    println!("cargo:rustc-link-search=native={}", runtime_dir.display());
-    println!("cargo:rustc-link-lib=static=cudart_static");
-    for library in ["dl", "rt", "pthread"] {
-        println!("cargo:rustc-link-lib=dylib={library}");
-    }
-    println!("cargo:rustc-cfg=tensor0_stride_cuda");
-}
-
+mod build_helpers;
+use build_helpers::{compiler_path, dependencies, fingerprint};
 fn main() {
     // SAFETY: Read Cargo's inherited jobserver before starting any threads.
     let jobserver = unsafe { jobserver::Client::from_env() };
     println!("cargo:rustc-check-cfg=cfg(tensor0_stride_ffi)");
-    println!("cargo:rustc-check-cfg=cfg(tensor0_stride_cuda)");
-    for name in ["TENSOR0_CUDA", "NVCC", "CUDA_HOME", "TENSOR0_CUDA_ARCH"] {
-        println!("cargo:rerun-if-env-changed={name}");
-    }
-    let cuda = match env::var("TENSOR0_CUDA").as_deref() {
-        Ok("1") => true,
-        Ok("0") | Err(env::VarError::NotPresent) => false,
-        value => panic!("TENSOR0_CUDA must be 0 or 1; got {value:?}"),
-    };
     println!("cargo:rerun-if-env-changed=CXX");
     println!("cargo:rerun-if-env-changed=TENSOR0_CXX_OPT_LEVEL");
     for source in STRIDE_NATIVE_SOURCES {
         println!("cargo:rerun-if-changed={source}");
     }
 
+    let manifest_dir =
+        PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
-    if target_os != "linux" {
-        assert!(!cuda, "TENSOR0_CUDA=1 is only supported on Linux");
+    if !matches!(target_os.as_str(), "linux" | "macos") {
         println!("cargo:warning=Tensor0 stride FFI is disabled on unsupported target {target_os}");
         return;
     }
 
-    let manifest_dir =
-        PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
     let Some(build_info) = jax_build_info(&manifest_dir) else {
-        assert!(!cuda, "TENSOR0_CUDA=1 requires the vendored JAX FFI headers");
         println!(
             "cargo:warning=vendored JAXLIB {VENDORED_JAXLIB_VERSION} FFI headers were not found; building Tensor0 without native CPU stride execution"
         );
@@ -280,6 +148,7 @@ fn main() {
             .current_dir(&manifest_dir);
         let mut inputs = DefaultHasher::new();
         include_bytes!("build.rs").hash(&mut inputs);
+        include_bytes!("build_helpers.rs").hash(&mut inputs);
         format!("{command:?}").hash(&mut inputs);
         compiler_version.stdout.hash(&mut inputs);
         compiler_version.stderr.hash(&mut inputs);
@@ -376,17 +245,7 @@ fn main() {
         println!("cargo:rustc-link-arg={}", object.display());
     }
 
-    if cuda {
-        // Reuse the CPU compiler identity and Cargo rerun watches for NVCC's host compiler.
-        let mut host_identity = DefaultHasher::new();
-        selected_compiler.hash(&mut host_identity);
-        resolved_compiler.hash(&mut host_identity);
-        compiler_bytes.hash(&mut host_identity);
-        compiler_version.stdout.hash(&mut host_identity);
-        compiler_version.stderr.hash(&mut host_identity);
-        compile_cuda(&manifest_dir, &output_dir, &build_info.include_dir, &opt_level,
-            &selected_compiler, &host_identity);
-    }
-    println!("cargo:rustc-link-lib=dylib=stdc++");
+    let cpp_runtime = if target_os == "macos" { "c++" } else { "stdc++" };
+    println!("cargo:rustc-link-lib=dylib={cpp_runtime}");
     println!("cargo:rustc-cfg=tensor0_stride_ffi");
 }

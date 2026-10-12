@@ -1,4 +1,3 @@
-#[cfg(tensor0_stride_ffi)]
 use std::ffi::{c_char, c_void, CStr};
 
 use pyo3::exceptions::PyRuntimeError;
@@ -225,7 +224,6 @@ pub fn _stride_prepare_layout(
     }
 }
 
-#[cfg(tensor0_stride_ffi)]
 fn pointer_capsule(py: Python<'_>, pointer: *mut c_void) -> PyResult<Py<PyAny>> {
     if pointer.is_null() {
         return Err(PyRuntimeError::new_err(
@@ -239,101 +237,151 @@ fn pointer_capsule(py: Python<'_>, pointer: *mut c_void) -> PyResult<Py<PyAny>> 
     Ok(unsafe { Bound::<PyAny>::from_owned_ptr(py, capsule) }.unbind())
 }
 
-#[cfg(tensor0_stride_cuda)]
-unsafe extern "C" {
-    fn Tensor0StrideCudaCopyInstantiateV1Handler() -> *mut c_void;
-    fn Tensor0StrideCudaCopyPreparedTypeId() -> *mut c_void;
-    fn Tensor0StrideCudaCopyPreparedTypeInfo() -> *const c_void;
-    fn Tensor0StrideCudaCopyPreparedCreatedCount() -> u64;
-    fn Tensor0StrideCudaCopyPreparedDestroyedCount() -> u64;
-    fn Tensor0StrideCudaCopyF32V1Handler() -> *mut c_void;
-    fn Tensor0StrideCudaCopyF64V1Handler() -> *mut c_void;
-    fn Tensor0StrideCudaCopyC64V1Handler() -> *mut c_void;
-    fn Tensor0StrideCudaCopyC128V1Handler() -> *mut c_void;
-    fn Tensor0StrideCudaUpdateInstantiateV1Handler() -> *mut c_void;
-    fn Tensor0StrideCudaUpdatePreparedTypeId() -> *mut c_void;
-    fn Tensor0StrideCudaUpdatePreparedTypeInfo() -> *const c_void;
-    fn Tensor0StrideCudaUpdatePreparedCreatedCount() -> u64;
-    fn Tensor0StrideCudaUpdatePreparedDestroyedCount() -> u64;
-    fn Tensor0StrideCudaUpdateF32V1Handler() -> *mut c_void;
-    fn Tensor0StrideCudaUpdateF64V1Handler() -> *mut c_void;
-    fn Tensor0StrideCudaUpdateC64V1Handler() -> *mut c_void;
-    fn Tensor0StrideCudaUpdateC128V1Handler() -> *mut c_void;
-    fn Tensor0StrideCudaDotInstantiateV1Handler() -> *mut c_void;
-    fn Tensor0StrideCudaDotPreparedTypeId() -> *mut c_void;
-    fn Tensor0StrideCudaDotPreparedTypeInfo() -> *const c_void;
-    fn Tensor0StrideCudaDotPreparedCreatedCount() -> u64;
-    fn Tensor0StrideCudaDotPreparedDestroyedCount() -> u64;
-    fn Tensor0StrideCudaDotF32V1Handler() -> *mut c_void;
-    fn Tensor0StrideCudaDotF64V1Handler() -> *mut c_void;
-    fn Tensor0StrideCudaDotC64V1Handler() -> *mut c_void;
-    fn Tensor0StrideCudaDotC128V1Handler() -> *mut c_void;
-    fn Tensor0StrideCudaAccumulationInstantiateV1Handler() -> *mut c_void;
-    fn Tensor0StrideCudaAccumulationPreparedTypeId() -> *mut c_void;
-    fn Tensor0StrideCudaAccumulationPreparedTypeInfo() -> *const c_void;
-    fn Tensor0StrideCudaAccumulationPreparedCreatedCount() -> u64;
-    fn Tensor0StrideCudaAccumulationPreparedDestroyedCount() -> u64;
-    fn Tensor0StrideCudaAccumulationF32V1Handler() -> *mut c_void;
-    fn Tensor0StrideCudaReductionInstantiateV1Handler() -> *mut c_void;
-    fn Tensor0StrideCudaReductionPreparedTypeId() -> *mut c_void;
-    fn Tensor0StrideCudaReductionPreparedTypeInfo() -> *const c_void;
-    fn Tensor0StrideCudaReductionPreparedCreatedCount() -> u64;
-    fn Tensor0StrideCudaReductionPreparedDestroyedCount() -> u64;
-    fn Tensor0StrideCudaReductionF32V1Handler() -> *mut c_void;
-    fn Tensor0StrideCudaAccumulationF64V1Handler() -> *mut c_void;
-    fn Tensor0StrideCudaReductionF64V1Handler() -> *mut c_void;
-    fn Tensor0StrideCudaAccumulationC64V1Handler() -> *mut c_void;
-    fn Tensor0StrideCudaReductionC64V1Handler() -> *mut c_void;
-    fn Tensor0StrideCudaAccumulationC128V1Handler() -> *mut c_void;
-    fn Tensor0StrideCudaReductionC128V1Handler() -> *mut c_void;
+// CUDA symbols are resolved from the optional companion, never linked into core.
+mod cuda {
+    use super::*;
+    use pyo3::sync::PyOnceLock;
 
+    #[cfg_attr(not(target_os = "macos"), link(name = "dl"))]
+    unsafe extern "C" {
+        fn dlsym(handle: *mut c_void, name: *const c_char) -> *mut c_void;
+    }
+
+    macro_rules! symbol_table {
+        ($($name:ident -> $result:ty;)+) => {
+            #[allow(non_snake_case)]
+            pub(super) struct Symbols {
+                // Retain both CDLLs for as long as any capsule can be used.
+                _libraries: Py<PyAny>,
+                $(pub(super) $name: unsafe extern "C" fn() -> $result,)+
+            }
+
+            impl Symbols {
+                #[allow(non_snake_case)]
+                fn load(py: Python<'_>) -> PyResult<Self> {
+                    let libraries = py.import("tensor0._stride._ffi._cuda")?
+                        .getattr("_load_cuda_library")?.call0()?;
+                    let handle: usize = libraries.get_item(1)?.getattr("_handle")?.extract()?;
+                    $(let $name = unsafe {
+                        dlsym(handle as *mut c_void,
+                            concat!(stringify!($name), "\0").as_ptr().cast())
+                    };
+                    if $name.is_null() {
+                        return Err(PyRuntimeError::new_err(concat!(
+                            "Tensor0 CUDA companion is missing symbol: ", stringify!($name))));
+                    })+
+                    // Publish only after every required symbol has been validated.
+                    Ok(Self {
+                        _libraries: libraries.unbind(),
+                        $($name: unsafe { std::mem::transmute::<*mut c_void,
+                            unsafe extern "C" fn() -> $result>($name) },)+
+                    })
+                }
+            }
+        };
+    }
+
+    symbol_table! {
+        Tensor0StrideCudaCopyInstantiateV1Handler -> *mut c_void;
+        Tensor0StrideCudaCopyPreparedTypeId -> *mut c_void;
+        Tensor0StrideCudaCopyPreparedTypeInfo -> *const c_void;
+        Tensor0StrideCudaCopyPreparedCreatedCount -> u64;
+        Tensor0StrideCudaCopyPreparedDestroyedCount -> u64;
+        Tensor0StrideCudaCopyF32V1Handler -> *mut c_void;
+        Tensor0StrideCudaCopyF64V1Handler -> *mut c_void;
+        Tensor0StrideCudaCopyC64V1Handler -> *mut c_void;
+        Tensor0StrideCudaCopyC128V1Handler -> *mut c_void;
+        Tensor0StrideCudaUpdateInstantiateV1Handler -> *mut c_void;
+        Tensor0StrideCudaUpdatePreparedTypeId -> *mut c_void;
+        Tensor0StrideCudaUpdatePreparedTypeInfo -> *const c_void;
+        Tensor0StrideCudaUpdatePreparedCreatedCount -> u64;
+        Tensor0StrideCudaUpdatePreparedDestroyedCount -> u64;
+        Tensor0StrideCudaUpdateF32V1Handler -> *mut c_void;
+        Tensor0StrideCudaUpdateF64V1Handler -> *mut c_void;
+        Tensor0StrideCudaUpdateC64V1Handler -> *mut c_void;
+        Tensor0StrideCudaUpdateC128V1Handler -> *mut c_void;
+        Tensor0StrideCudaDotInstantiateV1Handler -> *mut c_void;
+        Tensor0StrideCudaDotPreparedTypeId -> *mut c_void;
+        Tensor0StrideCudaDotPreparedTypeInfo -> *const c_void;
+        Tensor0StrideCudaDotPreparedCreatedCount -> u64;
+        Tensor0StrideCudaDotPreparedDestroyedCount -> u64;
+        Tensor0StrideCudaDotF32V1Handler -> *mut c_void;
+        Tensor0StrideCudaDotF64V1Handler -> *mut c_void;
+        Tensor0StrideCudaDotC64V1Handler -> *mut c_void;
+        Tensor0StrideCudaDotC128V1Handler -> *mut c_void;
+        Tensor0StrideCudaAccumulationInstantiateV1Handler -> *mut c_void;
+        Tensor0StrideCudaAccumulationPreparedTypeId -> *mut c_void;
+        Tensor0StrideCudaAccumulationPreparedTypeInfo -> *const c_void;
+        Tensor0StrideCudaAccumulationPreparedCreatedCount -> u64;
+        Tensor0StrideCudaAccumulationPreparedDestroyedCount -> u64;
+        Tensor0StrideCudaAccumulationF32V1Handler -> *mut c_void;
+        Tensor0StrideCudaReductionInstantiateV1Handler -> *mut c_void;
+        Tensor0StrideCudaReductionPreparedTypeId -> *mut c_void;
+        Tensor0StrideCudaReductionPreparedTypeInfo -> *const c_void;
+        Tensor0StrideCudaReductionPreparedCreatedCount -> u64;
+        Tensor0StrideCudaReductionPreparedDestroyedCount -> u64;
+        Tensor0StrideCudaReductionF32V1Handler -> *mut c_void;
+        Tensor0StrideCudaAccumulationF64V1Handler -> *mut c_void;
+        Tensor0StrideCudaReductionF64V1Handler -> *mut c_void;
+        Tensor0StrideCudaAccumulationC64V1Handler -> *mut c_void;
+        Tensor0StrideCudaReductionC64V1Handler -> *mut c_void;
+        Tensor0StrideCudaAccumulationC128V1Handler -> *mut c_void;
+        Tensor0StrideCudaReductionC128V1Handler -> *mut c_void;
+    }
+
+    pub(super) fn symbols(py: Python<'_>) -> PyResult<&'static Symbols> {
+        static SYMBOLS: PyOnceLock<Symbols> = PyOnceLock::new();
+        SYMBOLS.get_or_try_init(py, || Symbols::load(py))
+    }
 }
 
 #[pyfunction]
-pub fn _stride_cuda_available() -> bool {
-    cfg!(tensor0_stride_cuda)
+pub fn _stride_cuda_available(py: Python<'_>) -> PyResult<bool> {
+    py.import("tensor0._stride._ffi._cuda")?
+        .getattr("_cuda_companion_present")?.call0()?.extract()
 }
 
 #[pyfunction]
 pub fn _stride_cuda_registration(py: Python<'_>) -> PyResult<Py<PyAny>> {
     let registration = PyDict::new(py);
-    #[cfg(tensor0_stride_cuda)]
+    if !_stride_cuda_available(py)? { return Ok(registration.into()); }
+    let symbols = cuda::symbols(py)?;
     for (name, handler) in [
-        ("copy_instantiate", unsafe { Tensor0StrideCudaCopyInstantiateV1Handler() }),
-        ("copy_type_id", unsafe { Tensor0StrideCudaCopyPreparedTypeId() }),
-        ("copy_type_info", unsafe { Tensor0StrideCudaCopyPreparedTypeInfo().cast_mut() }),
-        ("copy_f32", unsafe { Tensor0StrideCudaCopyF32V1Handler() }),
-        ("copy_f64", unsafe { Tensor0StrideCudaCopyF64V1Handler() }),
-        ("copy_c64", unsafe { Tensor0StrideCudaCopyC64V1Handler() }),
-        ("copy_c128", unsafe { Tensor0StrideCudaCopyC128V1Handler() }),
-        ("update_instantiate", unsafe { Tensor0StrideCudaUpdateInstantiateV1Handler() }),
-        ("update_type_id", unsafe { Tensor0StrideCudaUpdatePreparedTypeId() }),
-        ("update_type_info", unsafe { Tensor0StrideCudaUpdatePreparedTypeInfo().cast_mut() }),
-        ("update_f32", unsafe { Tensor0StrideCudaUpdateF32V1Handler() }),
-        ("update_f64", unsafe { Tensor0StrideCudaUpdateF64V1Handler() }),
-        ("update_c64", unsafe { Tensor0StrideCudaUpdateC64V1Handler() }),
-        ("update_c128", unsafe { Tensor0StrideCudaUpdateC128V1Handler() }),
-        ("dot_instantiate", unsafe { Tensor0StrideCudaDotInstantiateV1Handler() }),
-        ("dot_type_id", unsafe { Tensor0StrideCudaDotPreparedTypeId() }),
-        ("dot_type_info", unsafe { Tensor0StrideCudaDotPreparedTypeInfo().cast_mut() }),
-        ("dot_f32", unsafe { Tensor0StrideCudaDotF32V1Handler() }),
-        ("dot_f64", unsafe { Tensor0StrideCudaDotF64V1Handler() }),
-        ("dot_c64", unsafe { Tensor0StrideCudaDotC64V1Handler() }),
-        ("dot_c128", unsafe { Tensor0StrideCudaDotC128V1Handler() }),
-        ("accumulation_instantiate", unsafe { Tensor0StrideCudaAccumulationInstantiateV1Handler() }),
-        ("accumulation_type_id", unsafe { Tensor0StrideCudaAccumulationPreparedTypeId() }),
-        ("accumulation_type_info", unsafe { Tensor0StrideCudaAccumulationPreparedTypeInfo().cast_mut() }),
-        ("accumulation_f32", unsafe { Tensor0StrideCudaAccumulationF32V1Handler() }),
-        ("reduction_instantiate", unsafe { Tensor0StrideCudaReductionInstantiateV1Handler() }),
-        ("reduction_type_id", unsafe { Tensor0StrideCudaReductionPreparedTypeId() }),
-        ("reduction_type_info", unsafe { Tensor0StrideCudaReductionPreparedTypeInfo().cast_mut() }),
-        ("reduction_f32", unsafe { Tensor0StrideCudaReductionF32V1Handler() }),
-        ("accumulation_f64", unsafe { Tensor0StrideCudaAccumulationF64V1Handler() }),
-        ("reduction_f64", unsafe { Tensor0StrideCudaReductionF64V1Handler() }),
-        ("accumulation_c64", unsafe { Tensor0StrideCudaAccumulationC64V1Handler() }),
-        ("reduction_c64", unsafe { Tensor0StrideCudaReductionC64V1Handler() }),
-        ("accumulation_c128", unsafe { Tensor0StrideCudaAccumulationC128V1Handler() }),
-        ("reduction_c128", unsafe { Tensor0StrideCudaReductionC128V1Handler() }),
+        ("copy_instantiate", unsafe { (symbols.Tensor0StrideCudaCopyInstantiateV1Handler)() }),
+        ("copy_type_id", unsafe { (symbols.Tensor0StrideCudaCopyPreparedTypeId)() }),
+        ("copy_type_info", unsafe { (symbols.Tensor0StrideCudaCopyPreparedTypeInfo)().cast_mut() }),
+        ("copy_f32", unsafe { (symbols.Tensor0StrideCudaCopyF32V1Handler)() }),
+        ("copy_f64", unsafe { (symbols.Tensor0StrideCudaCopyF64V1Handler)() }),
+        ("copy_c64", unsafe { (symbols.Tensor0StrideCudaCopyC64V1Handler)() }),
+        ("copy_c128", unsafe { (symbols.Tensor0StrideCudaCopyC128V1Handler)() }),
+        ("update_instantiate", unsafe { (symbols.Tensor0StrideCudaUpdateInstantiateV1Handler)() }),
+        ("update_type_id", unsafe { (symbols.Tensor0StrideCudaUpdatePreparedTypeId)() }),
+        ("update_type_info", unsafe { (symbols.Tensor0StrideCudaUpdatePreparedTypeInfo)().cast_mut() }),
+        ("update_f32", unsafe { (symbols.Tensor0StrideCudaUpdateF32V1Handler)() }),
+        ("update_f64", unsafe { (symbols.Tensor0StrideCudaUpdateF64V1Handler)() }),
+        ("update_c64", unsafe { (symbols.Tensor0StrideCudaUpdateC64V1Handler)() }),
+        ("update_c128", unsafe { (symbols.Tensor0StrideCudaUpdateC128V1Handler)() }),
+        ("dot_instantiate", unsafe { (symbols.Tensor0StrideCudaDotInstantiateV1Handler)() }),
+        ("dot_type_id", unsafe { (symbols.Tensor0StrideCudaDotPreparedTypeId)() }),
+        ("dot_type_info", unsafe { (symbols.Tensor0StrideCudaDotPreparedTypeInfo)().cast_mut() }),
+        ("dot_f32", unsafe { (symbols.Tensor0StrideCudaDotF32V1Handler)() }),
+        ("dot_f64", unsafe { (symbols.Tensor0StrideCudaDotF64V1Handler)() }),
+        ("dot_c64", unsafe { (symbols.Tensor0StrideCudaDotC64V1Handler)() }),
+        ("dot_c128", unsafe { (symbols.Tensor0StrideCudaDotC128V1Handler)() }),
+        ("accumulation_instantiate", unsafe { (symbols.Tensor0StrideCudaAccumulationInstantiateV1Handler)() }),
+        ("accumulation_type_id", unsafe { (symbols.Tensor0StrideCudaAccumulationPreparedTypeId)() }),
+        ("accumulation_type_info", unsafe { (symbols.Tensor0StrideCudaAccumulationPreparedTypeInfo)().cast_mut() }),
+        ("accumulation_f32", unsafe { (symbols.Tensor0StrideCudaAccumulationF32V1Handler)() }),
+        ("reduction_instantiate", unsafe { (symbols.Tensor0StrideCudaReductionInstantiateV1Handler)() }),
+        ("reduction_type_id", unsafe { (symbols.Tensor0StrideCudaReductionPreparedTypeId)() }),
+        ("reduction_type_info", unsafe { (symbols.Tensor0StrideCudaReductionPreparedTypeInfo)().cast_mut() }),
+        ("reduction_f32", unsafe { (symbols.Tensor0StrideCudaReductionF32V1Handler)() }),
+        ("accumulation_f64", unsafe { (symbols.Tensor0StrideCudaAccumulationF64V1Handler)() }),
+        ("reduction_f64", unsafe { (symbols.Tensor0StrideCudaReductionF64V1Handler)() }),
+        ("accumulation_c64", unsafe { (symbols.Tensor0StrideCudaAccumulationC64V1Handler)() }),
+        ("reduction_c64", unsafe { (symbols.Tensor0StrideCudaReductionC64V1Handler)() }),
+        ("accumulation_c128", unsafe { (symbols.Tensor0StrideCudaAccumulationC128V1Handler)() }),
+        ("reduction_c128", unsafe { (symbols.Tensor0StrideCudaReductionC128V1Handler)() }),
 
     ] {
         registration.set_item(name, pointer_capsule(py, handler)?)?;
@@ -342,87 +390,72 @@ pub fn _stride_cuda_registration(py: Python<'_>) -> PyResult<Py<PyAny>> {
 }
 
 #[pyfunction]
-pub fn _stride_cuda_copy_prepared_stats() -> Option<(u64, u64)> {
-    #[cfg(tensor0_stride_cuda)]
+pub fn _stride_cuda_copy_prepared_stats(py: Python<'_>) -> PyResult<Option<(u64, u64)>> {
     {
-        Some(unsafe {
+        if !_stride_cuda_available(py)? { return Ok(None); }
+        let symbols = cuda::symbols(py)?;
+        Ok(Some(unsafe {
             (
-                Tensor0StrideCudaCopyPreparedCreatedCount(),
-                Tensor0StrideCudaCopyPreparedDestroyedCount(),
+                (symbols.Tensor0StrideCudaCopyPreparedCreatedCount)(),
+                (symbols.Tensor0StrideCudaCopyPreparedDestroyedCount)(),
             )
-        })
-    }
-    #[cfg(not(tensor0_stride_cuda))]
-    {
-        None
+        }))
     }
 }
 
 #[pyfunction]
-pub fn _stride_cuda_update_prepared_stats() -> Option<(u64, u64)> {
-    #[cfg(tensor0_stride_cuda)]
+pub fn _stride_cuda_update_prepared_stats(py: Python<'_>) -> PyResult<Option<(u64, u64)>> {
     {
-        Some(unsafe {
+        if !_stride_cuda_available(py)? { return Ok(None); }
+        let symbols = cuda::symbols(py)?;
+        Ok(Some(unsafe {
             (
-                Tensor0StrideCudaUpdatePreparedCreatedCount(),
-                Tensor0StrideCudaUpdatePreparedDestroyedCount(),
+                (symbols.Tensor0StrideCudaUpdatePreparedCreatedCount)(),
+                (symbols.Tensor0StrideCudaUpdatePreparedDestroyedCount)(),
             )
-        })
-    }
-    #[cfg(not(tensor0_stride_cuda))]
-    {
-        None
+        }))
     }
 }
 
 #[pyfunction]
-pub fn _stride_cuda_dot_prepared_stats() -> Option<(u64, u64)> {
-    #[cfg(tensor0_stride_cuda)]
+pub fn _stride_cuda_dot_prepared_stats(py: Python<'_>) -> PyResult<Option<(u64, u64)>> {
     {
-        Some(unsafe {
+        if !_stride_cuda_available(py)? { return Ok(None); }
+        let symbols = cuda::symbols(py)?;
+        Ok(Some(unsafe {
             (
-                Tensor0StrideCudaDotPreparedCreatedCount(),
-                Tensor0StrideCudaDotPreparedDestroyedCount(),
+                (symbols.Tensor0StrideCudaDotPreparedCreatedCount)(),
+                (symbols.Tensor0StrideCudaDotPreparedDestroyedCount)(),
             )
-        })
-    }
-    #[cfg(not(tensor0_stride_cuda))]
-    {
-        None
+        }))
     }
 }
 
 #[pyfunction]
-pub fn _stride_cuda_accumulation_prepared_stats() -> Option<(u64, u64)> {
-    #[cfg(tensor0_stride_cuda)]
+pub fn _stride_cuda_accumulation_prepared_stats(py: Python<'_>) -> PyResult<Option<(u64, u64)>> {
     {
-        Some(unsafe {
+        if !_stride_cuda_available(py)? { return Ok(None); }
+        let symbols = cuda::symbols(py)?;
+        Ok(Some(unsafe {
             (
-                Tensor0StrideCudaAccumulationPreparedCreatedCount(),
-                Tensor0StrideCudaAccumulationPreparedDestroyedCount(),
+                (symbols.Tensor0StrideCudaAccumulationPreparedCreatedCount)(),
+                (symbols.Tensor0StrideCudaAccumulationPreparedDestroyedCount)(),
             )
-        })
-    }
-    #[cfg(not(tensor0_stride_cuda))]
-    {
-        None
+        }))
     }
 }
 
 #[pyfunction]
-pub fn _stride_cuda_reduction_prepared_stats() -> Option<(u64, u64)> {
-    #[cfg(tensor0_stride_cuda)]
+pub fn _stride_cuda_reduction_prepared_stats(py: Python<'_>) -> PyResult<Option<(u64, u64)>> {
     {
-        Some(unsafe {
+        if !_stride_cuda_available(py)? { return Ok(None); }
+        let symbols = cuda::symbols(py)?;
+        Ok(Some(unsafe {
             (
-                Tensor0StrideCudaReductionPreparedCreatedCount(),
-                Tensor0StrideCudaReductionPreparedDestroyedCount(),
+                (symbols.Tensor0StrideCudaReductionPreparedCreatedCount)(),
+                (symbols.Tensor0StrideCudaReductionPreparedDestroyedCount)(),
             )
-        })
-    }
-    #[cfg(not(tensor0_stride_cuda))]
-    {
-        None
+        }))
     }
 }
 
@@ -445,7 +478,7 @@ pub fn _stride_native_registration(py: Python<'_>) -> PyResult<Py<PyAny>> {
         registration.set_item("type_info", pointer_capsule(py, unsafe {
             Tensor0StridePreparedTypeInfo().cast_mut()
         })?)?;
-        for (name, handler) in [
+    for (name, handler) in [
             ("accumulation_instantiate", unsafe { Tensor0StrideAccumulationInstantiateV1Handler() }),
             ("accumulation_s32", unsafe { Tensor0StrideAccumulationS32V1Handler() }),
             ("accumulation_f32", unsafe { Tensor0StrideAccumulationF32V1Handler() }),

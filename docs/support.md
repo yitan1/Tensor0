@@ -8,11 +8,13 @@ performance and exhaustive coverage are not promised.
 
 | Area | Policy |
 | --- | --- |
-| Numerical runtime | Linux CPU with JAX **0.10.1** and JAXLIB **0.10.1** |
+| Released numerical runtime | Linux CPU with JAX **0.10.1** and JAXLIB **0.10.1** |
+| Experimental macOS CPU | Upcoming 0.2.0 source tested on Apple M5 / macOS 27 / CPython 3.11 with the same pinned JAX/JAXLIB; no published macOS wheels or macOS 15 runtime validation yet |
+| Upcoming 0.2.0 wheel targets | CPython **3.11–3.14** on Linux x86_64/glibc >=2.28 and macOS **15+ ARM64 CPU**; all four macOS 15 installed-wheel suites remain pending |
 | Python | **CPython 3.11–3.14** tested CPU wheel matrix; **3.11** numerical baseline |
 | Published wheels | [**0.1.0** on PyPI](https://pypi.org/project/tensor0/0.1.0/), released **2026-10-10**; Linux **x86_64 CPU**, **glibc >=2.28**; no Rust/C++ compiler needed |
 | Native source build | Rust **>=1.87**, C++20 compiler; see [Installation](installation.md) |
-| CUDA | Experimental opt-in build with a bounded [operation/dtype/AD matrix](cuda.md); not full API support |
+| CUDA | Experimental Linux companion for upcoming 0.2.0, with a bounded [operation/dtype/AD matrix](cuda.md); not yet published or full API support |
 | Other platforms/backends or JAX versions | Not supported numerical execution targets |
 
 The package's Python >=3.11 metadata is an eligibility range, not proof that all
