@@ -2,16 +2,21 @@
 
 ## Current release
 
-**0.1.0 was published on 2026-10-10**:
-[PyPI](https://pypi.org/project/tensor0/0.1.0/) ·
-[GitHub Release v0.1.0](https://github.com/yitan1/Tensor0/releases/tag/v0.1.0).
-All five published distribution files (four wheels and one sdist) have hashes
-matching the accepted candidate. The tested CPU wheel matrix is CPython
-**3.11–3.14**, Linux **x86_64**, manylinux_2_28 (**glibc >=2.28**).
-The existing `v0.1.0` tag is immutable; do not move or recreate it.
+**0.2.0 was published on 2026-10-12**:
+[Core on PyPI](https://pypi.org/project/tensor0/0.2.0/) ·
+[CUDA companion on PyPI](https://pypi.org/project/tensor0-cuda12/0.2.0/) ·
+[GitHub Release v0.2.0](https://github.com/yitan1/Tensor0/releases/tag/v0.2.0).
+All eleven published distributions have hashes matching the original accepted
+artifacts: eight core wheels and one core sdist, plus one repaired Linux addon
+wheel and one addon sdist. The tested CPU wheel matrix is CPython **3.11–3.14**
+on Linux **x86_64**, manylinux_2_28 (**glibc >=2.28**), and macOS **15+ ARM64**.
+The experimental CUDA pair passed bounded A100 (`sm_80`) acceptance before
+publication. The immutable `v0.2.0` tag identifies source commit
+`d679afe1b5930b57dd199f9107e7036796da672c`, not later maintenance changes on `main`.
+Historical 0.1.0 artifacts and its tag remain unchanged; never move a release tag.
 
-The following checklist is for **future releases**, not a historical audit of
-0.1.0. Each release needs its own acceptance evidence and maintainer approval.
+The following checklist is for **future releases**, not a historical audit.
+Each release needs its own acceptance evidence and explicit maintainer approval.
 Do not tag or publish merely to exercise packaging.
 
 ## Candidate preparation
@@ -34,9 +39,9 @@ Do not tag or publish merely to exercise packaging.
 
 The [artifact workflow](https://github.com/yitan1/Tensor0/blob/main/.github/workflows/artifacts.yml)
 is an artifact-only validation route, not PyPI publishing. The current wheel
-target for 0.2.0 is CPython **3.11–3.14** on both Linux x86_64 CPU
+matrix, released in 0.2.0, is CPython **3.11–3.14** on both Linux x86_64 CPU
 (manylinux_2_28, glibc >=2.28) and macOS **15+ ARM64 CPU**
-(`macosx_15_0_arm64`, not universal2). macOS 15 hosted execution is still pending.
+(`macosx_15_0_arm64`, not universal2). Hosted macOS 15 acceptance passed for 0.2.0.
 Verify this matrix anew for each release. Wheels must be built from the extracted
 sdist, inspected and tested in isolated installed environments. Consult the
 actual workflow configuration, run logs and artifacts: a target matrix is not
@@ -195,11 +200,11 @@ Retain those run results and exact-pair GPU evidence separately. Duplicate core
 files in the CUDA artifact are acceptance conveniences, not a second publishing
 input; publish the original verified CPU bytes only once.
 
-Both distributions and Cargo now target stable version `0.2.0`, with precise
-pairing pins. This version selection is not publication approval. Published
-CPU 0.1.0 and its immutable artifacts remain untouched. The extra selects the
-addon and GPU JAX automatically, but this unpublished split is not a PyPI-ready
-release. Earlier combined-wheel CPU/A100 acceptance does not validate the pair.
+The published 0.2.0 distributions use precise pairing pins; Cargo also uses
+version `0.2.0`. Historical CPU 0.1.0 and its immutable artifacts remain untouched.
+The extra selects the addon and GPU JAX automatically. For future candidates,
+version selection alone is not publication approval, and earlier combined-wheel
+CPU/A100 acceptance does not validate a new pair.
 Require independent out-of-tree sdist builds, actual run evidence, then
 [exact-pair acceptance](cuda.md#manual-installed-wheel-acceptance): install the
 core for CPU regression first, add only addon/dependencies to the SAME environment,
@@ -207,14 +212,13 @@ and verify unchanged core bytes before GPU tests. Both installed direct URLs,
 wheel hashes and clean source provenance are mandatory. No GPU runner or remote
 driver modification is required by this implementation phase.
 
-The future `publish.yml` path stages **both distributions** from these exact
+The `publish.yml` path stages **both distributions** from these exact
 candidates, without rebuild or repair. `release_candidate=true` identifies a
 manual candidate only: publication also requires completed successful runs and
 all four ABI jobs, plus separate production CPU/GPU acceptance. Implementing
-this path does not authorize a commit, push, dispatch or publication. The current
-Python/addon and Cargo version is now `0.2.0`; fresh final-version artifacts and
-all acceptance evidence are still required before publication. Earlier development-version
-artifacts do not validate the final release pair.
+this path does not authorize a commit, push, dispatch or publication. For each
+future release, fresh final-version artifacts and all acceptance evidence are
+required. Earlier development-version artifacts do not validate a final release pair.
 
 ## CUDA distribution licensing
 
@@ -235,11 +239,10 @@ legal clearance. Publishing requires separate maintainer approval for both proje
 
 ## Publish only after approval
 
-The future publisher is a **unified two-project release**, not a CPU-only mode.
-Historical CPU 0.1.0 artifacts and its tag remain unchanged. Version 0.2.0
-has been selected for the core, companion and Cargo packages, but has not been
-published. Final candidate artifacts, exact-pair acceptance and publication
-approval remain pending. The literal stable
+The publisher handles a **unified two-project release**, not a CPU-only mode.
+Version 0.2.0 has been published for both Python projects; future releases must
+complete candidate verification, exact-pair acceptance and explicit maintainer
+approval before dispatch. The literal stable
 `vX.Y.Z` tag must match Python, Cargo and addon source versions at the candidate
 commit; development versions are deliberately rejected, not normalized.
 
@@ -254,16 +257,20 @@ with this exact GitHub identity:
 
 Each project's owner must configure its Trusted Publisher (a pending publisher
 for a new project, or a publisher in an existing project's settings). The addon
-project name/ownership and publisher require user setup; a missing public page
+project name/ownership and publisher require owner setup for a new project; a missing public page
 does not reserve the name. The action can upload both projects using the same
 workflow/environment identity only when **both** publishers are configured.
 No API mutation or credential provisioning is performed by the verifier.
 
-Create the GitHub `pypi` environment, restrict deployments to `main`, and configure
-a required reviewer before upload. Referencing the environment in YAML does
-**not** enable approval protection. Trusted Publishing uses OIDC, not a stored
-PyPI token. The maintainer must check both publishers and environment protections;
-the workflow does not assume or prove their external configuration.
+Both Trusted Publishers are configured for the published 0.2.0 pair. The GitHub
+`pypi` environment restricts deployments to `main`; it currently has **no required
+reviewers**, so there is no second GitHub environment approval after dispatch.
+Explicit maintainer approval before dispatch remains release policy. A required
+environment reviewer is an optional additional guard and must be configured
+separately: referencing the environment in YAML does **not** enable it. Trusted
+Publishing uses OIDC, not a stored PyPI token. Recheck both publisher identities
+and environment protections for each release; the verifier does not prove their
+external configuration.
 
 ### Manual evidence transport and review
 
@@ -319,7 +326,7 @@ CPU-only skip reasons are allowed; XML and report statistics must agree.
 These manually supplied reports are **not cryptographic execution attestation**.
 An accepted flag and a pinned hash cannot prove that a human did not fabricate a
 report. The archive hash binds reviewed bytes, not independent GPU execution.
-The required reviewer must examine source and logs; no automatic GPU CI, cloud
+The approving maintainer must examine source and logs; no automatic GPU CI, cloud
 runner or remote driver modification is added.
 
 ### Dispatch and exact-artifact handoff
@@ -358,7 +365,7 @@ sdist, the repaired `py3-none-manylinux_2_28_x86_64` addon wheel and addon sdist
 No raw Linux addon is accepted. No build or repair occurs in publishing.
 
 The immutable `verified-pypi-dist-<sha>` artifact is the only input to the
-review-gated publish job, which has **no checkout or build**, only artifact
+publish job in the `pypi` environment, which has **no checkout or build**, only artifact
 download and the Trusted Publishing action. Reports and verification hashes
 are saved separately as `verified-release-evidence-<sha>` (14-day CI retention);
 they are never sent to PyPI. Distribution staging has 7-day CI retention. Keep
@@ -390,8 +397,9 @@ gh workflow run publish.yml --repo yitan1/Tensor0 --ref main \
   -f acceptance_sha256=REVIEWED_LOWERCASE_SHA256
 ```
 
-Dispatch does not replace the required `pypi` deployment review. Neither a tag
-nor a GitHub release automatically publishes. Only after actual publication,
+Dispatch requires explicit maintainer approval; any separately configured
+`pypi` environment review is an additional guard, not the current configuration.
+Neither a tag nor a GitHub release automatically publishes. Only after actual publication,
 update release status/date and installation links and recheck fresh installs of
 the published files. No signing, reproducible-byte builds, universal wheel
 portability or independent execution-attestation guarantee is implied.

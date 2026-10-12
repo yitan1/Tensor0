@@ -5,22 +5,18 @@ metadata and JAX-backed tensor storage.
 
 Use this documentation for the current checkout. The public API is still
 evolving, and Tensor0 is not yet a production-ready tensor-network framework.
-[Tensor0 0.1.0 is available on PyPI](https://pypi.org/project/tensor0/0.1.0/),
-published on 2026-10-10. Install with `pip install tensor0==0.1.0` in a virtual
+[Tensor0 0.2.0 is available on PyPI](https://pypi.org/project/tensor0/0.2.0/),
+published on 2026-10-12. Install with `pip install tensor0==0.2.0` in a virtual
 environment; supported prebuilt wheels require no Rust or C++ compiler.
 
 ## Runtime Compatibility
 
-The released numerical execution baseline supports Linux CPU with JAX and
-JAXLIB 0.10.1. The tested 0.1.0 wheel matrix covers CPython 3.11–3.14 on
-Linux x86_64 with glibc >=2.28; Python 3.11 remains the baseline interpreter.
-The Python >=3.11 metadata does not imply support for future interpreters.
-The upcoming 0.2.0 source also has experimental CPU validation on Apple M5 /
-macOS 27 / CPython 3.11. No macOS wheel is published, and macOS 15 hosted-runner
-validation remains pending. The 0.2.0 release target adds macOS 15+ ARM64 CPU
-wheels for all four CPython ABIs, built from the same core sdist as Linux;
-this is not yet published coverage. See [Support and compatibility](support.md) for
-platform scope.
+The released CPU execution baseline supports Linux x86_64 with glibc >=2.28
+and macOS 15+ ARM64, with JAX and JAXLIB 0.10.1. The tested 0.2.0 wheel matrix
+covers CPython 3.11–3.14 on both platforms, built from one shared core sdist;
+Python 3.11 remains the baseline interpreter. The Python >=3.11 metadata does
+not imply support for future interpreters. macOS is CPU-only. See
+[Support and compatibility](support.md) for platform scope.
 
 The native stride handler is compiled against that exact XLA FFI header version
 and rejects mismatched runtimes. Missing native routes are reported explicitly

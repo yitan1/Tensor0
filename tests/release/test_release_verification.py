@@ -12,7 +12,7 @@ import zipfile
 
 import pytest
 
-SCRIPTS = Path(__file__).resolve().parents[1] / '.github/scripts'
+SCRIPTS = Path(__file__).resolve().parents[2] / '.github/scripts'
 sys.path.insert(0, str(SCRIPTS))
 spec = importlib.util.spec_from_file_location('verify_release', SCRIPTS / 'verify_release.py')
 release = importlib.util.module_from_spec(spec)

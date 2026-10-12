@@ -6,7 +6,7 @@ from pathlib import Path
 import subprocess
 
 
-DOC_FILES = {'README.md', 'CHANGELOG.md', 'CONTRIBUTING.md', 'mkdocs.yml'}
+DOC_FILES = {'README.md', 'CHANGELOG.md', 'CONTRIBUTING.md', 'CITATION.cff', 'mkdocs.yml'}
 
 
 def requires_cpu(paths):

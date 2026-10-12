@@ -4,25 +4,43 @@ User-facing changes are recorded here. Before 1.0, patch releases preserve the
 documented public API; breaking changes require a minor release and migration
 notes. See [Support and compatibility](docs/support.md).
 
-## Unreleased
+## 0.2.0 — 2026-10-12
 
-### Packaging
+Available on [PyPI](https://pypi.org/project/tensor0/0.2.0/), with the optional
+[tensor0-cuda12 companion](https://pypi.org/project/tensor0-cuda12/0.2.0/),
+and as [GitHub Release v0.2.0](https://github.com/yitan1/Tensor0/releases/tag/v0.2.0).
 
-- Expand the 0.2.0 CPU release target to macOS 15+ ARM64 and Linux x86_64,
-  each on CPython 3.11–3.14. One shared core sdist feeds all eight original
-  wheels; every macOS ABI requires complete installed-wheel CPU tests.
-  Hosted macOS 15 acceptance remains pending; CUDA stays Linux-only.
+### Packaging and compatibility
 
-- Prepare an optional, separately version-paired `tensor0-cuda12` companion;
-  the unified CPU core remains usable without CUDA. The companion uses local
-  typed forwarders to an external pip CUDA runtime, not bundled NVIDIA runtime
-  or driver libraries.
-- Add a manual dual-package publication verifier that reuses the original CPU
-  candidate and repaired addon distributions without rebuild, requires all four
-  ABI checks and reviewed exact-pair CPU/GPU acceptance, and stages eleven files
-  for review-gated Trusted Publishing. This is preparation, not publication:
-  Python core, companion and Cargo versions are set to 0.2.0, but final candidate
-  artifacts, exact-pair acceptance and publication approval remain pending.
+- Add macOS **15+ ARM64 CPU** wheels alongside Linux **x86_64**, **glibc >=2.28**,
+  each for CPython **3.11–3.14**. All eight core wheels are built from one shared
+  sdist and pass installed-wheel acceptance, including hosted macOS 15 checks.
+  Prebuilt wheels require no Rust or C++ compiler.
+- Publish the optional, version-paired `tensor0-cuda12` companion. The
+  `tensor0[cuda12]` extra installs the addon and GPU JAX; the unified CPU core
+  remains usable without CUDA and is not rebuilt or replaced by addon installation.
+- Use fixed, SDK-typed local forwarders to the external
+  `nvidia-cuda-runtime-cu12>=12.9.79,<13` runtime; no NVIDIA runtime or driver
+  libraries are bundled. Tensor0's own code remains MIT, with third-party
+  license notices included in the distributions.
+- Publish eleven original, accepted distributions without rebuild: eight core
+  wheels, one core sdist, one repaired Linux addon wheel and one addon sdist.
+  All published file hashes match the accepted artifacts.
+- Retain JAX/JAXLIB **0.10.1**, Rust **>=1.87** and C++20 source-build requirements.
+  Existing CPU installation commands remain valid; CUDA users need the new
+  matching companion, not GPU JAX alone or a 0.1.0 core.
+
+### CUDA scope
+
+- Provide experimental Linux x86_64 CUDA execution for Copy, Update,
+  Accumulation, Dot and Reduction, with bounded dtype and differentiation support.
+  Exact-pair acceptance covers the documented A100 (`sm_80`) primitive and
+  high-level TensorMap subset, not general GPU API coverage, full reverse AD,
+  multi-GPU support or a performance guarantee. macOS remains CPU-only;
+  Windows and other architectures remain outside the supported scope.
+
+See [Installation](docs/installation.md), [Support and compatibility](docs/support.md)
+and [CUDA support](docs/cuda.md) for requirements and restrictions.
 
 ## 0.1.0 — 2026-10-10
 

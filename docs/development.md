@@ -125,18 +125,19 @@ transpose drops it because repeated source reads can become gradient write
 conflicts. CUDA ignores this CPU scheduling metadata and retains generic sums.
 The worker granularity remains 32K; this is not a GPU performance optimization.
 
-## Experimental macOS ARM64 core validation
+## macOS ARM64 core validation
 
 The CPU build permits macOS and links Apple's `libc++`; it keeps the existing
 scalar fallback on ARM64, without adding NEON kernels or changing numerical/AD
-semantics. This is an experimental build path, not a released platform guarantee.
+semantics. Published 0.2.0 CPU wheels support macOS 15+ ARM64.
 Windows and macOS CUDA are outside its scope.
 
 A source-snapshot wheel has been built and tested on Apple M5 / macOS 27 with
 Apple Clang 21, CPython 3.11 and JAX/JAXLIB 0.10.1. Installed-wheel CPU tests,
 all 42 standalone C++ contracts, JIT/gradient smoke checks and the public examples
 passed. This establishes that tested configuration only, not macOS 15 runtime
-compatibility or hosted-runner memory suitability. No macOS wheel is published.
+compatibility or hosted-runner memory suitability. Separate hosted macOS 15
+acceptance passed for all four published 0.2.0 CPU wheels.
 
 `.github/workflows/macos.yml` is an independent, **manual-only** validation
 workflow on the standard `macos-15` ARM64 runner with native ARM64 Python 3.11
@@ -169,8 +170,8 @@ Mach-O and installed binary/wheel hashes, then runs the complete CPU suite and
 examples against the installed wheel. The deployment target is 15.0, not
 universal2. Rust core tests run once on macOS 3.11. No CUDA extras, native
 cache or extension rebuild is used. All four macOS jobs gate assembly and
-publication. Actual macOS 15 runtime/toolchain/memory acceptance remains pending;
-the M5 result above is not evidence for these hosted jobs. See
+publication. All four hosted macOS 15 jobs passed for the published 0.2.0
+artifacts; the M5 result above is separate source-validation evidence. See
 [Releasing](releasing.md) for the fixed nine-core/eleven-final artifact contract.
 
 ## Optional CUDA stride build
@@ -198,12 +199,13 @@ repaired addon enters the candidate directory. No NVIDIA runtime/driver is
 bundled and the linker adds no RPATH. Actual repair/ELF inspection, not a
 setuptools retag, must establish compliance. The core continues to use maturin.
 
-Both Python distributions and Cargo use the planned stable version `0.2.0`,
+Both Python distributions and Cargo use stable version `0.2.0`,
 with exact reciprocal dependency pins (the core pin is in its `cuda12` extra).
-The unpublished `tensor0[cuda12]` extra selects the addon and
+The published `tensor0[cuda12]` extra selects the addon and
 `jax[cuda12]==0.10.1`; the addon requires external
 `nvidia-cuda-runtime-cu12>=12.9.79,<13`. Published CPU 0.1.0 cannot be paired with
-this addon. Splitting does not establish PyPI readiness or compatibility.
+this addon. Published 0.2.0 artifacts passed exact-pair acceptance; this does
+not establish compatibility beyond the documented CUDA matrix.
 
 `CXX` defaults to `/usr/bin/c++` and selects NVCC's explicit `-ccbin` host compiler;
 `NVCC_CCBIN` is cleared for that invocation. `NVCC` selects the CUDA compiler,
@@ -271,14 +273,15 @@ numerical prototype only, not this new package pair. CUDA remains experimental.
 
 ## Local Setup
 
-`[tool.uv.sources]` resolves the unpublished optional `tensor0-cuda12` dependency
+`[tool.uv.sources]` resolves the optional `tensor0-cuda12` dependency
 from `crates/tensor0-cuda12` as a non-editable local project. This is a checkout-only
 resolution rule, not a published direct-URL dependency. Default sync resolves the
 extra's metadata but does **not** install/build the companion or require NVCC.
 The default core build still requires Rust and a C++ compiler. Only an explicitly
 selected CUDA extra needs the companion build and GPU dependencies. Release
 builds use `--no-sources`; published metadata retains exact version pins.
-Do not use `--no-sources` to resolve the unpublished extra from PyPI.
+Using `--no-sources` resolves the published extra from PyPI instead of building
+the local companion; it does not validate local addon changes.
 The local `uv.lock` is ignored, not a tracked release input; regenerate it with
 `uv sync` when source metadata changes rather than force-adding it.
 
@@ -318,7 +321,7 @@ API types or disable diagnostic rules to accommodate negative tests.
 The CI workflow starts for every PR and push to `main`, without workflow-level
 path exclusions that could leave required checks pending. Its lightweight
 classifier skips the native CPU matrix and Pyright only when every changed path
-is under `docs/` or is `README.md`, `CHANGELOG.md`, `CONTRIBUTING.md`, or
+is under `docs/` or is `README.md`, `CHANGELOG.md`, `CONTRIBUTING.md`, `CITATION.cff`, or
 `mkdocs.yml`. Mixed changes and unknown paths require full CPU verification.
 Push classification uses the entire event's before/after range; PR classification
 uses the event's base/head commits. Renames include both paths. Missing diff
@@ -341,6 +344,23 @@ A light green documentation-only CI run is **not release verification**: release
 acceptance still requires successful actual CPU endpoint and blocking Pyright
 jobs at the exact candidate SHA, from a full push or manual CI run on own `main`.
 These trigger changes apply only to future commits, not frozen candidate evidence.
+
+CI classification and workflow integration contracts live in `tests/ci/`;
+release candidate verification and installed-wheel acceptance tooling are tested
+in `tests/release/`; distribution contents, companion packaging and vendored
+header/license integrity live in `tests/packaging/`. These are included in
+`pytest tests`, not just in release-time checks. Run the complete infrastructure
+owners without rebuilding the native core:
+
+```bash
+uv run pytest tests/ci tests/release tests/packaging -q
+```
+
+The companion packaging fixture requires uv and Rust with cached build
+dependencies; it uses a fake compiler and is not production binary acceptance.
+Workflow checks cover essential integration contracts without a YAML dependency;
+release verification fixtures separately require every actual release job to
+succeed, rather than treating static workflow checks as run evidence.
 
 Native regression tests live in `tests/stride`, including the standalone C++
 sources in `tests/stride/native/cpp`. On Linux, `native/cpp/test_contracts.py` compiles them with a C++20
@@ -423,19 +443,20 @@ contract sources and binaries, separate from the JAX GPU integration tests.
 Root TensorMap integration tests remain separate from the packed-adapter fixtures.
 `jax/ad/test_support.py` owns the coefficient AD harness trace-reuse regression.
 `build_checks/` covers production `build.rs` object caching, optimization,
-jobserver concurrency and CUDA linkage; the standalone C++ test executable cache;
-and vendored FFI header/license and runtime-version integrity. Most build-script
-cases compile a small real Cargo harness but use synthetic native sources and a
+jobserver concurrency, CUDA linkage and the standalone C++ test executable cache.
+Distribution and vendor integrity checks live in `tests/packaging/`.
+Most build-script cases compile a small real Cargo harness but use synthetic native sources and a
 mock compiler/NVCC to inspect invalidation and scheduling. Selected cases actually
 compile/link small C++ and Cargo fixtures (including CUDA-linkage simulation with
 C++ stubs), not the production CUDA kernels. `test_cpp_cache.py` uses a mock
-compiler; `test_vendor.py` checks files and declarations without compilation.
-`test_cuda_package.py` builds a self-contained companion sdist and an out-of-tree
+compiler; `tests/packaging/test_vendor.py` checks files and declarations without compilation.
+`tests/packaging/test_cuda_package.py` builds a self-contained companion sdist and an out-of-tree
 wheel using a fake compiler; it checks installed package origins and canonical
 MIT `LICENSE` in standard `.dist-info/licenses/` metadata.
 This packaging fixture is not a production binary or GPU acceptance result.
 `build_checks` avoids pytest's default exclusion of directories named `build`.
-All these directories are part of the normal `pytest tests/stride` collection.
+All Stride directories are part of the normal `pytest tests/stride` collection;
+`tests/packaging/` is included by `pytest tests` or its explicit path.
 
 Shared test helpers live under `tests/stride/support/`; test modules do not
 import one another. Directory ownership follows the contract being asserted, not
@@ -481,7 +502,7 @@ Select the layer and environment that matches the contract:
 | Isolated JAX workers | Required devices (two for partitioning) and subprocess-accessible environment | `uv run pytest tests/stride/jax/partitioning -q` |
 | Coefficient AD harness trace reuse | Built CPU extension and JAX test environment; no GPU required (skips without native extension) | `uv run pytest tests/stride/jax/ad/test_support.py -q` |
 | Build-script cache, jobserver and CUDA-linkage checks | Linux, Cargo with cached offline `jobserver` dependency (`cargo fetch` first if needed); C++20 compiler and `ar` for real compile/link cases; no CUDA toolkit/GPU required | `uv run pytest tests/stride/build_checks/test_native_build.py -q` |
-| Standalone C++ test cache and vendor integrity | Linux for cache simulations (Python mock compiler); repository vendored files for integrity checks; no native extension/toolkit/GPU required | `uv run pytest tests/stride/build_checks/test_cpp_cache.py tests/stride/build_checks/test_vendor.py -q` |
+| Standalone C++ test cache and vendor integrity | Linux for cache simulations (Python mock compiler); repository vendored files for integrity checks; no native extension/toolkit/GPU required | `uv run pytest tests/stride/build_checks/test_cpp_cache.py tests/packaging/test_vendor.py -q` |
 
 GPU tests use explicit device fixtures and may skip when unavailable; successful
 CPU-only collection or a skipped run is not evidence of GPU execution. Some host

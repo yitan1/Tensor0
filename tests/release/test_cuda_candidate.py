@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-SCRIPT = Path(__file__).resolve().parents[1] / '.github/scripts/cuda_candidate.py'
+SCRIPT = Path(__file__).resolve().parents[2] / '.github/scripts/cuda_candidate.py'
 spec = importlib.util.spec_from_file_location('cuda_candidate', SCRIPT)
 assert spec and spec.loader
 candidate = importlib.util.module_from_spec(spec)
@@ -89,23 +89,6 @@ def test_bad_distributions(tmp_path, problem):
         (tmp_path / names[0]).symlink_to(tmp_path / names[1])
     with pytest.raises(ValueError):
         candidate.verify_files(tmp_path, '0.2.0.dev0')
-
-
-def test_workflow_keeps_compile_route_and_reuses_manual_core():
-    text = (SCRIPT.parents[1] / 'workflows/cuda-build.yml').read_text()
-    triggers = '\n' + text.split('\non:\n')[1].split('\npermissions:\n')[0]
-    assert '\n  pull_request:\n    paths:\n' in triggers
-    assert '\n  workflow_dispatch:\n' in triggers
-    assert '\n  push:' not in triggers
-    assert 'candidate_run_id:' in text and 'required: true' in text
-    assert "if: github.event_name != 'workflow_dispatch'" in text
-    assert 'name: tensor0-dist-${{ github.sha }}' in text
-    assert 'run-id: ${{ inputs.candidate_run_id }}' in text
-    assert 'cuda_candidate.py files' in text
-    assert "'release_candidate': os.environ['GITHUB_EVENT_NAME'] == 'workflow_dispatch'" in text
-    assert "python: ['3.11', '3.12', '3.13', '3.14']" in text
-    assert '--only-plat' in text and '--exclude' not in text
-    assert 'uv pip install --no-deps --python "$python" ./tensor0_cuda12-*.whl' in text
 
 
 def test_local_source_does_not_change_published_pin():

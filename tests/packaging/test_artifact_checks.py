@@ -8,7 +8,7 @@ import zipfile
 import pytest
 
 
-SCRIPT = Path(__file__).resolve().parents[1] / ".github/scripts/check_artifacts.py"
+SCRIPT = Path(__file__).resolve().parents[2] / ".github/scripts/check_artifacts.py"
 
 
 @pytest.mark.parametrize("cuda,platform,metadata_platform,companion,bundled,accepted", [

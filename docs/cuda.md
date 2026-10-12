@@ -243,9 +243,9 @@ unverified, not silently classified as passing.
 Compilation platform determines the CPU or CUDA target, including through custom
 partitioning. The unified core always contains CPU execution and the dynamic
 loader. Installing matching `tensor0-cuda12` enables CUDA without rebuilding or
-replacing the core. The planned `tensor0[cuda12]` extra pins
-`tensor0-cuda12==0.2.0` and `jax[cuda12]==0.10.1`; both distributions target
-stable version `0.2.0`, not yet published. Published CPU 0.1.0 does not support this discovery contract.
+replacing the core. The published `tensor0[cuda12]` extra pins
+`tensor0-cuda12==0.2.0` and `jax[cuda12]==0.10.1`; both distributions are available
+on PyPI as version `0.2.0`. Published CPU 0.1.0 does not support this discovery contract.
 
 The addon contains only the C-ABI `tensor0_cuda12/_stride_cuda.so` backend and
 the root MIT license, with external `nvidia-cuda-runtime-cu12>=12.9.79,<13`. Distribution
@@ -256,10 +256,10 @@ runtime, and resident cudart conflicts fail explicitly when registration is
 requested. CPU operations do not need CUDA. Driver/GPU and GPU JAX are needed
 only for execution. JAX/JAXLIB must match vendored headers 0.10.1.
 
-This split is experimental and unpublished. A previous combined Linux x86_64
-CPython 3.11 prototype passed CPU regression and bounded A100 acceptance with
-runtime 12.9.79; those results do not validate the new two-wheel artifacts.
-Splitting does not establish manylinux/PyPI readiness or universal compatibility.
+This published split remains experimental. The original 0.2.0 core/addon pair
+passed CPU regression and bounded A100 (`sm_80`) acceptance with runtime
+12.9.79 before publication; all published distribution hashes match the accepted
+artifacts. This does not establish compatibility beyond the documented matrix.
 
 CUDA lowering calls native semantic preparation before emitting compact i64
 metadata. All five operations use the validated semantic result as the host

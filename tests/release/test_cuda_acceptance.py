@@ -12,7 +12,7 @@ from types import SimpleNamespace
 import pytest
 
 spec = importlib.util.spec_from_file_location(
-    "cuda_acceptance", Path(__file__).resolve().parents[1] / ".github/scripts/cuda_acceptance.py")
+    "cuda_acceptance", Path(__file__).resolve().parents[2] / ".github/scripts/cuda_acceptance.py")
 assert spec is not None and spec.loader is not None
 acceptance = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(acceptance)

@@ -3,32 +3,20 @@
 ## Install from PyPI
 
 The current PyPI release is
-[Tensor0 0.1.0](https://pypi.org/project/tensor0/0.1.0/). The upcoming 0.2.0
-release is not yet published.
+[Tensor0 0.2.0](https://pypi.org/project/tensor0/0.2.0/), published on 2026-10-12.
 
-### Published 0.1.0 platform availability
+### Published 0.2.0 platform availability
 
 | Platform | Prebuilt core wheels | Status |
 | --- | --- | --- |
-| Linux x86_64, glibc >=2.28 | CPython 3.11–3.14 | Available and tested |
-| macOS ARM64 | Not yet published | Experimental source build tested on M5 / macOS 27 / CPython 3.11 |
+| Linux x86_64, glibc >=2.28 | CPython 3.11–3.14, manylinux_2_28 | Available and tested |
+| macOS 15+ ARM64 | CPython 3.11–3.14, macosx_15_0_arm64 | Available and tested on hosted macOS 15 |
 | Windows | Not provided | Outside the current support scope |
 
-The macOS result covers the upcoming 0.2.0 source, not the published 0.1.0
-release. macOS 15 hosted-runner validation remains pending; a wheel's deployment
-target alone does not establish runtime compatibility with that OS version.
-
-### Upcoming 0.2.0 target matrix
-
-| Platform | Core wheel target | Validation status |
-| --- | --- | --- |
-| Linux x86_64, glibc >=2.28 | CPython 3.11–3.14, manylinux_2_28 | Fresh final-version candidates and acceptance required |
-| macOS 15+ ARM64 | CPython 3.11–3.14, macosx_15_0_arm64 | All four macOS 15 installed-wheel CPU suites pending |
-
-These are release targets, not published or fully verified artifacts. macOS is
-CPU-only: do not install the Linux-only `cuda12` extra there. The unified release
-producer builds all eight core wheels from one shared sdist and publishes each
-original artifact once after approval; see [Releasing](releasing.md).
+All eight core wheels were built from one shared sdist and passed installed-wheel
+acceptance. macOS is CPU-only: do not install the Linux-only `cuda12` extra there.
+The macOS wheels are ARM64, not Intel or universal2, and require macOS 15 or newer.
+See [Releasing](releasing.md) for the artifact acceptance policy.
 
 Other platforms have not been validated. Lack of a wheel is not proof that
 source builds are impossible; neither is it a guarantee that they work.
@@ -38,7 +26,7 @@ Use a virtual environment:
 ```bash
 python3.11 -m venv .venv
 source .venv/bin/activate
-python -m pip install tensor0==0.1.0
+python -m pip install tensor0==0.2.0
 python -m pip check
 ```
 
@@ -62,7 +50,7 @@ supported wheel:
   `/usr/bin/c++`; set `CXX` to select another compiler. `CXXFLAGS` is not used.
 - A supported Python interpreter and access to the pinned Python dependencies
   and Cargo crates, or suitable local caches. The source-build procedure below
-  has been validated on Linux x86_64.
+  has been validated on Linux x86_64 and macOS ARM64.
 
 Native C++ template compilation is memory-intensive: heavy units can each use
 several GiB. Cargo's default parallelism follows CPU count, not free memory or
@@ -123,10 +111,14 @@ This is a smoke check, not comprehensive numerical acceptance. See the
 
 ## Experimental CUDA
 
-The published 0.1.0 core wheels do not provide native CUDA execution.
-The upcoming 0.2.0 uses a separate `tensor0-cuda12` companion with a matching
-core version. Its planned installation entry point is `tensor0[cuda12]`;
-these companion packages are not yet published.
+Version 0.2.0 provides a separate
+[`tensor0-cuda12` companion](https://pypi.org/project/tensor0-cuda12/0.2.0/)
+with an exact matching core version. Install the published pair using:
+
+```bash
+python -m pip install "tensor0[cuda12]==0.2.0"
+python -m pip check
+```
 
 CUDA support currently targets Linux x86_64 and remains experimental.
 Installing GPU-enabled JAX alone does not supply the Tensor0 companion.
