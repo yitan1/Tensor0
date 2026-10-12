@@ -11,17 +11,6 @@ on:
       - 'uv.lock'
       - '.github/scripts/**'
       - '.github/workflows/cuda-build.yml'
-  push:
-    branches: [main]
-    paths:
-      - 'src/**'
-      - 'crates/**'
-      - 'tests/**'
-      - 'Cargo.*'
-      - 'pyproject.toml'
-      - 'uv.lock'
-      - '.github/scripts/**'
-      - '.github/workflows/cuda-build.yml'
   workflow_dispatch:
     inputs:
       candidate_run_id:

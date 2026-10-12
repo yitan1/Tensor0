@@ -96,13 +96,13 @@ def verify_provenance(repository, cpu_id, cuda_id, tag):
     required = {f'Linux x86_64 / Python {v}' for v in ('3.11', '3.14')}
     required.add('Public-package Pyright (Python 3.11)')
     workflow = api(f'repos/{repository}/actions/workflows/ci.yml')
-    checks = api(f'repos/{repository}/actions/workflows/ci.yml/runs?branch=main&event=push&status=success&head_sha={sha}&per_page=100')
+    checks = api(f'repos/{repository}/actions/workflows/ci.yml/runs?branch=main&status=success&head_sha={sha}&per_page=100')
     for check in checks['workflow_runs']:
         if (check['head_sha'] == sha and check['repository']['full_name'] == repository
                 and check['head_repository']['full_name'] == repository
                 and check['workflow_id'] == workflow['id']
                 and check['path'] == workflow['path'] == '.github/workflows/ci.yml'
-                and check['event'] == 'push' and check['head_branch'] == 'main'
+                and check['event'] in ('push', 'workflow_dispatch') and check['head_branch'] == 'main'
                 and check['status'] == 'completed' and check['conclusion'] == 'success'):
             try:
                 require_jobs(jobs(repository, check['id']), required)

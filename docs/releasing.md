@@ -65,12 +65,22 @@ workspace and standalone C++ contracts run once in required same-commit CI.
 No CUDA extra is installed on macOS. Serial compilation can still exceed hosted
 runner memory; configuration alone is not a successful run.
 
-Daily Linux CI runs full Python tests on 3.11 and 3.14, retaining all build-check
-files on both interpreters: these include Python-driven packaging and metadata
-checks, not just platform-independent compiler checks. Rust/C++ contracts run
+For code/test/build changes or manual CI dispatch, daily Linux CI runs full
+Python tests on 3.11 and 3.14, retaining all build-check files on both interpreters:
+these include Python-driven packaging and metadata checks, not just
+platform-independent compiler checks. Rust/C++ contracts run
 only on the baseline interpreter; the blocking Pyright job is unchanged.
 macOS remains a manual/release gate, not an additional daily build matrix.
-No numerical cases or tolerances are removed or relaxed.
+No numerical cases or tolerances are removed or relaxed. Documentation-only
+pushes and PRs use a light CI classification/result gate and strict documentation
+check without native builds or Pyright; their skipped CPU jobs do not count as
+release evidence. For a documentation-only candidate SHA, manually dispatch
+**CI** on `main` to obtain full same-commit CPU/typing verification. The publisher
+accepts a successful full push or manual CI run from the same repository on
+`main`, and still requires both original CPU endpoint jobs and blocking Pyright
+to be individually successful. A newer light green run cannot hide another
+eligible full run at the same SHA. See
+[Daily CI triggers and required checks](development.md#daily-ci-triggers-and-required-checks).
 
 The intermediate-ABI contracts select these existing pytest functions (all
 parameters are retained):
@@ -156,7 +166,7 @@ python3.11 -m venv /tmp/tensor0-candidate
   do not replace wheel tests. A CPU pass does not establish CUDA support; do not
   generalize beyond the documented [CUDA matrix](cuda.md).
 
-The separate `cuda-build.yml` route retains automatic push/PR compile validation,
+The separate `cuda-build.yml` route retains path-filtered PR compile validation,
 which is **not** a final release candidate. For a final candidate, manually run
 it on `main` with the successful CPU `candidate_run_id` from `artifacts.yml` at
 exactly the same commit. The workflow verifies the producer's repository,
@@ -315,10 +325,11 @@ runner or remote driver modification is added.
 ### Dispatch and exact-artifact handoff
 
 - [ ] Select successful manual own-repository `main` runs: CPU `artifacts.yml`
-  and same-commit CUDA `cuda-build.yml`. Record both run IDs. Automatic push/PR
+  and same-commit CUDA `cuda-build.yml`. Record both run IDs. Path-filtered PR
   CUDA artifacts are not release candidates.
-- [ ] Confirm same-commit successful push CPU CI for Python 3.11 and 3.14 and the
-  blocking `Public-package Pyright (Python 3.11)` job. Advisory typing is not
+- [ ] Confirm same-commit successful full push or manual CPU CI on own `main`
+  for Python 3.11 and 3.14 and the blocking
+  `Public-package Pyright (Python 3.11)` job. Advisory typing is not
   a substitute. The candidate commit must be an ancestor of `main`.
 - [ ] Verify the immutable stable tag and all three source versions agree.
   Never move an existing tag to another candidate.

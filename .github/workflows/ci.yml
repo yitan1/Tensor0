@@ -19,8 +19,24 @@ env:
   JAX_PLATFORMS: cpu
 
 jobs:
+  changes:
+    name: Classify daily CI changes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      run_cpu: ${{ steps.scope.outputs.run_cpu }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Determine CPU verification scope
+        id: scope
+        run: python3 .github/scripts/ci_changes.py
+
   test:
     name: Linux x86_64 / Python ${{ matrix.python }}
+    needs: changes
+    if: needs.changes.outputs.run_cpu == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     strategy:
@@ -56,6 +72,8 @@ jobs:
 
   typecheck:
     name: Public-package Pyright (Python 3.11)
+    needs: changes
+    if: needs.changes.outputs.run_cpu == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -98,4 +116,31 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           if [ "$REPORT_OUTCOME" != success ]; then
             echo '::warning::Advisory full Pyright report did not pass; inspect the diagnostic artifact. The blocking package typing gate has separate status.'
+          fi
+
+  result:
+    name: CI result
+    if: always()
+    needs: [changes, test, typecheck]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require the selected verification jobs
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          RUN_CPU: ${{ needs.changes.outputs.run_cpu }}
+          TEST_RESULT: ${{ needs.test.result }}
+          TYPECHECK_RESULT: ${{ needs.typecheck.result }}
+        run: |
+          if [ "$CHANGES_RESULT" != success ]; then
+            echo 'Change classification failed or was cancelled.'
+            exit 1
+          fi
+          if [ "$RUN_CPU" = false ] && [ "$TEST_RESULT" = skipped ] && [ "$TYPECHECK_RESULT" = skipped ]; then
+            echo 'Documentation-only: CPU tests and Pyright were not run.' >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$RUN_CPU" = true ] && [ "$TEST_RESULT" = success ] && [ "$TYPECHECK_RESULT" = success ]; then
+            echo 'Both CPU endpoints and blocking public Pyright passed.' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'Required CPU verification failed, was cancelled, or unexpectedly skipped.'
+            exit 1
           fi

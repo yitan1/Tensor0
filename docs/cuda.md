@@ -424,7 +424,7 @@ Rebuilding or repackaging requires new exact-byte acceptance; version equality
 is not provenance. Complete the [licensing review](releasing.md#cuda-distribution-licensing)
 before any proposed public release. macOS core wheels accompany the candidate
 but are not CUDA inputs; never install the addon on macOS or select a core using
-an ambiguous `cp311-cp311-*.whl` glob. Automatic push/PR compile artifacts remain
+an ambiguous `cp311-cp311-*.whl` glob. Path-filtered PR compile artifacts remain
 non-release validation and do not contain the full core matrix.
 
 1. Check GPU/CPU/memory occupancy; do not disturb other workloads. Use a new

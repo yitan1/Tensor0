@@ -298,7 +298,9 @@ def provenance(monkeypatch):
         if '/actions/runs/' in path:
             return runs[path.rsplit('/', 1)[1]]
         if 'ci.yml/runs?' in path:
-            return {'workflow_runs': [runs['3']]}
+            assert 'event=' not in path  # Both push and manual full CI must be discoverable.
+            assert f'head_sha={SHA}' in path and 'branch=main' in path
+            return {'workflow_runs': [run for key, run in runs.items() if key not in ('1', '2')]}
         filename = path.rsplit('/', 1)[1]
         return {'id': {'artifacts.yml': 10, 'cuda-build.yml': 11, 'ci.yml': 12}[filename],
                 'path': '.github/workflows/' + filename}
@@ -408,3 +410,49 @@ def test_mac_metadata_rejected(candidate, problem):
             archive.writestr(name, data)
     with pytest.raises(ValueError):
         release.metadata(path, VERSION)
+
+
+def test_manual_full_ci_is_release_evidence(provenance):
+    runs, _ = provenance
+    runs['3']['event'] = 'workflow_dispatch'
+    assert release.verify_provenance(REPO, '1', '2', 'v0.2.0') == SHA
+
+
+@pytest.mark.parametrize('event', ['push', 'workflow_dispatch'])
+def test_light_ci_result_is_not_release_evidence(provenance, event):
+    runs, jobs = provenance
+    runs['3']['event'] = event
+    for job in jobs['3']:
+        job['conclusion'] = 'skipped'
+    jobs['3'].append(dict(name='CI result', conclusion='success'))
+    with pytest.raises(ValueError, match='CPU matrix and blocking public Pyright'):
+        release.verify_provenance(REPO, '1', '2', 'v0.2.0')
+
+
+@pytest.mark.parametrize('field,value', [
+    ('event', 'pull_request'), ('event', 'schedule'), ('head_branch', 'feature'),
+    ('head_sha', 'b' * 40), ('workflow_id', 99), ('path', '.github/workflows/other.yml'),
+    ('repository', {'full_name': 'foreign/repo'}),
+    ('head_repository', {'full_name': 'fork/repo'}),
+    ('status', 'in_progress'), ('conclusion', 'failure'), ('conclusion', 'cancelled'),
+])
+def test_manual_ci_identity_and_result_still_required(provenance, field, value):
+    runs, _ = provenance
+    runs['3']['event'] = 'workflow_dispatch'
+    runs['3'][field] = value
+    with pytest.raises(ValueError, match='CPU matrix and blocking public Pyright'):
+        release.verify_provenance(REPO, '1', '2', 'v0.2.0')
+
+
+@pytest.mark.parametrize('light_first', [True, False])
+def test_light_ci_does_not_hide_same_commit_full_manual_ci(provenance, light_first):
+    runs, jobs = provenance
+    runs['4'] = copy.deepcopy(runs['3'])
+    runs['4'].update(id=4, event='workflow_dispatch')
+    jobs['4'] = copy.deepcopy(jobs['3'])
+    for job in jobs['3']:
+        job['conclusion'] = 'skipped'
+    jobs['3'].append(dict(name='CI result', conclusion='success'))
+    if not light_first:
+        runs['3'] = runs.pop('3')
+    assert release.verify_provenance(REPO, '1', '2', 'v0.2.0') == SHA

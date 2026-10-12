@@ -245,7 +245,7 @@ same-type Copy, Update, Accumulation, Dot and Reduction, not dtype
 conversion or complete reverse-mode differentiation. See [CUDA support](cuda.md)
 for the supported coefficient types and limited AD paths.
 
-The artifact-only `cuda-build.yml` workflow keeps automatic push/PR compile
+The artifact-only `cuda-build.yml` workflow keeps path-filtered PR compile
 checks separate from final candidates. Automatic runs build a standalone CPython
 3.11 core for validation and are marked `release_candidate: false`.
 A manual run on `main` requires `candidate_run_id`: a successful manual
@@ -301,15 +301,46 @@ uv run python examples/contractions.py
 uv run pyright src examples benchmarks
 ```
 
-Linux CPU CI is configured to run the build, tests and examples on CPython
-3.11–3.14 with a freshly built extension. Each matrix job must pass before a
-candidate is accepted; configuration alone is not verification. The source,
-examples and benchmarks type check runs on Python 3.11 and is blocking. The default
+Daily Linux CPU CI runs the build, full tests and examples on CPython **3.11
+and 3.14** with a freshly built extension when code, tests, build configuration
+or any unrecognized path changes. Rust workspace and standalone C++ contracts
+run once on 3.11. Release wheel validation separately covers 3.11–3.14.
+Each selected matrix job must pass; configuration alone is not verification.
+The source, examples and benchmarks type check runs on Python 3.11 and is blocking. The default
 `uv run pyright` also includes tests; it currently reports test typing debt,
 including dynamic test doubles and intentionally invalid inputs. CI retains
 this full check as an explicitly advisory report with its diagnostics uploaded,
 not as evidence that the complete typing scope passes. Do not widen production
 API types or disable diagnostic rules to accommodate negative tests.
+
+### Daily CI triggers and required checks
+
+The CI workflow starts for every PR and push to `main`, without workflow-level
+path exclusions that could leave required checks pending. Its lightweight
+classifier skips the native CPU matrix and Pyright only when every changed path
+is under `docs/` or is `README.md`, `CHANGELOG.md`, `CONTRIBUTING.md`, or
+`mkdocs.yml`. Mixed changes and unknown paths require full CPU verification.
+Push classification uses the entire event's before/after range; PR classification
+uses the event's base/head commits. Renames include both paths. Missing diff
+history or an empty diff conservatively requires CPU verification.
+
+A manual **CI** dispatch always runs both CPU endpoints and blocking Pyright,
+including for a documentation-only commit. The stable **CI result** job runs
+after classification and the selected jobs: it accepts a legitimate docs-only
+skip or requires all selected CPU/typing jobs to succeed. Classification errors,
+cancellations and unexpected skips fail the gate. Configure branch protection to
+require **CI result** and **Strict documentation check**; this is a maintainer
+setting, not something the workflows change automatically. Existing individual
+CPU/typing check names are retained; their docs-only skips do not mean tests ran.
+
+Documentation remains a separate strict, no-native-build check for all PRs and
+`main` pushes. CUDA compilation remains a conservatively path-filtered PR check;
+there is no automatic CUDA build on `main` pushes. Release artifacts, final CUDA
+candidates, publication and standalone macOS validation remain manual-only.
+A light green documentation-only CI run is **not release verification**: release
+acceptance still requires successful actual CPU endpoint and blocking Pyright
+jobs at the exact candidate SHA, from a full push or manual CI run on own `main`.
+These trigger changes apply only to future commits, not frozen candidate evidence.
 
 Native regression tests live in `tests/stride`, including the standalone C++
 sources in `tests/stride/native/cpp`. On Linux, `native/cpp/test_contracts.py` compiles them with a C++20

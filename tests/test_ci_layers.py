@@ -8,6 +8,15 @@ ROOT = Path(__file__).resolve().parents[1]
 CPP = 'tests/stride/native/cpp/test_contracts.py'
 
 
+def test_cuda_compilation_runs_for_filtered_prs_or_manual_candidates_only():
+    workflow = (ROOT / '.github/workflows/cuda-build.yml').read_text()
+    triggers = '\n' + workflow.split('\non:\n')[1].split('\npermissions:\n')[0]
+    assert '\n  push:' not in triggers
+    assert '\n  pull_request:\n    paths:\n' in triggers
+    assert '\n  workflow_dispatch:\n' in triggers
+    assert 'candidate_run_id:' in triggers
+
+
 def test_daily_linux_endpoints_and_single_platform_contracts():
     workflow = (ROOT / '.github/workflows/ci.yml').read_text()
     job = workflow.split('  test:\n')[1].split('  typecheck:\n')[0]
