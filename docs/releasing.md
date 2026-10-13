@@ -19,6 +19,15 @@ The following checklist is for **future releases**, not a historical audit.
 Each release needs its own acceptance evidence and explicit maintainer approval.
 Do not tag or publish merely to exercise packaging.
 
+## Next development target
+
+**0.3.0 is unreleased.** The checklist below targets exact JAX/JAXLIB **0.11.2**,
+Python **>=3.12**, ordinary CPython **3.12–3.15**, daily Linux endpoints
+**3.12/3.15**, and all eight Linux/macOS release wheels. It describes required
+future gates, not completed runs. Free-threaded Python is unsupported. Existing
+0.2.0 Linux/macOS and A100 evidence does not validate the upgraded runtime;
+CUDA keeps its experimental scope and requires fresh exact-pair evidence.
+
 ## Candidate preparation
 
 - [ ] Select and record a clean source commit, intended distribution version,
@@ -29,7 +38,7 @@ Do not tag or publish merely to exercise packaging.
   [CHANGELOG.md](https://github.com/yitan1/Tensor0/blob/main/CHANGELOG.md).
   Keep the new release entry marked as a candidate until publication is confirmed.
 - [ ] Verify dependency pins and vendored XLA FFI headers agree with JAX/JAXLIB
-  0.10.1, and check licenses/notices and package metadata.
+  0.11.2, and check licenses/notices and package metadata.
 - [ ] Run the [development verification](development.md#verification) and strict
   [documentation build](development.md#documentation-site). Record exact
   commands, toolchain/runtime versions, outcomes and skips. Do not claim a
@@ -38,17 +47,18 @@ Do not tag or publish merely to exercise packaging.
 ## Build and inspect distributions
 
 The [artifact workflow](https://github.com/yitan1/Tensor0/blob/main/.github/workflows/artifacts.yml)
-is an artifact-only validation route, not PyPI publishing. The current wheel
-matrix, released in 0.2.0, is CPython **3.11–3.14** on both Linux x86_64 CPU
+is an artifact-only validation route, not PyPI publishing. The **0.3.0 (unreleased)** target wheel
+matrix is ordinary CPython **3.12–3.15** on both Linux x86_64 CPU
 (manylinux_2_28, glibc >=2.28) and macOS **15+ ARM64 CPU**
-(`macosx_15_0_arm64`, not universal2). Hosted macOS 15 acceptance passed for 0.2.0.
+(`macosx_15_0_arm64`, not universal2); free-threaded builds are excluded.
+Hosted macOS 15 acceptance passed for **0.2.0 only**, not this new runtime.
 Verify this matrix anew for each release. Wheels must be built from the extracted
 sdist, inspected and tested in isolated installed environments. Consult the
 actual workflow configuration, run logs and artifacts: a target matrix is not
 an assertion that hosted jobs have passed. Smoke checks do not replace the full
 CPU suite or validate CUDA, other architectures or untested Python wheel ABIs.
 
-Candidate preparation is manual on `main`. The workflow assembles one sdist,
+Candidate preparation is manual on `main`. The target workflow assembles one sdist,
 eight interpreter/platform-specific wheels and `SHA256SUMS` into
 `tensor0-dist-<sha>`, where `<sha>` is the full candidate commit hash. It does
 not create tags or publish.
@@ -61,20 +71,20 @@ FFI headers, Mach-O architecture, wheel metadata, installed origin, wheel and
 native payload hashes, native CPU availability and pinned runtime are checked.
 All eight ABIs run public smoke/examples against the original non-editable
 wheel, with pinned native CPU FFI availability, installed origin, wheel hash and
-native payload equality checked. On each platform, Python 3.11 and 3.14 run the
+native payload equality checked. On each platform, Python 3.12 and 3.15 run the
 full installed-wheel Python suite (excluding only the standalone C++ contract
-file). Python 3.12 and 3.13 run bounded existing copy, update, reduction, dot and
+file). Python 3.13 and 3.14 run bounded existing copy, update, reduction, dot and
 accumulation JIT/AD contracts instead; their wheel jobs remain mandatory.
-macOS Rust core and standalone C++ contracts run once on 3.11. Linux Rust
+macOS Rust core and standalone C++ contracts run once on 3.12. Linux Rust
 workspace and standalone C++ contracts run once in required same-commit CI.
 No CUDA extra is installed on macOS. Serial compilation can still exceed hosted
 runner memory; configuration alone is not a successful run.
 
 For code/test/build changes or manual CI dispatch, daily Linux CI runs full
-Python tests on 3.11 and 3.14, retaining all build-check files on both interpreters:
+Python tests on 3.12 and 3.15, retaining all build-check files on both interpreters:
 these include Python-driven packaging and metadata checks, not just
 platform-independent compiler checks. Rust/C++ contracts run
-only on the baseline interpreter; the blocking Pyright job is unchanged.
+only on the baseline interpreter; blocking Pyright uses Python 3.12.
 macOS remains a manual/release gate, not an additional daily build matrix.
 No numerical cases or tolerances are removed or relaxed. Documentation-only
 pushes and PRs use a light CI classification/result gate and strict documentation
@@ -87,7 +97,7 @@ to be individually successful. A newer light green run cannot hide another
 eligible full run at the same SHA. See
 [Daily CI triggers and required checks](development.md#daily-ci-triggers-and-required-checks).
 
-The intermediate-ABI contracts select these existing pytest functions (all
+The target intermediate-ABI contracts (3.13/3.14) select these existing pytest functions (all
 parameters are retained):
 
 - `tests/stride/jax/ad/test_copy.py::test_broadcast_map_transpose_accumulates_and_supports_nested_ad`
@@ -111,7 +121,9 @@ tags, auditwheel checks binary compatibility, and isolated installation plus
 `uv pip check` verifies dependency consistency. License-file presence is not a
 legal compliance review; metadata still needs maintainer review before release.
 
-In a clean candidate checkout with the existing build tools available:
+Use maturin **1.15.0** for validation (source minimum **>=1.15.0,<2**),
+PyO3/Rust `numpy` **0.29**, and freshly rebuilt binaries against the 0.11.2
+headers. In a clean candidate checkout with the existing build tools available:
 
 ```bash
 CARGO_BUILD_JOBS=1 maturin build --release --out dist
@@ -140,7 +152,7 @@ fresh non-editable virtual environments**, with pinned runtime dependencies.
 For example, replace the placeholder with one exact candidate filename:
 
 ```bash
-python3.11 -m venv /tmp/tensor0-candidate
+python3.12 -m venv /tmp/tensor0-candidate
 /tmp/tensor0-candidate/bin/python -m pip install /absolute/path/to/candidate.whl
 /tmp/tensor0-candidate/bin/python -m pip check
 ```
@@ -159,8 +171,8 @@ python3.11 -m venv /tmp/tensor0-candidate
   tooling provisioned separately. Verify import origins again, including in
   subprocess tests. Retain the complete checkout for source-dependent tests;
   those checks supplement, rather than replace, installed numerical acceptance.
-- [ ] Verify every candidate target interpreter, CPython **3.11, 3.12, 3.13 and
-  3.14**, with recorded build and installed CPU results. Until the matrix passes,
+- [ ] Verify every candidate target interpreter, CPython **3.12, 3.13, 3.14 and
+  3.15**, with recorded build and installed CPU results. Until the matrix passes,
   describe it as a target, not verified coverage. Package metadata or a pass on
   one interpreter is not evidence for another.
 - [ ] If an experimental CUDA artifact is proposed, require
@@ -189,9 +201,9 @@ binary patching or blind retagging. Configured repair is not actual compliance
 evidence. The resulting `tensor0-cuda-build-<sha>` contains eight unchanged core
 wheels, core sdist, addon wheel, addon sdist, `build-info.json` and `SHA256SUMS`.
 The manifest covers all eleven distributions. Provenance binds the CPU producer
-run ID/URL, commit, exact **Linux** CPython 3.11 pair hashes and both sdist hashes.
+run ID/URL, commit, exact **Linux** CPython 3.12 pair hashes and both sdist hashes.
 
-Require successful CPython 3.11–3.14 installed checks with each **Linux** CPU wheel and the
+Require successful CPython 3.12–3.15 installed checks with each **Linux** CPU wheel and the
 **same** addon: CPU smoke before adding the addon with `--no-deps`, actionable
 missing-runtime failure, then runtime-only registration/statistics and unchanged
 core native hash. No GPU kernels execute and no packages publish in this route.
@@ -279,7 +291,7 @@ Use the existing release for the intended immutable stable tag, preferably still
 A published release for the same tag is also allowed; changing its publication
 status does not waive any gate. Do not supply an arbitrary external URL. Run the
 production [installed-wheel acceptance](cuda.md#manual-installed-wheel-acceptance)
-on the clean candidate commit with the exact build-info and **Linux** CPython 3.11 pair:
+on the clean candidate commit with the exact build-info and **Linux** CPython 3.12 pair:
 first CPU-only smoke before installing the addon, then GPU acceptance in the
 same environment using that CPU report. Never substitute an experimental report.
 
@@ -313,7 +325,7 @@ in the selected tag's release and verifies the pinned archive bytes. It reads
 members without extracting or executing them. Reports must have production
 `accepted=true`, correct CPU/CUDA modes, exact source/build-info, installed
 versions/origins and direct URL wheel hashes. Both core binary hashes must match
-the unique native `.so` bytes inside the verified **Linux** CPython 3.11 wheel, not merely
+the unique native `.so` bytes inside the verified **Linux** CPython 3.12 wheel, not merely
 each other. The addon binary hash must likewise match `tensor0_cuda12/_stride_cuda.so`
 in the verified addon wheel. Production preflight checks both installed payloads
 against their wheel bytes, and records `cuda_binary_sha256` for the addon. CPU
@@ -335,15 +347,15 @@ runner or remote driver modification is added.
   and same-commit CUDA `cuda-build.yml`. Record both run IDs. Path-filtered PR
   CUDA artifacts are not release candidates.
 - [ ] Confirm same-commit successful full push or manual CPU CI on own `main`
-  for Python 3.11 and 3.14 and the blocking
-  `Public-package Pyright (Python 3.11)` job. Advisory typing is not
+  for Python 3.12 and 3.15 and the blocking
+  `Public-package Pyright (Python 3.12)` job. Advisory typing is not
   a substitute. The candidate commit must be an ancestor of `main`.
 - [ ] Verify the immutable stable tag and all three source versions agree.
   Never move an existing tag to another candidate.
 - [ ] Require all eight CPU producer wheel jobs and assembly to succeed. Each
   ABI must pass exact installed-wheel smoke/examples and native CPU contracts:
-  full Python suites on 3.11/3.14, bounded major-operation JIT/AD tests on
-  3.12/3.13. Rust/C++ contracts run once per platform as described above.
+  full Python suites on 3.12/3.15, bounded major-operation JIT/AD tests on
+  3.13/3.14. Rust/C++ contracts run once per platform as described above.
   Skipped or missing wheel jobs are rejected by publication verification.
 - [ ] Check CUDA build and `verify-candidate` jobs and all four
   `Exact CPU candidate + same addon / Python 3.X (no GPU)` jobs succeed.

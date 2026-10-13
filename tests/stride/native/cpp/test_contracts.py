@@ -29,7 +29,7 @@ def native_build(pytestconfig):
         pytest.skip("a C++20 compiler is required")
     root = REPO_ROOT
     native = root / "crates/tensor0-py/native"
-    vendor = root / "crates/tensor0-py/vendor/jaxlib-0.10.1/include"
+    vendor = root / "crates/tensor0-py/vendor/jaxlib-0.11.2/include"
     output = pytestconfig.cache.mkdir("stride-cpp")
     identity = {
         "compiler": subprocess.run([compiler, "-v"], check=True, capture_output=True,

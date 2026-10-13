@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parent
 SHARED = ROOT if (ROOT / "build_helpers.rs").is_file() else ROOT.parent / "tensor0-py"
 # Stage canonical licenses before setuptools collects PEP 639 metadata.
 LICENSE_ROOT = ROOT if SHARED == ROOT else ROOT.parents[1]
-LICENSE_FILES = ("LICENSE", "vendor/jaxlib-0.10.1/LICENSE.txt")
+LICENSE_FILES = ("LICENSE", "vendor/jaxlib-0.11.2/LICENSE.txt")
 if LICENSE_ROOT != ROOT:
     for name in LICENSE_FILES:
         source = LICENSE_ROOT / name if name == "LICENSE" else SHARED / name

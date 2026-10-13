@@ -18,9 +18,10 @@ import tensor0._native as native
 assert Path(tensor0.__file__).resolve().is_relative_to(Path(sys.prefix))
 assert Path(native.__file__).resolve().is_relative_to(Path(sys.prefix))
 assert sys.flags.isolated and sys.prefix != sys.base_prefix
-assert jax.__version__ == importlib.metadata.version('jaxlib') == '0.10.1'
+assert sys.implementation.name == 'cpython' and sys.version_info.releaselevel == 'final', sys.version
+assert jax.__version__ == importlib.metadata.version('jaxlib') == '0.11.2'
 assert native._stride_ffi_available()
-assert native._stride_ffi_build_versions() == ('0.10.1', '0.10.1')
+assert native._stride_ffi_build_versions() == ('0.11.2', '0.11.2')
 assert jax.default_backend() == 'cpu'
 # Release jobs supply the original wheel; manual smoke callers need no argument.
 if len(sys.argv) > 1:
@@ -48,6 +49,14 @@ np.testing.assert_allclose(to_dense(tensor @ tensor), data @ data)
 np.testing.assert_allclose(to_dense(tensor.permute(((1,), (0,)))), data.T)
 composed = jax.jit(lambda a: a @ a)(tensor)
 np.testing.assert_allclose(to_dense(composed), data @ data)
+# vmap must reconstruct a TensorMap result with leading batch axes, not only arrays.
+batch = jnp.stack((data, 2 * data))
+batched = jax.jit(jax.vmap(lambda a: from_dense(target, a)))(batch)
+assert isinstance(batched, TensorMap) and batched.storage.data.shape == (2, 4)
+np.testing.assert_allclose(jax.vmap(to_dense)(batched), batch)
+batched_composed = jax.jit(jax.vmap(lambda a: a @ a))(batched)
+assert isinstance(batched_composed, TensorMap)
+np.testing.assert_allclose(jax.vmap(to_dense)(batched_composed), batch @ batch)
 
 def loss(array):
     candidate = from_dense(target, array)
@@ -64,6 +73,14 @@ symmetric = TensorMap(symmetric_space, symmetric_data)
 symmetric_composed = jax.jit(lambda a: a @ a)(symmetric)
 for sector, block in symmetric.blocks():
     np.testing.assert_allclose(symmetric_composed.block(sector), block @ block)
+symmetric_batch = jnp.stack((symmetric_data, 2 * symmetric_data))
+batched_symmetric = jax.jit(jax.vmap(lambda a: TensorMap(symmetric_space, a)))(symmetric_batch)
+assert isinstance(batched_symmetric, TensorMap) and batched_symmetric.storage.data.shape == (2, 5)
+np.testing.assert_allclose(batched_symmetric.storage.data, symmetric_batch)
+batched_symmetric_composed = jax.jit(jax.vmap(lambda a: a @ a))(batched_symmetric)
+assert isinstance(batched_symmetric_composed, TensorMap)
+np.testing.assert_allclose(batched_symmetric_composed.storage.data,
+                           jnp.stack((symmetric_composed.storage.data, 4 * symmetric_composed.storage.data)))
 
 def symmetric_loss(array):
     candidate = TensorMap(symmetric_space, array)
@@ -72,4 +89,4 @@ def symmetric_loss(array):
 symmetric_value, symmetric_gradient = jax.jit(jax.value_and_grad(symmetric_loss))(symmetric_data)
 np.testing.assert_allclose(symmetric_value, jnp.sum(symmetric_data ** 2))
 np.testing.assert_allclose(symmetric_gradient, 2 * symmetric_data)
-print('Installed wheel Trivial/U1 CPU ops, jit and grad OK:', tensor0.__file__)
+print('Installed wheel Trivial/U1 CPU ops, jit, direct TensorMap vmap and grad OK:', tensor0.__file__)

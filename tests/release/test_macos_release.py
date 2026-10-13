@@ -69,11 +69,11 @@ def test_installed_original_wheel(tmp_path, monkeypatch, problem):
     prefix.mkdir()
     native_path = prefix / '_native.darwin.so'
     native_path.write_bytes(b'changed' if problem == 'binary' else b'mach-o fixture')
-    wheel = tmp_path / 'tensor0-0.2.0-cp311-cp311-macosx_15_0_arm64.whl'
+    wheel = tmp_path / 'tensor0-0.2.0-cp312-cp312-macosx_15_0_arm64.whl'
     wheel.write_bytes(b'wheel fixture')
     native = SimpleNamespace(__file__=str(native_path), native_version=lambda: '0.2.0',
                              _stride_ffi_available=lambda: problem != 'ffi',
-                             _stride_ffi_build_versions=lambda: ('0.10.1', '0.10.1'),
+                             _stride_ffi_build_versions=lambda: ('0.11.2', '0.11.2'),
                              _stride_cuda_available=lambda: problem == 'cuda')
     tensor = SimpleNamespace(__file__=str(tmp_path / 'source.py' if problem == 'origin' else prefix / '__init__.py'),
                              __version__='0.1.0' if problem == 'version' else '0.2.0', _native=native)
@@ -81,9 +81,9 @@ def test_installed_original_wheel(tmp_path, monkeypatch, problem):
               'archive_info': {'hashes': {'sha256': '0' * 64 if problem == 'hash' else
                                          hashlib.sha256(wheel.read_bytes()).hexdigest()}}}
     monkeypatch.setitem(sys.modules, 'tensor0', tensor)
-    monkeypatch.setitem(sys.modules, 'jax', SimpleNamespace(__version__='0.10.1',
+    monkeypatch.setitem(sys.modules, 'jax', SimpleNamespace(__version__='0.11.2',
                         devices=lambda: [SimpleNamespace(platform='cpu')]))
-    monkeypatch.setitem(sys.modules, 'jaxlib', SimpleNamespace(__version__='0.10.1'))
+    monkeypatch.setitem(sys.modules, 'jaxlib', SimpleNamespace(__version__='0.11.2'))
     monkeypatch.setattr(macos.sys, 'prefix', str(prefix))
     monkeypatch.setattr(macos.sys, 'flags', SimpleNamespace(isolated=1))
     monkeypatch.setattr(macos.importlib.metadata, 'version', lambda name: '0.2.0')

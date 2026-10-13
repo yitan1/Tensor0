@@ -4,6 +4,45 @@ User-facing changes are recorded here. Before 1.0, patch releases preserve the
 documented public API; breaking changes require a minor release and migration
 notes. See [Support and compatibility](docs/support.md).
 
+## 0.3.0 — Unreleased
+
+This is the current source-development target, not a published release or a
+claim that the new platform/runtime matrix has passed acceptance.
+
+### Fixes
+
+- Fix [issue #1](https://github.com/yitan1/Tensor0/issues/1): homogeneous
+  `TensorMap`, `DiagonalTensorMap` and `SectorVector` pytree batches can be
+  stacked and returned from `jax.vmap`, with a validated trailing storage
+  dimension and leading `batch_shape`. Public constructors still take 1D
+  single-tensor storage; metadata describes one tensor. Use (nested) `vmap` to
+  consume every batch axis before single-tensor numerical operations, which
+  reject residual batches. Whole-batch scalar-loss `grad`/`value_and_grad`
+  applies Riesz weights per tensor. Tensor-valued Jacobian tree products remain
+  unsupported; see [homogeneous pytree batches](docs/usage.md#homogeneous-pytree-batches).
+
+### Runtime and migration
+
+- Move to Python **>=3.12** and exact JAX/JAXLIB **0.11.2**, with matching
+  vendored XLA FFI headers and native build/runtime guards. Upgrade PyO3 and
+  Rust `numpy` to **0.29**; source builds require maturin **>=1.15.0,<2**,
+  with **1.15.0** as the fixed validation tool.
+- Target ordinary CPython **3.12–3.15** wheels on Linux **x86_64**, **glibc
+  >=2.28**, and macOS **15+ ARM64 CPU**. Daily Linux CPU CI targets **3.12/3.15**;
+  every release wheel must pass its installed-artifact gates. Free-threaded
+  Python is not supported. Historical 0.2.0 macOS acceptance does not certify
+  the new runtime or wheel matrix.
+- **Python 3.11 migration:** create a Python 3.12+ environment for this source
+  checkout; retain pinned 0.2.0/JAX 0.10.1 when Python 3.11 is required. Rebuild
+  the native core against 0.11.2 headers rather than independently upgrading
+  JAX in an old environment. CUDA users must also rebuild the exact-version
+  companion from matching source, then repeat exact-byte CPU/GPU acceptance.
+  Do not mix 0.2.0 binaries with 0.3.0 source or either runtime pin.
+- CUDA 12 remains experimental with the existing bounded operation/dtype/AD
+  scope; this upgrade neither expands support nor establishes new GPU
+  acceptance. See [Installation](docs/installation.md),
+  [Development](docs/development.md) and [Releasing](docs/releasing.md).
+
 ## 0.2.0 — 2026-10-12
 
 Available on [PyPI](https://pypi.org/project/tensor0/0.2.0/), with the optional

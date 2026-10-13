@@ -48,9 +48,12 @@ supported wheel:
   (including `ar`).
 - A **C++20-capable compiler** and its standard library. The build defaults to
   `/usr/bin/c++`; set `CXX` to select another compiler. `CXXFLAGS` is not used.
+- maturin **>=1.15.0,<2** for the 0.3.0 core (validation uses **1.15.0**);
+  PyO3 and Rust `numpy` **0.29** are Cargo build dependencies.
 - A supported Python interpreter and access to the pinned Python dependencies
   and Cargo crates, or suitable local caches. The source-build procedure below
-  has been validated on Linux x86_64 and macOS ARM64.
+  targets Linux x86_64 and macOS 15+ ARM64. Historical 0.2.0
+  source/wheel validation does not validate the 0.3.0 runtime.
 
 Native C++ template compilation is memory-intensive: heavy units can each use
 several GiB. Cargo's default parallelism follows CPU count, not free memory or
@@ -64,17 +67,35 @@ cache behavior and jobserver details.
 
 ## Source install
 
-Use a virtual environment with the baseline interpreter:
+The checkout targets **0.3.0 (unreleased)**, ordinary CPython **3.12–3.15**
+and exact JAX/JAXLIB **0.11.2**. Free-threaded Python is unsupported. Linux
+x86_64 (glibc >=2.28) and macOS 15+ ARM64 CPU are wheel targets, not a claim
+that the new matrix has passed. Use a fresh environment with Python 3.12+:
 
 ```bash
 git clone https://github.com/yitan1/Tensor0.git
 cd Tensor0
 git rev-parse HEAD
-python3.11 -m venv .venv
+python3.12 -m venv .venv
 source .venv/bin/activate
 CARGO_BUILD_JOBS=1 python -m pip install .
 python -m pip check
 ```
+
+**Migration from 0.2.0:** Python 3.11 cannot run the new checkout. Keep
+`tensor0==0.2.0` with JAX/JAXLIB 0.10.1 if you need Python 3.11; otherwise
+create the new Python 3.12+ environment above. Runtime pins, vendored XLA FFI
+headers, Python source and the native extension must be upgraded together.
+Rebuild/reinstall the extension from the matching checkout; do not reuse an old
+`_native` binary or upgrade JAX independently. Editable contributors must
+re-sync dependencies and rerun `maturin develop` after the change. Check runtime
+versions and installed import origins with the smoke check below.
+
+For CUDA development, rebuild the companion from matching source with the
+same actual version as the core and 0.11.2 FFI headers; do not pair a 0.2.0
+addon with this checkout. Repeat exact-byte CPU/GPU acceptance before claiming
+the new pair works. The published command below continues to install **0.2.0**,
+not the unreleased development target.
 
 This is a non-editable source build. It requires access to Python build/runtime
 dependencies and Cargo crates, or suitable local caches. No CUDA toolkit is

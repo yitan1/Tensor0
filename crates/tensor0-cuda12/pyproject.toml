@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tensor0-cuda12"
-version = "0.2.0"
+version = "0.3.0"
 description = "Experimental optional CUDA 12 C-ABI backend for Tensor0"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 license = "MIT AND Apache-2.0"
-license-files = ["LICENSE", "vendor/jaxlib-0.10.1/LICENSE.txt"]
+license-files = ["LICENSE", "vendor/jaxlib-0.11.2/LICENSE.txt"]
 dependencies = [
-    "tensor0==0.2.0",
+    "tensor0==0.3.0",
     "nvidia-cuda-runtime-cu12>=12.9.79,<13",
 ]
 

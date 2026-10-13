@@ -7,7 +7,7 @@ import re
 import tomllib
 from pathlib import Path
 
-ABIS = ('cp311', 'cp312', 'cp313', 'cp314')
+ABIS = ('cp312', 'cp313', 'cp314', 'cp315')
 CORE_PLATFORMS = ('manylinux_2_28_x86_64', 'macosx_15_0_arm64')
 
 

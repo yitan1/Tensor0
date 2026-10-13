@@ -122,8 +122,9 @@ def preflight(wheel, cuda_wheel, build, report, cpu_report=None):
                 "installed addon binary differs from wheel payload")
     require(tensor0.__version__ == metadata.version("tensor0") == native.native_version(),
             "Python/native/distribution version mismatch")
-    require(native._stride_ffi_build_versions() == (jax.__version__, metadata.version("jaxlib")),
-            "native/JAX build versions mismatch")
+    require(jax.__version__ == metadata.version("jaxlib") == "0.11.2"
+            and native._stride_ffi_build_versions() == ("0.11.2", "0.11.2"),
+            "native/JAX build versions must be exactly 0.11.2")
     if cuda_wheel is None:
         require(bool(jax.devices("cpu")) and jax.default_backend() == "cpu", "CPU backend unavailable")
         require(not native._stride_cuda_available(), "CPU baseline must precede addon installation")

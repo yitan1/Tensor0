@@ -19,9 +19,9 @@ def host():
     assert 'host: aarch64-apple-darwin' in subprocess.check_output(['rustc', '-vV'], text=True)
     import jax
     import jaxlib
-    assert jax.__version__ == jaxlib.__version__ == '0.10.1'
+    assert jax.__version__ == jaxlib.__version__ == '0.11.2'
     installed = Path(jaxlib.__file__).parent / 'include/xla/ffi/api'
-    vendor = Path('crates/tensor0-py/vendor/jaxlib-0.10.1/include/xla/ffi/api')
+    vendor = Path('crates/tensor0-py/vendor/jaxlib-0.11.2/include/xla/ffi/api')
     for name in ('api.h', 'c_api.h', 'ffi.h'):
         assert (installed / name).read_bytes() == (vendor / name).read_bytes(), name
 
@@ -57,8 +57,8 @@ def installed(wheel):
     assert native.is_relative_to(prefix)
     assert native.read_bytes() == inspect(wheel), 'Installed native binary differs from wheel'
     assert tensor0._native._stride_ffi_available()
-    assert tensor0._native._stride_ffi_build_versions() == ('0.10.1', '0.10.1')
-    assert jax.__version__ == jaxlib.__version__ == '0.10.1'
+    assert tensor0._native._stride_ffi_build_versions() == ('0.11.2', '0.11.2')
+    assert jax.__version__ == jaxlib.__version__ == '0.11.2'
     assert not tensor0._native._stride_cuda_available()
     assert all(device.platform == 'cpu' for device in jax.devices())
     direct = json.loads(importlib.metadata.distribution('tensor0').read_text('direct_url.json'))

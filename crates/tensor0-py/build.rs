@@ -8,8 +8,8 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Instant;
 
-const VENDORED_JAX_VERSION: &str = "0.10.1";
-const VENDORED_JAXLIB_VERSION: &str = "0.10.1";
+const VENDORED_JAX_VERSION: &str = "0.11.2";
+const VENDORED_JAXLIB_VERSION: &str = "0.11.2";
 const FFI_HEADERS: [&str; 3] = ["api.h", "c_api.h", "ffi.h"];
 const STRIDE_NATIVE_SOURCES: [&str; 13] = [
     "native/execute/scheduling.cc",

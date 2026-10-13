@@ -71,7 +71,7 @@ def mock_build(tmp_path, executable, cuda):
         path = manifest / "native" / source
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(source)
-    headers = manifest / "vendor/jaxlib-0.10.1/include/xla/ffi/api"
+    headers = manifest / "vendor/jaxlib-0.11.2/include/xla/ffi/api"
     headers.mkdir(parents=True)
     for header in ("api.h", "c_api.h", "ffi.h"):
         (headers / header).write_text(header)
@@ -201,7 +201,7 @@ def test_backend_invalidation_and_failed_compile(build):
         assert result.returncode == 0
         assert len(commands) == run.unit_count
         assert any("native/ffi/update_a.cc" in command for command in commands)
-    header = manifest / "vendor/jaxlib-0.10.1/include/xla/ffi/api/ffi.h"
+    header = manifest / "vendor/jaxlib-0.11.2/include/xla/ffi/api/ffi.h"
     header.write_text("changed header")
     assert len(run()[1]) == run.unit_count
     assert len(run(MOCK_VERSION="compiler 2")[1]) == run.unit_count

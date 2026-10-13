@@ -5,6 +5,13 @@ Accumulation, Dot and Reduction through XLA FFI. CPU-only builds remain the defa
 CUDA toolkit or CUDA runtime. See [development.md](development.md) for source-build
 switches. This is a correctness-oriented backend, not a performance recommendation.
 
+The current checkout targets **0.3.0 (unreleased)** and exact JAX/JAXLIB
+**0.11.2** on ordinary Python **3.12+**. CUDA 12 retains the existing bounded
+experimental scope below; no new GPU acceptance is asserted. Rebuild both core
+and companion from matching source/version and 0.11.2 headers, then repeat
+exact-byte CPU/GPU acceptance. Historical 0.2.0/JAX 0.10.1 evidence is not
+certification of this new pair. Free-threaded Python is unsupported.
+
 ## Supported operations
 
 Copy, Update, Accumulation, Dot and Reduction support **same-dtype float32, float64, complex64 and complex128
@@ -168,9 +175,10 @@ CUDA Graphs.
 
 ## Tested high-level TensorMap subset
 
-The public-API tests in `tests/tensor/test_cuda_integration.py` run on an A100
-with JAX/JAXLIB 0.10.1. They compare explicit CPU and CUDA placements, check
-returned arrays' device residency and dtypes, and inspect CUDA native targets for
+The public-API tests in `tests/tensor/test_cuda_integration.py` ran on an A100
+with JAX/JAXLIB 0.10.1 for the published 0.2.0 acceptance. They compare explicit
+CPU and CUDA placements, check returned arrays' device residency and dtypes,
+and inspect CUDA native targets for
 nontrivial transforms and trace. Small dense/sign/reconstruction oracles supplement
 the CPU comparisons. This is a representative acceptance matrix, **not support
 for every sector, shape, contraction topology or AD composition**.
@@ -254,7 +262,9 @@ before CDLL. Presence probes do not load libraries or query devices. Missing
 addon retains CPU-only registration/statistics; wrong versions or missing ELF,
 runtime, and resident cudart conflicts fail explicitly when registration is
 requested. CPU operations do not need CUDA. Driver/GPU and GPU JAX are needed
-only for execution. JAX/JAXLIB must match vendored headers 0.10.1.
+only for execution. For 0.2.0, JAX/JAXLIB must match vendored headers 0.10.1. The 0.3.0
+source target instead requires exact JAX/JAXLIB and headers 0.11.2; the source
+extra pins the matching 0.3.0 companion and `jax[cuda12]==0.11.2`.
 
 This published split remains experimental. The original 0.2.0 core/addon pair
 passed CPU regression and bounded A100 (`sm_80`) acceptance with runtime
@@ -398,8 +408,9 @@ universal toolkit compatibility is implied by the optional build.
 
 ### Manual installed-wheel acceptance
 
-CUDA remains experimental. The core is built with maturin; the independent
-setuptools addon initially uses a raw **py3-none-linux_x86_64** tag, targeting
+CUDA remains experimental. This procedure targets the unreleased 0.3.0 pair;
+it is not a report of completed validation. The core is built with maturin;
+the independent setuptools addon initially uses a raw **py3-none-linux_x86_64** tag, targeting
 `sm_80` by default; the candidate route repairs it to **manylinux_2_28_x86_64**.
 Build each wheel from its own extracted sdist outside the checkout. See
 [development.md](development.md#optional-cuda-stride-build) for the source build
@@ -424,14 +435,14 @@ Rebuilding or repackaging requires new exact-byte acceptance; version equality
 is not provenance. Complete the [licensing review](releasing.md#cuda-distribution-licensing)
 before any proposed public release. macOS core wheels accompany the candidate
 but are not CUDA inputs; never install the addon on macOS or select a core using
-an ambiguous `cp311-cp311-*.whl` glob. Path-filtered PR compile artifacts remain
+an ambiguous `cp312-cp312-*.whl` glob. Path-filtered PR compile artifacts remain
 non-release validation and do not contain the full core matrix.
 
 1. Check GPU/CPU/memory occupancy; do not disturb other workloads. Use a new
    independent run directory and a clean checkout of the exact source commit.
-2. Verify both artifact hashes and provenance. Create an isolated CPython 3.11
-   venv with CPU JAX 0.10.1 and test dependencies provisioned separately. Install
-   **only the exact Linux CPython 3.11 core wheel** named by `build-info.json`,
+2. Verify both artifact hashes and provenance. Create an isolated CPython 3.12
+   venv with CPU JAX/JAXLIB 0.11.2 and test dependencies provisioned separately.
+   Install **only the exact Linux CPython 3.12 core wheel** named by `build-info.json`,
    outside the checkout, and run full CPU regression
    plus the baseline gate below. Retain logs and origin/version checks.
 3. Add only the exact companion wheel and compatible runtime/GPU JAX dependencies

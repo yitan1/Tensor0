@@ -21,7 +21,7 @@ def test_distribution_versions_and_exact_pairing():
     addon = tomllib.loads((REPO_ROOT / "crates/tensor0-cuda12/pyproject.toml").read_text())
     cargo = tomllib.loads((REPO_ROOT / "Cargo.toml").read_text())
     version = core["project"]["version"]
-    assert version == addon["project"]["version"] == "0.2.0"
+    assert version == addon["project"]["version"] == "0.3.0"
     assert cargo["workspace"]["package"]["version"].replace("-dev.", ".dev") == version
     assert f"tensor0=={version}" in addon["project"]["dependencies"]
     assert f"tensor0-cuda12=={version}" in core["project"]["optional-dependencies"]["cuda12"]
@@ -68,14 +68,14 @@ def test_independent_sdist_and_platform_wheel(tmp_path):
         assert (source / "native" / name).read_bytes() == (REPO_ROOT / "crates/tensor0-cuda12/native" / name).read_bytes()
     for name in ("LICENSE",):
         assert (source / name).read_bytes() == (REPO_ROOT / name).read_bytes()
-    vendor_license = "vendor/jaxlib-0.10.1/LICENSE.txt"
+    vendor_license = "vendor/jaxlib-0.11.2/LICENSE.txt"
     license_bytes = (REPO_ROOT / "crates/tensor0-py" / vendor_license).read_bytes()
     assert (source / vendor_license).read_bytes() == license_bytes
     assert not list(source.rglob("_licenses"))
     for file in (source / "native").rglob("*"):
         if file.is_file():
             for header in re.findall(r'^#include "([^"\n]+)"', file.read_text(), re.MULTILINE):
-                assert (file.parent / header).is_file() or (source / "vendor/jaxlib-0.10.1/include" / header).is_file(), (file, header)
+                assert (file.parent / header).is_file() or (source / "vendor/jaxlib-0.11.2/include" / header).is_file(), (file, header)
     compiler = tmp_path / "compiler"
     compiler.write_text(f"#!{sys.executable}\n" + '''import pathlib, sys
 if sys.argv[1:] == ["--version"]:
@@ -109,7 +109,7 @@ else:
                        for name in names)
         metadata, = (name for name in names if name.endswith(".dist-info/METADATA"))
         text = archive.read(metadata).decode()
-        assert "Requires-Dist: tensor0==0.2.0" in text
+        assert "Requires-Dist: tensor0==0.3.0" in text
         assert "License-Expression: MIT AND Apache-2.0" in text
         assert "License-File: LICENSE" in text
         assert f"License-File: {vendor_license}" in text
@@ -170,7 +170,7 @@ def test_standalone_contract_source_tree(name, tmp_path_factory, monkeypatch):
             if file.is_file():
                 for header in re.findall(r'^#include "([^"\n]+)"', file.read_text(), re.MULTILINE):
                     assert (file.parent / header).is_file() or (
-                        REPO_ROOT / "crates/tensor0-py/vendor/jaxlib-0.10.1/include" / header
+                        REPO_ROOT / "crates/tensor0-py/vendor/jaxlib-0.11.2/include" / header
                     ).is_file(), (file, header)
         assert command[-4:-2] == [str(native / "layout/descriptor.cc"), str(native / "layout/record.cc")]
         return subprocess.CompletedProcess(command, 0, "", "")

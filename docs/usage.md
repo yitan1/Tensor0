@@ -824,6 +824,11 @@ arguments.
 
 ## Homogeneous pytree batches
 
+This source-development fix for [issue #1](https://github.com/yitan1/Tensor0/issues/1)
+is included in the **0.3.0 (unreleased)** target, not the published 0.2.0
+artifacts. The current checkout requires Python 3.12+ and exact JAX/JAXLIB
+0.11.2; see [migration and native rebuild requirements](installation.md#source-install).
+
 Tensor pytrees can carry homogeneous batches produced by `jax.vmap` or
 `jax.tree.map`. Each dynamic leaf has shape `(*batch_shape, storage_dim)`:
 leading axes are batch axes, and the final axis is packed single-tensor storage.

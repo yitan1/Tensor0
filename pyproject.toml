@@ -1,15 +1,15 @@
 [build-system]
-requires = ["maturin>=1.5,<2"]
+requires = ["maturin>=1.15,<2"]
 build-backend = "maturin"
 
 [project]
 name = "tensor0"
-version = "0.2.0"
+version = "0.3.0"
 description = "Rust-backed metadata and JAX-backed symmetric TensorMap core"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 license = "MIT AND Apache-2.0"
-license-files = ["LICENSE", "crates/tensor0-py/vendor/jaxlib-0.10.1/LICENSE.txt"]
+license-files = ["LICENSE", "crates/tensor0-py/vendor/jaxlib-0.11.2/LICENSE.txt"]
 keywords = ["jax", "tensor", "symmetry", "tensor-network"]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -22,15 +22,15 @@ classifiers = [
     "Topic :: Scientific/Engineering",
 ]
 dependencies = [
-    "jax==0.10.1",
-    "jaxlib==0.10.1",
-    "numpy>=2.0",
+    "jax==0.11.2",
+    "jaxlib==0.11.2",
+    "numpy>=2.1",
 ]
 
 [project.optional-dependencies]
 cuda12 = [
-    "tensor0-cuda12==0.2.0",
-    "jax[cuda12]==0.10.1",
+    "tensor0-cuda12==0.3.0",
+    "jax[cuda12]==0.11.2",
     "nvidia-cuda-runtime-cu12>=12.9.79,<13",
 ]
 
@@ -43,7 +43,7 @@ Changelog = "https://github.com/yitan1/Tensor0/blob/main/CHANGELOG.md"
 
 [dependency-groups]
 dev = [
-    "maturin>=1.5,<2",
+    "maturin>=1.15,<2",
     "pyright>=1.1.411",
     "pytest>=8.0",
 ]
@@ -67,7 +67,7 @@ testpaths = ["tests"]
 
 [tool.pyright]
 include = ["src", "tests", "examples", "benchmarks"]
-pythonVersion = "3.11"
+pythonVersion = "3.12"
 typeCheckingMode = "standard"
 reportUnnecessaryCast = "error"
 reportUnnecessaryTypeIgnoreComment = "error"

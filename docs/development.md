@@ -3,6 +3,15 @@
 Tensor0 is developed from a source checkout with Python, Rust, uv, maturin, and
 pytest.
 
+The current checkout targets **0.3.0 (unreleased)**, Python **>=3.12** and exact
+JAX/JAXLIB **0.11.2**, with PyO3 and Rust `numpy` **0.29**. Core source builds
+use maturin **>=1.15.0,<2**; validation tooling is fixed to **1.15.0**. Ordinary
+CPython **3.12–3.15** is the intended wheel matrix; free-threaded builds are not
+supported. Re-sync a Python 3.12+ environment and rebuild the native core after
+runtime/header changes. Rebuild the matching CUDA companion separately if
+needed. Never treat a stale 0.2.0 binary or earlier platform evidence as
+validation of this checkout; see [migration](installation.md#source-install).
+
 Building the Linux Native backend requires a C++20-capable compiler. The build
 uses `/usr/bin/c++` by default; set `CXX` to select another compiler.
 C++ optimization follows Cargo's profile optimization level: ordinary
@@ -140,8 +149,8 @@ compatibility or hosted-runner memory suitability. Separate hosted macOS 15
 acceptance passed for all four published 0.2.0 CPU wheels.
 
 `.github/workflows/macos.yml` is an independent, **manual-only** validation
-workflow on the standard `macos-15` ARM64 runner with native ARM64 Python 3.11
-and CPU JAX/JAXLIB 0.10.1. Its first target has an explicit macOS 15 deployment
+workflow targeting the standard `macos-15` ARM64 runner with native ARM64 Python 3.12
+and CPU JAX/JAXLIB 0.11.2. Its first target has an explicit macOS 15 deployment
 minimum; older macOS versions are not being validated. It uses one Cargo build
 job because numerical C++ units can consume several GiB; even serial compilation
 may exceed the runner's memory, which must be checked in an actual hosted run.
@@ -174,6 +183,12 @@ publication. All four hosted macOS 15 jobs passed for the published 0.2.0
 artifacts; the M5 result above is separate source-validation evidence. See
 [Releasing](releasing.md) for the fixed nine-core/eleven-final artifact contract.
 
+The 0.3.0 target shifts this release matrix to ordinary CPython **3.12–3.15**
+and exact JAX/JAXLIB **0.11.2**, with full endpoint suites on **3.12/3.15** and
+bounded intermediate-ABI contracts on **3.13/3.14** as described in
+[Releasing](releasing.md). All eight wheel jobs remain required. Neither the
+historical M5 check nor published 0.2.0 hosted acceptance validates this target.
+
 ## Optional CUDA stride build
 
 The unified `tensor0` wheel always builds CPU native execution and a lazy CUDA
@@ -186,7 +201,7 @@ is `crates/tensor0-cuda12`, using standard setuptools and a std-only Rust builde
 uv build --sdist crates/tensor0-cuda12 --out-dir /tmp/addon-dist
 # Extract the sdist outside the checkout, then build that extracted project:
 CUDA_HOME=/usr/local/cuda TENSOR0_CUDA_ARCH=sm_80 \
-    uv build --wheel /absolute/extracted/tensor0_cuda12-0.2.0 --out-dir /tmp/addon-dist
+    uv build --wheel /absolute/extracted/tensor0_cuda12-0.3.0 --out-dir /tmp/addon-dist
 ```
 
 Build dependencies are provisioned in isolation. The sdist copies canonical CUDA
@@ -199,13 +214,14 @@ repaired addon enters the candidate directory. No NVIDIA runtime/driver is
 bundled and the linker adds no RPATH. Actual repair/ELF inspection, not a
 setuptools retag, must establish compliance. The core continues to use maturin.
 
-Both Python distributions and Cargo use stable version `0.2.0`,
+The 0.3.0 development target coordinates both Python distributions and Cargo,
 with exact reciprocal dependency pins (the core pin is in its `cuda12` extra).
-The published `tensor0[cuda12]` extra selects the addon and
-`jax[cuda12]==0.10.1`; the addon requires external
+The source `tensor0[cuda12]` extra selects the matching addon and
+`jax[cuda12]==0.11.2`; the addon requires external
 `nvidia-cuda-runtime-cu12>=12.9.79,<13`. Published CPU 0.1.0 cannot be paired with
 this addon. Published 0.2.0 artifacts passed exact-pair acceptance; this does
-not establish compatibility beyond the documented CUDA matrix.
+not validate 0.3.0/JAX 0.11.2 or establish compatibility beyond the documented
+CUDA matrix.
 
 `CXX` defaults to `/usr/bin/c++` and selects NVCC's explicit `-ccbin` host compiler;
 `NVCC_CCBIN` is cleared for that invocation. `NVCC` selects the CUDA compiler,
@@ -249,7 +265,7 @@ for the supported coefficient types and limited AD paths.
 
 The artifact-only `cuda-build.yml` workflow keeps path-filtered PR compile
 checks separate from final candidates. Automatic runs build a standalone CPython
-3.11 core for validation and are marked `release_candidate: false`.
+3.12 core for validation and are marked `release_candidate: false`.
 A manual run on `main` requires `candidate_run_id`: a successful manual
 `artifacts.yml` run at the **exact same commit**. It verifies repository,
 workflow identity, event, branch, result and commit before downloading
@@ -258,12 +274,12 @@ version. It reuses the eight core wheels and core sdist without rebuilding them.
 
 The companion is built once from its independent sdist on the digest-pinned
 manylinux_2_28 baseline with verified CUDA 12.9.1 components, then genuinely
-repaired without exclusions. CPython 3.11–3.14 jobs install each exact Linux CPU wheel,
+repaired without exclusions. CPython 3.12–3.15 jobs install each exact Linux CPU wheel,
 run CPU smoke before adding the same addon with `--no-deps`, check missing-runtime
 behavior, then install only the external runtime for registration/statistics.
 These checks verify unchanged core native hashes; no GPU kernels execute.
 The build job also inspects ELF dependencies. `build-info.json` records the CPU
-producer run, source commit, exact CPython 3.11 pair hashes and sdist hashes;
+producer run, source commit, exact CPython 3.12 pair hashes and sdist hashes;
 `SHA256SUMS` covers all eleven final distributions. All jobs must succeed before
 using a manual candidate. Configuration is not evidence of hosted execution,
 publication or portability. Use
@@ -290,6 +306,20 @@ uv sync --group dev
 uv run maturin develop
 ```
 
+CI uses uv **0.13.0** and an explicit final **3.15.0** interpreter for the
+highest Python endpoint. Older uv download indexes may select a Python 3.15
+prerelease. When migrating an existing checkout to 3.15, use a current uv and
+refresh the ignored local lockfile before rebuilding:
+
+```bash
+uv sync --python 3.15.0 --upgrade --group dev --group bench --no-install-project
+uv run --no-sync maturin develop
+```
+
+An older lockfile may retain NumPy/SciPy versions without CPython 3.15 wheels
+even when newer compatible wheels exist. This refresh is a migration step,
+not a requirement to upgrade on every run.
+
 ## Verification
 
 Include the existing plotting dependencies with
@@ -304,12 +334,13 @@ uv run python examples/contractions.py
 uv run pyright src examples benchmarks
 ```
 
-Daily Linux CPU CI runs the build, full tests and examples on CPython **3.11
-and 3.14** with a freshly built extension when code, tests, build configuration
+Daily Linux CPU CI targets the build, full tests and examples on CPython **3.12
+and 3.15** with a freshly built extension when code, tests, build configuration
 or any unrecognized path changes. Rust workspace and standalone C++ contracts
-run once on 3.11. Release wheel validation separately covers 3.11–3.14.
+run once on 3.12. Release wheel validation targets every ordinary CPython
+3.12–3.15 wheel on both CPU platforms.
 Each selected matrix job must pass; configuration alone is not verification.
-The source, examples and benchmarks type check runs on Python 3.11 and is blocking. The default
+The source, examples and benchmarks type check runs on Python 3.12 and is blocking. The default
 `uv run pyright` also includes tests; it currently reports test typing debt,
 including dynamic test doubles and intentionally invalid inputs. CI retains
 this full check as an explicitly advisory report with its diagnostics uploaded,

@@ -79,8 +79,8 @@ def verify_provenance(repository, cpu_id, cuda_id, tag):
     verify_run(cpu, api(f'repos/{repository}/actions/workflows/artifacts.yml'), repository, sha, cpu_id)
     require_jobs(jobs(repository, cpu_id),
                  {'Build source distribution once', 'Assemble tested distributions (no rebuild)'}
-                 | {f'CPython {v} / manylinux_2_28 x86_64' for v in ('3.11', '3.12', '3.13', '3.14')}
-                 | {f'CPython {v} / macOS 15 ARM64 CPU' for v in ('3.11', '3.12', '3.13', '3.14')})
+                 | {f'CPython {v} / manylinux_2_28 x86_64' for v in ('3.12', '3.13', '3.14', '3.15')}
+                 | {f'CPython {v} / macOS 15 ARM64 CPU' for v in ('3.12', '3.13', '3.14', '3.15')})
     cuda = api(f'repos/{repository}/actions/runs/{cuda_id}')
     workflow = api(f'repos/{repository}/actions/workflows/cuda-build.yml')
     require(cuda['id'] == int(cuda_id) and cuda['workflow_id'] == workflow['id']
@@ -90,11 +90,11 @@ def verify_provenance(repository, cpu_id, cuda_id, tag):
             and cuda['status'] == 'completed' and cuda['conclusion'] == 'success'
             and cuda['head_sha'] == sha, 'Require same-commit successful manual CUDA candidate on own main')
     require_jobs(jobs(repository, cuda_id),
-                 {'verify-candidate', 'CUDA 12.9 / sm_80 / CPython 3.11 (compile and CPU smoke only)'}
+                 {'verify-candidate', 'CUDA 12.9 / sm_80 / CPython 3.12 (compile and CPU smoke only)'}
                  | {f'Exact CPU candidate + same addon / Python {v} (no GPU)'
-                    for v in ('3.11', '3.12', '3.13', '3.14')})
-    required = {f'Linux x86_64 / Python {v}' for v in ('3.11', '3.14')}
-    required.add('Public-package Pyright (Python 3.11)')
+                    for v in ('3.12', '3.13', '3.14', '3.15')})
+    required = {f'Linux x86_64 / Python {v}' for v in ('3.12', '3.15')}
+    required.add('Public-package Pyright (Python 3.12)')
     workflow = api(f'repos/{repository}/actions/workflows/ci.yml')
     checks = api(f'repos/{repository}/actions/workflows/ci.yml/runs?branch=main&status=success&head_sha={sha}&per_page=100')
     for check in checks['workflow_runs']:
@@ -149,16 +149,25 @@ def metadata(path, version):
             info = Parser().parsestr(archive.extractfile(selected[0]).read().decode())
     require(info['Name'] == name and info['Version'] == version, 'Distribution metadata name/version mismatch')
     require(info['License-Expression'] == 'MIT AND Apache-2.0', 'Distribution license mismatch')
-    require(set(info.get_all('License-File', [])) == {'LICENSE', ('vendor/jaxlib-0.10.1/LICENSE.txt' if addon else
-                            'crates/tensor0-py/vendor/jaxlib-0.10.1/LICENSE.txt')},
+    require(set(info.get_all('License-File', [])) == {'LICENSE', ('vendor/jaxlib-0.11.2/LICENSE.txt' if addon else
+                            'crates/tensor0-py/vendor/jaxlib-0.11.2/LICENSE.txt')},
             'Distribution license files mismatch')
-    deps = [re.sub(r'\s+', '', d) for d in info.get_all('Requires-Dist', [])]
+    require(re.sub(r'\s+', '', info.get('Requires-Python', '')) == '>=3.12',
+            'Distribution Requires-Python must be >=3.12')
+    deps = [re.sub(r'\s+', '', d).replace('"', "'") for d in info.get_all('Requires-Dist', [])]
     require(not any('@' in d for d in deps), 'Direct URL dependencies forbidden')
     if addon:
         require(f'tensor0=={version}' in deps, 'Addon must exactly pin core')
         require(any(d in ('nvidia-cuda-runtime-cu12>=12.9.79,<13',
                                        'nvidia-cuda-runtime-cu12<13,>=12.9.79') for d in deps),
                 'Addon runtime bound mismatch')
+    else:
+        require('jax==0.11.2' in deps and 'jaxlib==0.11.2' in deps,
+                'Core must exactly pin JAX and JAXLIB 0.11.2')
+        require('numpy>=2.1' in deps, 'Core must require numpy>=2.1')
+        require(f"tensor0-cuda12=={version};extra=='cuda12'" in deps
+                and "jax[cuda12]==0.11.2;extra=='cuda12'" in deps,
+                'Core cuda12 extra must exactly pin addon and JAX CUDA 0.11.2')
 
 
 def verify_distributions(cpu, cuda, version, sha, cpu_id, cuda_id, repository):
@@ -187,7 +196,7 @@ def verify_distributions(cpu, cuda, version, sha, cpu_id, cuda_id, repository):
             and build.get('cpu_candidate_run_url') == f'https://github.com/{repository}/actions/runs/{cpu_id}'
             and build['workflow_run_url'] == f'https://github.com/{repository}/actions/runs/{cuda_id}',
             'Build-info is not this paired release candidate')
-    require(build['wheel'] == wheels['cp311'] and build['sha256'] == sha256(cpu / wheels['cp311'])
+    require(build['wheel'] == wheels['cp312'] and build['sha256'] == sha256(cpu / wheels['cp312'])
             and build['cuda_wheel'] == f'tensor0_cuda12-{version}-py3-none-manylinux_2_28_x86_64.whl'
             and build['cuda_sha256'] == sha256(cuda / build['cuda_wheel'])
             and build.get('sdists') == {n: sha256(cuda / n) for n in packages if n.endswith('.tar.gz')},
@@ -252,9 +261,9 @@ def verify_evidence(path, build, version, binary_sha256, cuda_binary_sha256):
                     and Path(report.get('wheel', '')).name == build['wheel'], 'Acceptance core wheel mismatch')
             direct_url(report.get('direct_url', {}), build['wheel'], build['sha256'])
             require(report.get('core_binary_sha256') == binary_sha256,
-                    'Acceptance native binary hash differs from verified cp311 wheel')
+                    'Acceptance native binary hash differs from verified cp312 wheel')
             versions = report.get('versions', {})
-            require(versions.get('tensor0') == version and versions.get('jax') == versions.get('jaxlib') == '0.10.1'
+            require(versions.get('tensor0') == version and versions.get('jax') == versions.get('jaxlib') == '0.11.2'
                     and versions.get('native_jax') == [versions['jax'], versions['jaxlib']]
                     and all(versions.get(k) for k in ('numpy', 'pytest', 'python')), 'Malformed acceptance versions')
             prefix = PurePosixPath(report.get('prefix', ''))

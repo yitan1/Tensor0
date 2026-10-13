@@ -4,7 +4,7 @@ Tensor0 is experimental, pre-1.0 software. Use it with pinned dependencies and
 validate the numerical paths needed by your application; production readiness,
 performance and exhaustive coverage are not promised.
 
-## Execution baseline
+## Published 0.2.0 baseline
 
 | Area | Policy |
 | --- | --- |
@@ -15,9 +15,28 @@ performance and exhaustive coverage are not promised.
 | CUDA | Published, experimental Linux x86_64 `tensor0-cuda12` **0.2.0** companion; bounded A100 (`sm_80`) [operation/dtype/AD matrix](cuda.md), not full API support; no macOS CUDA |
 | Other platforms/backends or JAX versions | Not supported numerical execution targets |
 
-The package's Python >=3.11 metadata is an eligibility range, not proof that all
+The released 0.2.0 package's Python >=3.11 metadata is an eligibility range, not proof that all
 future interpreters work. CI results establish only the versions, platforms and
 paths actually executed. Skipped device tests are not acceptance evidence.
+
+## Current source-development target: 0.3.0 (unreleased)
+
+| Area | Target policy (not acceptance evidence) |
+| --- | --- |
+| Runtime | Exact JAX **0.11.2** and JAXLIB **0.11.2**, matching vendored FFI headers and rebuilt native binaries |
+| Python | Python **>=3.12**; ordinary CPython **3.12–3.15** wheel targets; no free-threaded support |
+| CPU platforms | Linux **x86_64**, glibc **>=2.28**; macOS **15+ ARM64 CPU** |
+| Verification | Daily Linux CPU CI endpoints **3.12/3.15**; all eight release wheels require installed-artifact acceptance |
+| Native build tools | Rust **>=1.87**, C++20, PyO3/Rust `numpy` **0.29**, maturin **>=1.15.0,<2** (fixed validation tool **1.15.0**) |
+| CUDA 12 | Existing experimental Linux x86_64 operation/dtype/AD scope only; freshly rebuilt exact-version core/addon pair requires CPU/GPU acceptance |
+
+The new matrix is a target, not a statement that builds, hosted macOS jobs or
+CUDA execution have passed. Published 0.2.0 evidence does not validate 0.3.0 or
+JAX 0.11.2. Python 3.11 users must stay on the pinned 0.2.0 runtime or migrate
+to Python 3.12+; see [source installation and migration](installation.md#source-install).
+Python >=3.12 metadata does not promise arbitrary future interpreter support.
+Rebuild native binaries with the exact headers/runtime; upgrading JAX alone is
+not a supported migration.
 
 Unavailable native stride routes fail explicitly; Tensor0 does not silently
 substitute element-address gather/scatter or transfer unsupported CUDA work to

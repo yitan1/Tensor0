@@ -14,11 +14,19 @@ environment; supported prebuilt wheels require no Rust or C++ compiler.
 The released CPU execution baseline supports Linux x86_64 with glibc >=2.28
 and macOS 15+ ARM64, with JAX and JAXLIB 0.10.1. The tested 0.2.0 wheel matrix
 covers CPython 3.11–3.14 on both platforms, built from one shared core sdist;
-Python 3.11 remains the baseline interpreter. The Python >=3.11 metadata does
+Python 3.11 was the 0.2.0 baseline interpreter. The Python >=3.11 metadata does
 not imply support for future interpreters. macOS is CPU-only. See
 [Support and compatibility](support.md) for platform scope.
 
-The native stride handler is compiled against that exact XLA FFI header version
+The current source checkout targets **0.3.0 (unreleased)**, Python **>=3.12**
+and exact JAX/JAXLIB **0.11.2**. Its intended ordinary CPython **3.12–3.15**
+wheel matrix uses the same CPU platforms; daily Linux CI targets **3.12/3.15**.
+Free-threaded Python is unsupported. These targets do not establish new Linux,
+macOS or CUDA acceptance. See [Installation](installation.md#source-install)
+for Python 3.11 migration and native rebuild requirements, and
+[Releasing](releasing.md) for per-wheel acceptance.
+
+The native stride handler is compiled against its exact XLA FFI header version
 and rejects mismatched runtimes. Missing native routes are reported explicitly
 rather than hidden by an element-address fallback.
 Native stride operations lower through JAX as `stablehlo.custom_call`

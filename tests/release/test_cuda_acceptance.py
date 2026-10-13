@@ -84,7 +84,7 @@ def test_environment(monkeypatch):
 
 
 @pytest.mark.parametrize("problem", [None, "noenv", "not_isolated", "dirty", "commit", "origin",
-                                     "cuda", "versions", "registration", "gpu", "cpu", "driver",
+                                     "cuda", "versions", "jax_pin", "registration", "gpu", "cpu", "driver",
                                      "addon_version", "core_changed", "baseline_failed", "companion_origin", "native_version",
                                      "core_payload", "addon_payload", "other_prefix", "other_executable", "other_native"])
 def test_preflight(monkeypatch, wheel_info, problem, tmp_path):
@@ -99,7 +99,8 @@ def test_preflight(monkeypatch, wheel_info, problem, tmp_path):
                         SimpleNamespace(read_text=lambda filename: json.dumps(direct),
                                         locate_file=lambda filename: ("/checkout/" if problem == "companion_origin" else "/venv/") + filename))
     monkeypatch.setattr(acceptance.metadata, "version", lambda name:
-                        "wrong" if problem == "addon_version" and name == "tensor0-cuda12" else "test")
+                        "wrong" if problem == "addon_version" and name == "tensor0-cuda12"
+                        else ("0.10.1" if problem == "jax_pin" else "0.11.2") if name in ("jax", "jaxlib") else "test")
     binary = tmp_path / "native.so"
     binary.write_bytes(b"unchanged core")
     monkeypatch.setattr(acceptance.Path, "read_bytes", lambda self:
@@ -109,14 +110,15 @@ def test_preflight(monkeypatch, wheel_info, problem, tmp_path):
         __file__="/checkout/native.so" if problem == "origin" else "/venv/native.so",
         native_version=lambda: "wrong" if problem == "native_version" else "test",
         _stride_cuda_available=lambda: problem != "cuda",
-        _stride_ffi_build_versions=lambda: ("wrong", "test") if problem == "versions" else ("test", "test"),
+        _stride_ffi_build_versions=lambda: ("wrong", "0.11.2") if problem == "versions"
+        else ("0.10.1", "0.10.1") if problem == "jax_pin" else ("0.11.2", "0.11.2"),
         _stride_cuda_registration=lambda: {} if problem == "registration" else {"target": object()},
     )
     package = SimpleNamespace(__file__="/venv/tensor0/__init__.py", __version__="test", _native=native)
     monkeypatch.setitem(sys.modules, "tensor0", package)
     monkeypatch.setitem(sys.modules, "tensor0._native", native)
     monkeypatch.setitem(sys.modules, "jax", SimpleNamespace(
-        __version__="test", devices=lambda backend: [] if problem == backend or
+        __version__="0.10.1" if problem == "jax_pin" else "0.11.2", devices=lambda backend: [] if problem == backend or
         (backend == "cuda" and problem == "gpu") else ["device"], default_backend=lambda: "gpu"))
     monkeypatch.setattr(acceptance.subprocess, "run", lambda *args, **kw:
                         SimpleNamespace(returncode=int(problem == "driver"), stdout="driver", stderr=""))

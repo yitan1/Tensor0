@@ -107,13 +107,13 @@ def test_local_source_does_not_change_published_pin():
                                       'manylinux_2_28_aarch64'])
 def test_wrong_platform_matrix(tmp_path, platform):
     names = distributions(tmp_path)
-    original = next(name for name in names if 'cp311-cp311-macosx' in name)
+    original = next(name for name in names if 'cp312-cp312-macosx' in name)
     (tmp_path / original).rename(tmp_path / original.replace('macosx_15_0_arm64', platform))
     with pytest.raises(ValueError):
         candidate.verify_files(tmp_path, '0.2.0.dev0')
 
 
-@pytest.mark.parametrize('abi', ['cp310-cp310', 'cp315-cp315', 'cp314-cp314t', 'cp311-abi3'])
+@pytest.mark.parametrize('abi', ['cp311-cp311', 'cp316-cp316', 'cp315-cp315t', 'cp312-abi3'])
 def test_wrong_abi_matrix(tmp_path, abi):
     names = distributions(tmp_path)
     original = next(name for name in names if 'cp314-cp314-macosx' in name)

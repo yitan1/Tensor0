@@ -25,13 +25,14 @@ jobs:
       - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v8.3.2
         with:
-          python-version: "3.11"
+          version: "0.13.0"
+          python-version: "3.12"
           enable-cache: true
       - uses: dtolnay/rust-toolchain@stable
       - name: Build and inspect sdist without installing the project
         run: |
-          uvx --python 3.11 --from maturin==1.13.1 maturin sdist --out dist
-          uv run --no-project --python 3.11 python .github/scripts/check_artifacts.py dist/*.tar.gz
+          uvx --python 3.12 --from maturin==1.15.0 maturin sdist --out dist
+          uv run --no-project --python 3.12 python .github/scripts/check_artifacts.py dist/*.tar.gz
       - uses: actions/upload-artifact@v4
         with:
           name: tensor0-sdist-${{ github.sha }}
@@ -47,12 +48,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python: ["3.11", "3.12", "3.13", "3.14"]
+        python: ["3.12", "3.13", "3.14", "3.15"]
     steps:
       - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v8.3.2
         with:
-          python-version: ${{ matrix.python }}
+          version: "0.13.0"
+          python-version: ${{ matrix.python == '3.15' && '3.15.0' || matrix.python }}
           enable-cache: true
       - uses: actions/download-artifact@v4
         with:
@@ -63,10 +65,17 @@ jobs:
       - name: Build portable wheel exclusively from extracted sdist
         uses: PyO3/maturin-action@v1
         with:
-          maturin-version: "1.13.1"
+          maturin-version: "1.15.0"
           manylinux: "2_28"
           # AlmaLinux 8's default /usr/bin/c++ is too old for our C++20 code.
-          before-script-linux: export CXX=g++; export CARGO_BUILD_JOBS=1; g++ --version
+          before-script-linux: |
+            set -e
+            export CXX=g++
+            export CARGO_BUILD_JOBS=1
+            python_abi="cp$(printf '%s' '${{ matrix.python }}' | tr -d '.')"
+            export PATH="/opt/python/$python_abi-$python_abi/bin:$PATH"
+            python${{ matrix.python }} -c 'import sys, sysconfig; print(sys.version); assert sys.implementation.name == "cpython" and sys.version_info.releaselevel == "final" and not sysconfig.get_config_var("Py_GIL_DISABLED"), sys.version'
+            g++ --version
           working-directory: artifact-source/source
           command: build
           args: >-
@@ -79,7 +88,7 @@ jobs:
           uvx --from auditwheel auditwheel show dist/*.whl
       - name: Install wheel in an isolated environment
         run: |
-          uv venv --python '${{ matrix.python }}' "$RUNNER_TEMP/wheel-test"
+          uv venv --python '${{ matrix.python == '3.15' && '3.15.0' || matrix.python }}' "$RUNNER_TEMP/wheel-test"
           uv pip install --python "$RUNNER_TEMP/wheel-test/bin/python" pip
           "$RUNNER_TEMP/wheel-test/bin/python" -I -m pip install dist/*.whl
           uv pip install --python "$RUNNER_TEMP/wheel-test/bin/python" --group dev --group bench
@@ -91,7 +100,7 @@ jobs:
           "$RUNNER_TEMP/wheel-test/bin/python" -I "$GITHUB_WORKSPACE/examples/basic_usage.py"
           "$RUNNER_TEMP/wheel-test/bin/python" -I "$GITHUB_WORKSPACE/examples/contractions.py"
       - name: Installed-wheel native major operations, JIT and AD (intermediate ABIs)
-        if: matrix.python == '3.12' || matrix.python == '3.13'
+        if: matrix.python == '3.13' || matrix.python == '3.14'
         run: |
           "$RUNNER_TEMP/wheel-test/bin/python" -I -m pytest -q -ra \
             tests/stride/jax/ad/test_copy.py::test_broadcast_map_transpose_accumulates_and_supports_nested_ad \
@@ -100,16 +109,16 @@ jobs:
             tests/stride/jax/ad/test_dot.py::test_vmap_symbolic_zero_and_native_lowering \
             tests/stride/jax/ad/test_accumulation.py::test_compact_vmap_and_float32_derivatives_use_native
       - uses: dtolnay/rust-toolchain@stable
-        if: matrix.python == '3.11' || matrix.python == '3.14'
+        if: matrix.python == '3.12' || matrix.python == '3.15'
       - name: Resolve locked host Cargo dependencies for offline build fixtures
-        if: matrix.python == '3.11' || matrix.python == '3.14'
+        if: matrix.python == '3.12' || matrix.python == '3.15'
         # Reuse the producer's lockfile; checkout does not track Cargo.lock.
         # The wheel build ran in manylinux, not necessarily the host Cargo cache.
         run: |
           cp artifact-source/source/Cargo.lock Cargo.lock
           cargo fetch --locked
       - name: Full installed-wheel Python suite (baseline and highest ABI)
-        if: matrix.python == '3.11' || matrix.python == '3.14'
+        if: matrix.python == '3.12' || matrix.python == '3.15'
         # Linux Rust/C++ contracts run once in the required same-commit CI.
         run: >-
           "$RUNNER_TEMP/wheel-test/bin/python" -I -m pytest tests -q -ra
@@ -129,7 +138,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python: ["3.11", "3.12", "3.13", "3.14"]
+        python: ["3.12", "3.13", "3.14", "3.15"]
     env:
       CXX: /usr/bin/clang++
       MACOSX_DEPLOYMENT_TARGET: "15.0"
@@ -140,7 +149,8 @@ jobs:
       - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v8.3.2
         with:
-          python-version: ${{ matrix.python }}
+          version: "0.13.0"
+          python-version: ${{ matrix.python == '3.15' && '3.15.0' || matrix.python }}
           enable-cache: false
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/download-artifact@v4
@@ -148,7 +158,9 @@ jobs:
           name: tensor0-sdist-${{ github.sha }}
           path: dist
       - name: Prepare CPU-only test dependencies without installing the project
-        run: uv sync --group dev --group bench --no-install-project
+        run: |
+          uv sync --group dev --group bench --no-install-project
+          uv pip install --python .venv/bin/python maturin==1.15.0
       - name: Verify macOS 15 ARM64 host, Rust and pinned FFI headers
         run: |
           uname -a
@@ -183,13 +195,13 @@ jobs:
           "$GITHUB_WORKSPACE/.venv/bin/python" -I "$GITHUB_WORKSPACE/examples/basic_usage.py"
           "$GITHUB_WORKSPACE/.venv/bin/python" -I "$GITHUB_WORKSPACE/examples/contractions.py"
       - name: Rust core tests (one macOS ABI; no extension rebuild)
-        if: matrix.python == '3.11'
+        if: matrix.python == '3.12'
         run: cargo test -p tensor0-core
       - name: Standalone native C++ contracts (once on macOS)
-        if: matrix.python == '3.11'
+        if: matrix.python == '3.12'
         run: .venv/bin/python -I -m pytest tests/stride/native/cpp/test_contracts.py -q -ra --junitxml=macos-cpp.xml
       - name: Installed-wheel native major operations, JIT and AD (intermediate ABIs)
-        if: matrix.python == '3.12' || matrix.python == '3.13'
+        if: matrix.python == '3.13' || matrix.python == '3.14'
         run: |
           .venv/bin/python -I -m pytest -q -ra --junitxml=macos-compat.xml \
             tests/stride/jax/ad/test_copy.py::test_broadcast_map_transpose_accumulates_and_supports_nested_ad \
@@ -198,7 +210,7 @@ jobs:
             tests/stride/jax/ad/test_dot.py::test_vmap_symbolic_zero_and_native_lowering \
             tests/stride/jax/ad/test_accumulation.py::test_compact_vmap_and_float32_derivatives_use_native
       - name: Full installed-wheel Python suite (baseline and highest ABI)
-        if: matrix.python == '3.11' || matrix.python == '3.14'
+        if: matrix.python == '3.12' || matrix.python == '3.15'
         run: >-
           .venv/bin/python -I -m pytest tests -q -ra --junitxml=macos-pytest.xml
           --ignore=tests/stride/native/cpp/test_contracts.py
@@ -241,7 +253,7 @@ jobs:
         run: |
           test "$(find dist -name '*.tar.gz' | wc -l)" -eq 1
           test "$(find dist -name '*.whl' | wc -l)" -eq 8
-          for abi in cp311 cp312 cp313 cp314; do
+          for abi in cp312 cp313 cp314 cp315; do
             for platform in manylinux_2_28_x86_64 macosx_15_0_arm64; do
               test "$(find dist -name "*-${abi}-${abi}-${platform}.whl" | wc -l)" -eq 1
             done
@@ -252,8 +264,8 @@ jobs:
             echo '## Tested Linux x86_64 + macOS ARM64 CPU candidate'
             echo "Source commit: $GITHUB_SHA"
             echo "Candidate run: $GITHUB_RUN_ID"
-            echo 'One shared sdist and eight wheels: CPython 3.11–3.14, manylinux_2_28 x86_64 + macOS 15 ARM64.'
-            echo 'All eight wheels passed inspection, exact installed-wheel checks, smoke/examples and native major-operation JIT/AD contracts; Python 3.11 and 3.14 passed full installed-wheel Python tests on each platform. Linux Rust/C++ contracts require same-commit CI; macOS contracts ran once on 3.11.'
+            echo 'One shared sdist and eight wheels: CPython 3.12–3.15, manylinux_2_28 x86_64 + macOS 15 ARM64.'
+            echo 'All eight wheels passed inspection, exact installed-wheel checks, smoke/examples and native major-operation JIT/AD contracts; Python 3.12 and 3.15 passed full installed-wheel Python tests on each platform. Linux Rust/C++ contracts require same-commit CI; macOS contracts ran once on 3.12.'
             echo 'Publish only this assembled artifact; no rebuild. No publication occurs here.'
           } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4

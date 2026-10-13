@@ -19,20 +19,30 @@ JAX handles numerical storage and automatic differentiation.
 
 ## Installation
 
-Install from PyPI in a virtual environment:
+The latest published release is **0.2.0** (JAX/JAXLIB **0.10.1**, ordinary
+CPython **3.11–3.14**). Install it from PyPI in a virtual environment:
 
 ```bash
 # CPU
-python -m pip install tensor0
+python -m pip install tensor0==0.2.0
 
 # CUDA 12 (experimental)
-python -m pip install "tensor0[cuda12]"
+python -m pip install "tensor0[cuda12]==0.2.0"
 ```
 
 See [CUDA support](docs/cuda.md) for GPU requirements and supported operations.
 Prebuilt wheels require no Rust or C++ compiler. See the
 [installation guide](docs/installation.md) for available platforms, supported
 Python versions, GPU setup and source builds.
+
+The current source checkout targets **0.3.0 (unreleased)**, Python **>=3.12**
+and exact JAX/JAXLIB **0.11.2**. The intended wheel matrix is ordinary CPython
+**3.12–3.15**, Linux x86_64 (glibc **>=2.28**) and macOS **15+ ARM64 CPU**;
+free-threaded Python is not supported. These are development/release targets,
+not newly accepted artifacts. CUDA 12 retains its existing experimental scope
+and needs fresh exact-pair acceptance. See [migration and source setup](docs/installation.md#source-install)
+and the [changelog](CHANGELOG.md) for the issue #1 pytree batch fix and runtime
+migration; upgrading JAX alone cannot update an existing native extension.
 
 ## A small symmetric tensor
 

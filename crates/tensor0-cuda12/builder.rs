@@ -125,7 +125,7 @@ fn main() {
     let output_dir = PathBuf::from(args.next().expect("output directory"));
     fs::create_dir_all(&output_dir).expect("create output directory");
     let output_dir = fs::canonicalize(output_dir).unwrap();
-    let include_dir = manifest_dir.join("vendor/jaxlib-0.10.1/include");
+    let include_dir = manifest_dir.join("vendor/jaxlib-0.11.2/include");
     let compiler = compiler_path(&env::var_os("CXX").unwrap_or_else(|| "/usr/bin/c++".into()));
     let resolved = fs::canonicalize(&compiler).expect("resolve C++ compiler");
     let version = Command::new(&compiler).arg("--version").output().unwrap();

@@ -33,14 +33,20 @@ def tar(path, entries):
             archive.addfile(member, io.BytesIO(data))
 
 
-def distribution(path, *, version=VERSION, deps=None):
+def distribution(path, *, version=VERSION, deps=None, requires_python='>=3.12'):
     addon = path.name.startswith('tensor0_cuda12')
     text = f'Name: {"tensor0-cuda12" if addon else "tensor0"}\nVersion: {version}\n'
     if deps is None:
-        deps = [f'tensor0=={VERSION}', 'nvidia-cuda-runtime-cu12<13,>=12.9.79'] if addon else ['jax==0.10.1']
+        deps = [f'tensor0=={VERSION}', 'nvidia-cuda-runtime-cu12<13,>=12.9.79'] if addon else [
+            'jax==0.11.2', 'jaxlib==0.11.2', 'numpy>=2.1',
+            f'tensor0-cuda12=={VERSION}; extra == "cuda12"',
+            'jax[cuda12]==0.11.2; extra == "cuda12"',
+        ]
+    if requires_python is not None:
+        text += f'Requires-Python: {requires_python}\n'
     text += 'License-Expression: MIT AND Apache-2.0\nLicense-File: LICENSE\n'
-    text += 'License-File: ' + ('vendor/jaxlib-0.10.1/LICENSE.txt' if addon else
-                              'crates/tensor0-py/vendor/jaxlib-0.10.1/LICENSE.txt') + '\n'
+    text += 'License-File: ' + ('vendor/jaxlib-0.11.2/LICENSE.txt' if addon else
+                              'crates/tensor0-py/vendor/jaxlib-0.11.2/LICENSE.txt') + '\n'
     text += ''.join(f'Requires-Dist: {d}\n' for d in deps)
     if path.suffix == '.whl':
         info = f'{"tensor0_cuda12" if addon else "tensor0"}-{VERSION}.dist-info'
@@ -76,7 +82,7 @@ def candidate(tmp_path):
     distribution(cuda / addon)
     distribution(cuda / f'tensor0_cuda12-{VERSION}.tar.gz')
     manifest(cuda)
-    wheel = f'tensor0-{VERSION}-cp311-cp311-manylinux_2_28_x86_64.whl'
+    wheel = f'tensor0-{VERSION}-cp312-cp312-manylinux_2_28_x86_64.whl'
     build = {k: 'fixture' for k in release.BUILD_FIELDS}
     build.update(source_commit=SHA, release_candidate=True, cpu_candidate_run_id='1',
                  cpu_candidate_run_url=f'https://github.com/{REPO}/actions/runs/1',
@@ -143,6 +149,60 @@ def test_wrong_metadata(candidate, deps, version):
         release.metadata(path, VERSION)
 
 
+@pytest.mark.parametrize('deps', [
+    ['jax==0.10.1', 'jaxlib==0.10.1'],
+    ['jax>=0.11.2', 'jaxlib==0.11.2'],
+    ['jax==0.11.2', 'jaxlib>=0.11.2'],
+    ['jax==0.11.2'],
+])
+def test_core_requires_exact_jax_pins(candidate, deps):
+    path = candidate[0] / candidate[2]['wheel']
+    distribution(path, deps=deps)
+    with pytest.raises(ValueError, match='exactly pin JAX and JAXLIB'):
+        release.metadata(path, VERSION)
+
+
+@pytest.mark.parametrize('addon', [False, True])
+@pytest.mark.parametrize('requires_python', [None, '>=3.11'])
+def test_metadata_requires_python_312(candidate, addon, requires_python):
+    path = candidate[1] / candidate[2]['cuda_wheel' if addon else 'wheel']
+    distribution(path, requires_python=requires_python)
+    with pytest.raises(ValueError, match='Requires-Python must be >=3.12'):
+        release.metadata(path, VERSION)
+
+
+@pytest.mark.parametrize('dependency,replacement', [
+    ('numpy>=2.1', None), ('numpy>=2.1', 'numpy>=2.0'),
+    (f'tensor0-cuda12=={VERSION}; extra == "cuda12"', None),
+    (f'tensor0-cuda12=={VERSION}; extra == "cuda12"', 'tensor0-cuda12==0.1.0; extra == "cuda12"'),
+    ('jax[cuda12]==0.11.2; extra == "cuda12"', None),
+    ('jax[cuda12]==0.11.2; extra == "cuda12"', 'jax[cuda12]==0.10.1; extra == "cuda12"'),
+    (f'tensor0-cuda12=={VERSION}; extra == "cuda12"', f'tensor0-cuda12=={VERSION}'),
+    ('jax[cuda12]==0.11.2; extra == "cuda12"', 'jax[cuda12]==0.11.2; extra == "other"'),
+])
+def test_core_numpy_and_cuda_extra_contract(candidate, dependency, replacement):
+    path = candidate[0] / candidate[2]['wheel']
+    deps = ['jax==0.11.2', 'jaxlib==0.11.2', 'numpy>=2.1',
+            f'tensor0-cuda12=={VERSION}; extra == "cuda12"',
+            'jax[cuda12]==0.11.2; extra == "cuda12"']
+    deps.remove(dependency)
+    if replacement is not None:
+        deps.append(replacement)
+    distribution(path, deps=deps)
+    with pytest.raises(ValueError, match='numpy|cuda12 extra'):
+        release.metadata(path, VERSION)
+
+
+@pytest.mark.parametrize('quote', ["'", '"'])
+def test_core_cuda_extra_marker_quotes(candidate, quote):
+    path = candidate[0] / candidate[2]['wheel']
+    deps = ['jax==0.11.2', 'jaxlib==0.11.2', 'numpy>=2.1',
+            f'tensor0-cuda12=={VERSION}; extra == {quote}cuda12{quote}',
+            f'jax[cuda12]==0.11.2; extra == {quote}cuda12{quote}']
+    distribution(path, deps=deps)
+    release.metadata(path, VERSION)
+
+
 def direct(name, digest):
     return {'url': 'file:///wheels/' + name, 'archive_info': {'hashes': {'sha256': digest}}}
 
@@ -152,8 +212,8 @@ def reports(build):
                wheel='/wheels/' + build['wheel'], sha256=build['sha256'],
                direct_url=direct(build['wheel'], build['sha256']), core_binary_sha256=BINARY_SHA,
                prefix='/venv', executable='/venv/bin/python', installed_packages={'tensor0': VERSION}, origins={'python': '/venv/tensor0/__init__.py', 'native': '/venv/tensor0/_native.so'},
-               versions={'tensor0': VERSION, 'jax': '0.10.1', 'jaxlib': '0.10.1', 'native_jax': ['0.10.1', '0.10.1'],
-                         'python': '3.11 fixture', 'numpy': '2.0', 'pytest': '8'}, suites=[])
+               versions={'tensor0': VERSION, 'jax': '0.11.2', 'jaxlib': '0.11.2', 'native_jax': ['0.11.2', '0.11.2'],
+                         'python': '3.12 fixture', 'numpy': '2.0', 'pytest': '8'}, suites=[])
     gpu = copy.deepcopy(cpu)
     gpu.update(mode='cuda', cuda_binary_sha256=BINARY_SHA, cuda_wheel='/wheels/' + build['cuda_wheel'], cuda_sha256=build['cuda_sha256'],
                cuda_direct_url=direct(build['cuda_wheel'], build['cuda_sha256']),
@@ -284,14 +344,14 @@ def provenance(monkeypatch):
                     head_repository={'full_name': REPO}, event=event, head_branch='main',
                     status='completed', conclusion='success', head_sha=SHA)
     runs = {'1': run(1, 'artifacts.yml'), '2': run(2, 'cuda-build.yml'), '3': run(3, 'ci.yml', 'push')}
-    cuda_jobs = ['verify-candidate', 'CUDA 12.9 / sm_80 / CPython 3.11 (compile and CPU smoke only)']
-    cuda_jobs += [f'Exact CPU candidate + same addon / Python {v} (no GPU)' for v in ('3.11', '3.12', '3.13', '3.14')]
+    cuda_jobs = ['verify-candidate', 'CUDA 12.9 / sm_80 / CPython 3.12 (compile and CPU smoke only)']
+    cuda_jobs += [f'Exact CPU candidate + same addon / Python {v} (no GPU)' for v in ('3.12', '3.13', '3.14', '3.15')]
     cpu_jobs = ['Build source distribution once', 'Assemble tested distributions (no rebuild)']
-    cpu_jobs += [f'CPython {v} / {platform}' for v in ('3.11', '3.12', '3.13', '3.14')
+    cpu_jobs += [f'CPython {v} / {platform}' for v in ('3.12', '3.13', '3.14', '3.15')
                  for platform in ('manylinux_2_28 x86_64', 'macOS 15 ARM64 CPU')]
     records = {'1': [dict(name=n, conclusion='success') for n in cpu_jobs], '2': [dict(name=n, conclusion='success') for n in cuda_jobs],
-               '3': [dict(name=f'Linux x86_64 / Python {v}', conclusion='success') for v in ('3.11', '3.14')]
-                    + [dict(name='Public-package Pyright (Python 3.11)', conclusion='success')]}
+               '3': [dict(name=f'Linux x86_64 / Python {v}', conclusion='success') for v in ('3.12', '3.15')]
+                    + [dict(name='Public-package Pyright (Python 3.12)', conclusion='success')]}
     def api(path):
         if '/jobs?' in path:
             return {'jobs': records[path.split('/runs/')[1].split('/')[0]]}
@@ -346,7 +406,7 @@ def test_provenance_rejections(provenance, change):
         release.verify_provenance(REPO, '1', '2', tag)
 
 
-@pytest.mark.parametrize('version', ['3.11', '3.14'])
+@pytest.mark.parametrize('version', ['3.12', '3.15'])
 @pytest.mark.parametrize('problem', ['missing', 'failure', 'skipped'])
 def test_required_ci_endpoints(provenance, version, problem):
     _, jobs = provenance
@@ -388,7 +448,7 @@ def test_mac_duplicate_must_be_original(candidate):
 
 def test_gpu_pair_cannot_select_mac_wheel(candidate):
     cpu, cuda, build = candidate
-    build['wheel'] = f'tensor0-{VERSION}-cp311-cp311-macosx_15_0_arm64.whl'
+    build['wheel'] = f'tensor0-{VERSION}-cp312-cp312-macosx_15_0_arm64.whl'
     build['sha256'] = release.sha256(cpu / build['wheel'])
     (cuda / 'build-info.json').write_text(json.dumps(build))
     with pytest.raises(ValueError, match='distribution hashes mismatch'):
@@ -397,7 +457,7 @@ def test_gpu_pair_cannot_select_mac_wheel(candidate):
 
 @pytest.mark.parametrize('problem', ['tags', 'license', 'license-files'])
 def test_mac_metadata_rejected(candidate, problem):
-    path = candidate[0] / f'tensor0-{VERSION}-cp311-cp311-macosx_15_0_arm64.whl'
+    path = candidate[0] / f'tensor0-{VERSION}-cp312-cp312-macosx_15_0_arm64.whl'
     with zipfile.ZipFile(path) as archive:
         entries = {name: archive.read(name) for name in archive.namelist()}
     name = next(name for name in entries if name.endswith('/WHEEL' if problem == 'tags' else '/METADATA'))

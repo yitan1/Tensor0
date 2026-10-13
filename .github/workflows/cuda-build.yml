@@ -47,7 +47,7 @@ jobs:
   build:
     needs: verify-candidate
     if: always() && (github.event_name != 'workflow_dispatch' || needs.verify-candidate.result == 'success')
-    name: CUDA 12.9 / sm_80 / CPython 3.11 (compile and CPU smoke only)
+    name: CUDA 12.9 / sm_80 / CPython 3.12 (compile and CPU smoke only)
     runs-on: ubuntu-24.04
     # Pin the glibc 2.28 / GCC 14 baseline; NVCC 12.9 supports GCC through 14.
     container: quay.io/pypa/manylinux_2_28_x86_64@sha256:4131ddd7acb9c6c966af02fe7e71edc51e078c2d41f475966697676430bfa2ae
@@ -94,29 +94,30 @@ jobs:
           "$CXX" --version
       - uses: astral-sh/setup-uv@v8.3.2
         with:
-          python-version: '3.11'
+          version: "0.13.0"
+          python-version: '3.12'
           enable-cache: true
       - uses: dtolnay/rust-toolchain@stable
       - name: Build and inspect source distribution
         run: |
           mkdir -p "$RUNNER_TEMP/cuda-dist"
           if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
-            uv run --no-project --python 3.11 python .github/scripts/cuda_candidate.py files "$RUNNER_TEMP/cpu-candidate"
+            uv run --no-project --python 3.12 python .github/scripts/cuda_candidate.py files "$RUNNER_TEMP/cpu-candidate"
             cp "$RUNNER_TEMP"/cpu-candidate/*.whl "$RUNNER_TEMP"/cpu-candidate/*.tar.gz "$RUNNER_TEMP/cuda-dist/"
           else
-            uvx --python 3.11 --from maturin==1.13.1 maturin sdist --out "$RUNNER_TEMP/cuda-dist"
+            uvx --python 3.12 --from maturin==1.15.0 maturin sdist --out "$RUNNER_TEMP/cuda-dist"
           fi
-          uv run --no-project --python 3.11 python .github/scripts/check_artifacts.py \
+          uv run --no-project --python 3.12 python .github/scripts/check_artifacts.py \
             "$RUNNER_TEMP"/cuda-dist/tensor0-*.tar.gz --extract "$RUNNER_TEMP/cuda-source"
           uv build --no-sources --sdist crates/tensor0-cuda12 --out-dir "$RUNNER_TEMP/cuda-dist"
-          uv run --no-project --python 3.11 python .github/scripts/check_artifacts.py --cuda \
+          uv run --no-project --python 3.12 python .github/scripts/check_artifacts.py --cuda \
             "$RUNNER_TEMP"/cuda-dist/tensor0_cuda12-*.tar.gz --extract "$RUNNER_TEMP/addon-source"
-          uv venv --python 3.11 "$RUNNER_TEMP/cuda-test"
+          uv venv --python 3.12 "$RUNNER_TEMP/cuda-test"
       - name: Build unified CPU core wheel from sdist
         if: github.event_name != 'workflow_dispatch'
         working-directory: ${{ runner.temp }}/cuda-source/source
         run: |
-          uvx --python 3.11 --from maturin==1.13.1 maturin build \
+          uvx --python 3.12 --from maturin==1.15.0 maturin build \
             --release --locked --compatibility linux --auditwheel skip \
             --interpreter "$RUNNER_TEMP/cuda-test/bin/python" \
             --out "$RUNNER_TEMP/cuda-dist" 2>&1 | tee "$RUNNER_TEMP/cuda-build.log"
@@ -135,10 +136,10 @@ jobs:
             --wheel-dir "$RUNNER_TEMP/cuda-dist" "$RUNNER_TEMP"/cuda-raw-addon/*.whl
       - name: Inspect and install the core wheel in isolation
         run: |
-          uv run --no-project --python 3.11 python .github/scripts/check_artifacts.py "$RUNNER_TEMP"/cuda-dist/tensor0-*-cp311-cp311-*linux*_x86_64.whl
-          uv run --no-project --python 3.11 python .github/scripts/check_artifacts.py --cuda "$RUNNER_TEMP"/cuda-dist/tensor0_cuda12-*.whl
+          uv run --no-project --python 3.12 python .github/scripts/check_artifacts.py "$RUNNER_TEMP"/cuda-dist/tensor0-*-cp312-cp312-*linux*_x86_64.whl
+          uv run --no-project --python 3.12 python .github/scripts/check_artifacts.py --cuda "$RUNNER_TEMP"/cuda-dist/tensor0_cuda12-*.whl
           for wheel in "$RUNNER_TEMP"/cuda-dist/*_x86_64.whl; do auditwheel show "$wheel"; done
-          uv pip install --python "$RUNNER_TEMP/cuda-test/bin/python" "$RUNNER_TEMP"/cuda-dist/tensor0-*-cp311-cp311-*linux*_x86_64.whl
+          uv pip install --python "$RUNNER_TEMP/cuda-test/bin/python" "$RUNNER_TEMP"/cuda-dist/tensor0-*-cp312-cp312-*linux*_x86_64.whl
           uv pip check --python "$RUNNER_TEMP/cuda-test/bin/python"
       - name: Verify core CPU behavior before adding the companion
         working-directory: ${{ runner.temp }}
@@ -158,7 +159,7 @@ jobs:
       - name: Inspect direct ELF dependencies
         run: |
           mkdir -p "$RUNNER_TEMP/cuda-elf"
-          for wheel in "$RUNNER_TEMP"/cuda-dist/tensor0-*-cp311-cp311-*linux*_x86_64.whl "$RUNNER_TEMP"/cuda-dist/tensor0_cuda12-*.whl; do
+          for wheel in "$RUNNER_TEMP"/cuda-dist/tensor0-*-cp312-cp312-*linux*_x86_64.whl "$RUNNER_TEMP"/cuda-dist/tensor0_cuda12-*.whl; do
             "$RUNNER_TEMP/cuda-test/bin/python" -I -m zipfile -e "$wheel" "$RUNNER_TEMP/cuda-elf"
           done
           core=("$RUNNER_TEMP"/cuda-elf/tensor0/_native*.so)
@@ -242,7 +243,7 @@ jobs:
           import sys
 
           directory = Path(os.environ['RUNNER_TEMP']) / 'cuda-dist'
-          wheel, = directory.glob('tensor0-*-cp311-cp311-*linux*_x86_64.whl')
+          wheel, = directory.glob('tensor0-*-cp312-cp312-*linux*_x86_64.whl')
           cuda_wheel, = directory.glob('tensor0_cuda12-*.whl')
           def version(*args):
               return subprocess.check_output(args, text=True).strip()
@@ -279,7 +280,7 @@ jobs:
           {
             echo '## CUDA compilation and CPU smoke only'
             echo 'No GPU kernels were executed. GPU correctness has NOT been accepted.'
-            echo 'Experimental pair: CPython 3.11 core + repaired py3-none-manylinux_2_28_x86_64 addon, CUDA 12.9, sm_80.'
+            echo 'Experimental pair: CPython 3.12 core + repaired py3-none-manylinux_2_28_x86_64 addon, CUDA 12.9, sm_80.'
             echo 'Companion repaired with auditwheel manylinux_2_28, without CUDA exclusions or NVIDIA bundling.'
             echo 'Use build-info.json and both exact wheels for manual GPU acceptance.'
             echo 'Manual release candidates reuse the verified CPU producer; automatic runs are compile validation only.'
@@ -312,7 +313,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python: ['3.11', '3.12', '3.13', '3.14']
+        python: ['3.12', '3.13', '3.14', '3.15']
     env:
       JAX_PLATFORMS: cpu
     steps:
@@ -323,7 +324,8 @@ jobs:
           path: ${{ runner.temp }}/candidate
       - uses: astral-sh/setup-uv@v8.3.2
         with:
-          python-version: ${{ matrix.python }}
+          version: "0.13.0"
+          python-version: ${{ matrix.python == '3.15' && '3.15.0' || matrix.python }}
       - name: CPU baseline, add same companion, runtime-only registration
         working-directory: ${{ runner.temp }}
         env:
@@ -332,7 +334,7 @@ jobs:
           cd "$RUNNER_TEMP/candidate"
           sha256sum --check --strict SHA256SUMS
           abi="cp${PYTHON_VERSION//./}"
-          uv venv --python "$PYTHON_VERSION" "$RUNNER_TEMP/abi-test"
+          uv venv --python '${{ matrix.python == '3.15' && '3.15.0' || matrix.python }}' "$RUNNER_TEMP/abi-test"
           python="$RUNNER_TEMP/abi-test/bin/python"
           uv pip install --python "$python" ./tensor0-*-${abi}-${abi}-manylinux_2_28_x86_64.whl
           uv pip check --python "$python"
