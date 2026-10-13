@@ -12,7 +12,12 @@ from .. import _native
 from ..structure.layout import _sector_slices_for_space
 from ..structure.sector_dict import SectorDict
 from ..structure.spaces import _normalize_sector_key, reduced_dim, space as _space
-from .storage import VectorStorage, _validate_vector_storage_data
+from .storage import (
+    VectorStorage,
+    _pytree_vector_storage,
+    _require_unbatched_storage,
+    _validate_vector_storage_data,
+)
 
 
 @dataclass(frozen=True, eq=False, init=False)
@@ -36,6 +41,11 @@ class SectorVector:
         object.__setattr__(self, "storage", vector_storage)
 
     @property
+    def batch_shape(self) -> tuple[int, ...]:
+        """Leading pytree batch axes, separate from the tensor's space."""
+        return tuple(self.storage.data.shape[:-1])
+
+    @property
     def sectors(self) -> tuple[tuple[tuple[int, ...], int], ...]:
         return tuple(
             (sector, sector_slice.stop - sector_slice.start)
@@ -50,9 +60,11 @@ class SectorVector:
         return self.blocksectors
 
     def values(self) -> Iterator[Array]:
+        _require_unbatched_storage(self.storage.data, "values()")
         return (self.storage.data[sector_slice] for sector_slice in self.structure.values())
 
     def pairs(self) -> Iterator[tuple[tuple[int, ...], Array]]:
+        _require_unbatched_storage(self.storage.data, "pairs()")
         return (
             (sector, self.storage.data[sector_slice])
             for sector, sector_slice in self.structure.items()
@@ -62,6 +74,7 @@ class SectorVector:
         return coupled in self.structure
 
     def get(self, coupled: object, default: object = None) -> Array | object:
+        _require_unbatched_storage(self.storage.data, "get()")
         key = _normalize_sector_key(coupled)
         sector_slice = self.structure.get(key)
         if sector_slice is None:
@@ -69,6 +82,7 @@ class SectorVector:
         return self.storage.data[sector_slice]
 
     def block(self, coupled: int | tuple[int, ...]) -> Array:
+        _require_unbatched_storage(self.storage.data, "block()")
         key = _normalize_sector_key(coupled)
         try:
             sector_slice = self.structure[key]
@@ -80,12 +94,14 @@ class SectorVector:
         return tuple(self.pairs())
 
     def to_diagonal(self):
+        _require_unbatched_storage(self.storage.data, "to_diagonal()")
         from .diagonal import DiagonalTensorMap
 
         domain = self._visible_space()
         return DiagonalTensorMap(domain, self.storage)
 
     def copy(self) -> SectorVector:
+        _require_unbatched_storage(self.storage.data, "copy()")
         return SectorVector(
             self._visible_space(),
             jnp.array(self.storage.data, copy=True),
@@ -97,6 +113,7 @@ class SectorVector:
         *,
         space: _native.ElementarySpace | None = None,
     ) -> SectorVector:
+        _require_unbatched_storage(self.storage.data, "similar()")
         target_space = self._visible_space() if space is None else space
         target_dtype = self.storage.data.dtype if dtype is None else dtype
         return SectorVector(
@@ -123,7 +140,14 @@ def _sectorvector_unflatten(
 ) -> SectorVector:
     sector_type, sectors = aux_data
     (data,) = children
-    return SectorVector(_native.make_space(sector_type, sectors, False), data)
+    space = _native.make_space(sector_type, sectors, False)
+    vector = object.__new__(SectorVector)
+    object.__setattr__(vector, "sector_type", sector_type)
+    object.__setattr__(vector, "structure", _sector_slices_for_space(space))
+    object.__setattr__(
+        vector, "storage", _pytree_vector_storage(data, reduced_dim(space)),
+    )
+    return vector
 
 
 _tree_util.register_pytree_node(

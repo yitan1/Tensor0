@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import jax
 import jax.numpy as jnp
 
 from ..structure.layout import _blockstructure_items
@@ -13,6 +14,7 @@ def _jax_cotangent_to_riesz_gradient(cotangent: TensorMap) -> TensorMap:
     data = _require_jax_storage_data(
         cotangent.storage.data,
         "TensorMap gradient conversion",
+        allow_batch=True,
     )
     if not jnp.issubdtype(data.dtype, jnp.inexact):
         raise TypeError("TensorMap gradients require real or complex storage")
@@ -23,17 +25,17 @@ def _jax_cotangent_to_riesz_gradient(cotangent: TensorMap) -> TensorMap:
     ) else data
     blocks = tuple(_blockstructure_items(cotangent.space))
     if not blocks:
-        return TensorMap(cotangent.space, coordinate)
+        return jax.tree.map(lambda _: coordinate, cotangent)
 
     sector_type = cotangent.space.sector_spec
     weights = tuple(sector_type.quantum_dim(coupled) for coupled, _block in blocks)
     if all(weight == 1 for weight in weights):
-        return TensorMap(cotangent.space, coordinate)
+        return jax.tree.map(lambda _: coordinate, cotangent)
 
     real_dtype = jnp.real(coordinate).dtype
     pieces = tuple(
-        coordinate[block.start : block.stop]
+        coordinate[..., block.start : block.stop]
         / jnp.asarray(weight, dtype=real_dtype)
         for (_coupled, block), weight in zip(blocks, weights, strict=True)
     )
-    return TensorMap(cotangent.space, jnp.concatenate(pieces))
+    return jax.tree.map(lambda _: jnp.concatenate(pieces, axis=-1), cotangent)

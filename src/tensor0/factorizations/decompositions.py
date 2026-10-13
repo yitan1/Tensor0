@@ -11,6 +11,7 @@ from ..tensor._blocks import _packed_sector_values, pack_blocks
 from ..tensor._orthogonal import positive_qr
 from ..tensor.diagonal import DiagonalTensorMap
 from ..tensor.sector_vector import SectorVector
+from ..tensor.storage import _require_unbatched_storage
 from ..tensor.tensor_map import TensorMap
 from .truncation import _ensure_strategy, _find_truncated_indices, _truncation_error, notrunc
 
@@ -440,6 +441,7 @@ def svd_trunc(
 def _require_tensor_map(tensor: object, function_name: str) -> TensorMap:
     if not isinstance(tensor, TensorMap):
         raise TypeError(f"{function_name}() requires a TensorMap")
+    _require_unbatched_storage(tensor.storage.data, function_name)
     return tensor
 
 

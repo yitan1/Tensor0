@@ -22,9 +22,19 @@ class _Sliceable(Protocol):
     def __getitem__(self, key: slice, /) -> object: ...
 
 
-def _require_jax_storage_data(data: object, operation: str) -> Array:
-    """Require JAX-backed storage at a numerical execution boundary."""
+def _require_jax_storage_data(
+    data: object, operation: str, *, allow_batch: bool = False,
+) -> Array:
+    """Require JAX-backed, unbatched storage at a numerical read boundary.
 
+    Callers may delegate batch checks here if every successful path reaches
+    this helper (directly or through a checked numerical operation). Keep
+    existing argument validation order; raising paths need no batch check.
+    Only genuinely batch-aware metric code may use ``allow_batch=True``.
+    """
+
+    if not allow_batch:
+        _require_unbatched_storage(data, operation)
     if not isinstance(data, (Array, Tracer)):
         raise TypeError(
             f"{operation} requires JAX-backed storage, "
@@ -66,3 +76,35 @@ def _validate_vector_storage_data(data: object, expected_total_dim: int) -> None
     reshape = getattr(empty_slice, "reshape", None)
     if not callable(reshape):
         raise TypeError("storage data slices must support reshape")
+
+
+def _require_unbatched_storage(data: object, operation: str) -> None:
+    """Reject batch containers without requiring JAX-backed storage.
+
+    Check explicitly before direct array operations or successful early returns
+    that bypass a checked numerical read, including identity/constant results
+    and empty views. Delegating to an unconditional checked call is sufficient;
+    do not add an entry check merely because later numerical reads also check.
+    """
+    shape = getattr(data, "shape", None)
+    if shape is not None and len(shape) != 1:
+        raise ValueError(
+            f"{operation} requires unbatched storage; got shape {tuple(shape)}. "
+            "Use jax.vmap to map over all leading batch axes."
+        )
+
+
+def _pytree_vector_storage(data: object, expected_dim: int) -> VectorStorage:
+    """Rebuild a leaf with trailing storage and optional leading batch axes.
+
+    JAX also reconstructs trees with opaque placeholders and axis specifications;
+    these have no shape and are not numerical tensor values.
+    """
+    shape = getattr(data, "shape", None)
+    if shape is not None and (len(shape) == 0 or shape[-1] != expected_dim):
+        raise ValueError(
+            "storage data length mismatch: pytree storage must have "
+            f"trailing dimension {expected_dim}; "
+            f"got shape {tuple(shape)}"
+        )
+    return VectorStorage(data)

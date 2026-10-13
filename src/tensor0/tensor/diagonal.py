@@ -14,7 +14,12 @@ from ..structure.layout import get_sectorstructure
 from ..structure.spaces import dim as space_dim, hom, reduced_dim, storage_dim
 from ._tolerances import default_pseudoinverse_rtol, nonnegative_tolerance
 from .sector_vector import SectorVector
-from .storage import VectorStorage, _validate_vector_storage_data
+from .storage import (
+    VectorStorage,
+    _pytree_vector_storage,
+    _require_unbatched_storage,
+    _validate_vector_storage_data,
+)
 
 if TYPE_CHECKING:
     from .tensor_map import TensorMap
@@ -47,13 +52,20 @@ class DiagonalTensorMap:
             ")"
         )
 
+    @property
+    def batch_shape(self) -> tuple[int, ...]:
+        """Leading pytree batch axes, separate from the tensor's space."""
+        return tuple(self.storage.data.shape[:-1])
+
     def copy(self) -> DiagonalTensorMap:
+        _require_unbatched_storage(self.storage.data, "copy()")
         return DiagonalTensorMap(
             self.index_space,
             jnp.array(self.storage.data, copy=True),
         )
 
     def astype(self, dtype: DTypeLike) -> DiagonalTensorMap:
+        _require_unbatched_storage(self.storage.data, "astype()")
         return DiagonalTensorMap(
             self.index_space,
             jnp.asarray(self.storage.data).astype(dtype),
@@ -146,6 +158,7 @@ class DiagonalTensorMap:
         return self.diag().hasblock(coupled)
 
     def diag(self) -> SectorVector:
+        _require_unbatched_storage(self.storage.data, "diag()")
         return SectorVector(self.index_space, self.storage)
 
     def block(self, coupled: int | tuple[int, ...]) -> Array:
@@ -169,12 +182,14 @@ class DiagonalTensorMap:
         return self.to_tensor_map().to_dense()
 
     def zero_like(self) -> DiagonalTensorMap:
+        _require_unbatched_storage(self.storage.data, "zero_like()")
         return DiagonalTensorMap(
             self.index_space,
             jnp.zeros_like(self.storage.data),
         )
 
     def scale(self, alpha: object) -> DiagonalTensorMap:
+        _require_unbatched_storage(self.storage.data, "scale()")
         scalar = _as_scalar_array(alpha, "alpha")
         dtype = jnp.result_type(self.storage.data, scalar)
         return DiagonalTensorMap(
@@ -188,8 +203,10 @@ class DiagonalTensorMap:
         alpha: object = 1,
         beta: object = 1,
     ) -> DiagonalTensorMap:
+        _require_unbatched_storage(self.storage.data, "add()")
         if not isinstance(other, DiagonalTensorMap):
             raise TypeError("add() requires a DiagonalTensorMap")
+        _require_unbatched_storage(other.storage.data, "add()")
         if self.index_space != other.index_space:
             raise ValueError("DiagonalTensorMap spaces are not compatible for add")
 
@@ -208,6 +225,7 @@ class DiagonalTensorMap:
         )
 
     def norm(self, p: SupportsFloat = 2) -> Array:
+        _require_unbatched_storage(self.storage.data, "norm()")
         p_value = float(p)
         if p_value == math.inf:
             return _max_abs_diagonal_entry(self)
@@ -225,6 +243,7 @@ class DiagonalTensorMap:
         return total ** (1.0 / p_value)
 
     def adjoint(self) -> DiagonalTensorMap:
+        _require_unbatched_storage(self.storage.data, "adjoint()")
         if not jnp.issubdtype(self.dtype, jnp.complexfloating):
             return self
         return DiagonalTensorMap(
@@ -233,16 +252,19 @@ class DiagonalTensorMap:
         )
 
     def real(self) -> DiagonalTensorMap:
+        _require_unbatched_storage(self.storage.data, "real()")
         if not jnp.issubdtype(self.dtype, jnp.complexfloating):
             return self
         return DiagonalTensorMap(self.index_space, jnp.real(self.storage.data))
 
     def imag(self) -> DiagonalTensorMap:
+        _require_unbatched_storage(self.storage.data, "imag()")
         if not jnp.issubdtype(self.dtype, jnp.complexfloating):
             return self.zero_like()
         return DiagonalTensorMap(self.index_space, jnp.imag(self.storage.data))
 
     def complex(self) -> DiagonalTensorMap:
+        _require_unbatched_storage(self.storage.data, "complex()")
         if jnp.issubdtype(self.dtype, jnp.complexfloating):
             return self
         return DiagonalTensorMap(
@@ -253,6 +275,7 @@ class DiagonalTensorMap:
         )
 
     def inverse(self) -> DiagonalTensorMap:
+        _require_unbatched_storage(self.storage.data, "inverse()")
         values = jnp.asarray(
             self.storage.data,
             dtype=jnp.result_type(self.storage.data, 1.0),
@@ -275,6 +298,7 @@ class DiagonalTensorMap:
         machine epsilon for the promoted real dtype.
         Rejected entries, including exact zeros, map to zero.
         """
+        _require_unbatched_storage(self.storage.data, "pseudoinverse()")
         atol_value = nonnegative_tolerance(atol, "atol")
         values = jnp.asarray(
             self.storage.data,
@@ -311,12 +335,15 @@ class DiagonalTensorMap:
         return DiagonalTensorMap(self.index_space, data)
 
     def is_diagonal(self) -> Array:
+        _require_unbatched_storage(self.storage.data, "is_diagonal()")
         return jnp.asarray(True)
 
     def __matmul__(self, other: object):
+        _require_unbatched_storage(self.storage.data, "__matmul__()")
         from .tensor_map import TensorMap
 
         if isinstance(other, DiagonalTensorMap):
+            _require_unbatched_storage(other.storage.data, "matmul()")
             if self.domain != other.codomain:
                 raise ValueError(
                     "TensorMap spaces are not composable: "
@@ -392,7 +419,12 @@ def _diagonal_unflatten(
     children: tuple[object, ...],
 ) -> DiagonalTensorMap:
     (data,) = children
-    return DiagonalTensorMap(aux_data, data)
+    tensor = object.__new__(DiagonalTensorMap)
+    object.__setattr__(tensor, "index_space", aux_data)
+    object.__setattr__(
+        tensor, "storage", _pytree_vector_storage(data, reduced_dim(aux_data)),
+    )
+    return tensor
 
 
 _tree_util.register_pytree_node(

@@ -20,8 +20,13 @@ constructor and `ComplexSpace(dim)` is a compatibility spelling.
 
 ## TensorMap Storage
 
-`TensorMap` stores a `HomSpace` and a one-dimensional JAX array. The array
-length must match the degeneracy structure derived from the `HomSpace`.
+An ordinary `TensorMap` stores a `HomSpace` and a one-dimensional JAX array.
+The array length must match the degeneracy structure derived from the
+`HomSpace`. Pytree reconstruction additionally supports homogeneous batches
+with leading batch axes and a trailing storage axis. These axes do not change
+the space or visible tensor legs; use `jax.vmap`, rather than single-tensor
+numerical APIs, to operate on a batch. See
+[homogeneous pytree batches](usage.md#homogeneous-pytree-batches).
 
 For `Trivial`, packed storage is the ordinary dense array flattened in
 codomain-then-domain row-major order. `to_dense()` exposes an immutable reshape

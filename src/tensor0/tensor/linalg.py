@@ -26,6 +26,7 @@ from ._blocks import pack_blocks
 from ._tolerances import default_pseudoinverse_rtol, nonnegative_tolerance
 from .dense import _trivial_dense_array
 from .diagonal import DiagonalTensorMap
+from .storage import _require_unbatched_storage
 from .tensor_map import TensorMap
 
 
@@ -531,6 +532,8 @@ def is_positive_definite(
 
 def _compose(left: TensorMap, right: TensorMap) -> TensorMap:
     """Compose two TensorMaps blockwise over their shared middle space."""
+    _require_unbatched_storage(left.storage.data, "compose()")
+    _require_unbatched_storage(right.storage.data, "compose()")
     if left.space.domain != right.space.codomain:
         raise ValueError(
             "TensorMap spaces are not composable: "
@@ -679,6 +682,7 @@ def _predicate_tolerances(atol: float, rtol: float) -> tuple[float, float]:
 def _require_tensor_map(tensor: object, function_name: str) -> None:
     if not isinstance(tensor, TensorMap):
         raise TypeError(f"{function_name}() requires a TensorMap")
+    _require_unbatched_storage(tensor.storage.data, function_name)
 
 
 def _require_tensor_like(tensor: object, function_name: str) -> None:
@@ -686,6 +690,7 @@ def _require_tensor_like(tensor: object, function_name: str) -> None:
         raise TypeError(
             f"{function_name}() requires a TensorMap or DiagonalTensorMap",
         )
+    _require_unbatched_storage(tensor.storage.data, function_name)
 
 
 def _comparison_storage(

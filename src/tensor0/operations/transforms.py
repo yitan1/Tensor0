@@ -17,7 +17,7 @@ from ..structure.layout import (
     get_sectorstructure,
 )
 from ..tensor.dense import _trivial_dense_array
-from ..tensor.storage import _require_jax_storage_data
+from ..tensor.storage import _require_jax_storage_data, _require_unbatched_storage
 from ..tensor.tensor_map import TensorMap
 
 Permutation: TypeAlias = tuple[tuple[int, ...], tuple[int, ...]]
@@ -32,6 +32,7 @@ _TREE_TRANSPOSER_CACHE: _TransformerCache = OrderedDict()
 def permute(tensor: TensorMap, p: Permutation) -> TensorMap:
     if not isinstance(tensor, TensorMap):
         raise TypeError("permute() requires a TensorMap")
+    _require_unbatched_storage(tensor.storage.data, "permute()")
 
     p_codomain, p_domain = _normalize_p(tensor.space, p, "permute")
     if _is_identity_permutation(tensor.space, p_codomain, p_domain):
@@ -65,6 +66,7 @@ def permute(tensor: TensorMap, p: Permutation) -> TensorMap:
 def braid(tensor: TensorMap, p: Permutation, levels: tuple[int, ...]) -> TensorMap:
     if not isinstance(tensor, TensorMap):
         raise TypeError("braid() requires a TensorMap")
+    _require_unbatched_storage(tensor.storage.data, "braid()")
 
     p_codomain, p_domain = _normalize_p(tensor.space, p, "braid")
     levels = _normalize_levels(tensor.space, levels)
@@ -92,6 +94,7 @@ def braid(tensor: TensorMap, p: Permutation, levels: tuple[int, ...]) -> TensorM
 def transpose(tensor: TensorMap, p: Permutation | None = None) -> TensorMap:
     if not isinstance(tensor, TensorMap):
         raise TypeError("transpose() requires a TensorMap")
+    _require_unbatched_storage(tensor.storage.data, "transpose()")
 
     p_codomain, p_domain = _normalize_transpose_p(tensor.space, p)
     return _transpose_normalized(tensor, p_codomain, p_domain)
@@ -263,6 +266,7 @@ def repartition(
 ) -> TensorMap:
     if not isinstance(tensor, TensorMap):
         raise TypeError("repartition() requires a TensorMap")
+    _require_unbatched_storage(tensor.storage.data, "repartition()")
 
     p_codomain, p_domain = _repartition_p(tensor.space, nout, nin)
     return _transpose_normalized(tensor, p_codomain, p_domain)
@@ -275,6 +279,7 @@ def twist(
 ) -> TensorMap:
     if not isinstance(tensor, TensorMap):
         raise TypeError("twist() requires a TensorMap")
+    _require_unbatched_storage(tensor.storage.data, "twist()")
     normalized = _normalize_visible_indices(indices, tensor.space.numind, "twist")
     if not isinstance(inv, bool):
         raise TypeError("twist() requires inv to be a bool")
@@ -324,6 +329,7 @@ def flip(
 ) -> TensorMap:
     if not isinstance(tensor, TensorMap):
         raise TypeError("flip() requires a TensorMap")
+    _require_unbatched_storage(tensor.storage.data, "flip()")
     normalized = _normalize_visible_indices(indices, tensor.space.numind, "flip")
     if not isinstance(inv, bool):
         raise TypeError("flip() requires inv to be a bool")
@@ -402,6 +408,7 @@ def insertrightunit(
 def removeunit(tensor: TensorMap, index: int) -> TensorMap:
     if not isinstance(tensor, TensorMap):
         raise TypeError("removeunit() requires a TensorMap")
+    _require_unbatched_storage(tensor.storage.data, "removeunit()")
     if isinstance(index, bool) or not isinstance(index, int):
         raise TypeError("removeunit() requires index to be an int")
     if index < 0 or index >= tensor.numind:
@@ -620,6 +627,7 @@ def _normalize_unit_insertion_call(
 ) -> int:
     if not isinstance(tensor, TensorMap):
         raise TypeError(f"{operation}() requires a TensorMap")
+    _require_unbatched_storage(tensor.storage.data, operation)
     if position is None:
         position = tensor.numind
     elif isinstance(position, bool) or not isinstance(position, int):

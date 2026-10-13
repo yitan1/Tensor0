@@ -752,7 +752,7 @@ sector families.
 
 ## JAX jit and grad
 
-`TensorMap` and `DiagonalTensorMap` are JAX pytrees. Their storage arrays are the
+`TensorMap`, `DiagonalTensorMap`, and `SectorVector` are JAX pytrees. Their storage arrays are the
 dynamic leaves, while space metadata is static auxiliary data.
 
 ```python
@@ -821,6 +821,87 @@ an array coordinate gradient; the wrapper does not infer a metric from
 intermediate values. TensorMap Riesz gradients currently require a real-valued
 objective and do not support `holomorphic=True` or `DiagonalTensorMap`
 arguments.
+
+## Homogeneous pytree batches
+
+Tensor pytrees can carry homogeneous batches produced by `jax.vmap` or
+`jax.tree.map`. Each dynamic leaf has shape `(*batch_shape, storage_dim)`:
+leading axes are batch axes, and the final axis is packed single-tensor storage.
+For `DiagonalTensorMap` and `SectorVector`, that final dimension is the reduced
+index-space dimension instead. `batch_shape` reports the leading axes and is
+`()` for an ordinary single tensor. Space metadata, visible indices, `shape`,
+and `dims` still describe **one** tensor, not the batch.
+
+Ordinary constructors retain their one-dimensional storage contract. Batched
+values are reconstructed at the pytree boundary, which validates the trailing
+storage dimension. JAX's internal axis specifications and placeholders are
+accepted during tree reconstruction; they are not numerical tensor values.
+
+```python
+import jax
+import jax.numpy as jnp
+import tensor0 as t0
+
+p = t0.space(t0.Trivial, {(): 2})
+h = t0.hom((p,), (p,))
+a = t0.from_dense(h, jnp.eye(2, dtype=jnp.float32))
+
+# Identical static metadata are required for all stacked values.
+batch = jax.tree.map(lambda *xs: jnp.stack(xs), a, 2 * a)
+assert batch.batch_shape == (2,)
+
+# Direct TensorMap output, rather than returning raw storage to evade reconstruction.
+result = jax.jit(jax.vmap(lambda x: x @ a))(batch)
+first = jax.tree.map(lambda leaf: leaf[0], result)
+assert first.batch_shape == ()
+assert jnp.allclose(first.to_dense(), jnp.eye(2))
+
+# Raw-array input can also return a TensorMap directly.
+direct = jax.vmap(lambda data: t0.TensorMap(h, data) @ a)(batch.storage.data)
+
+# Nested tensor-containing outputs and decomposition values are supported.
+factors = jax.jit(jax.vmap(lambda x: {"svd": t0.svd_compact(x),
+                                     "values": t0.svd_vals(x)}))(batch)
+u, sigma, vh = factors["svd"]
+reconstructed = jax.vmap(lambda u, s, v: u @ s @ v)(u, sigma, vh)
+
+# Scalar-loss AD can differentiate a whole batch; Riesz weights apply per tensor.
+def loss(xs):
+    return jnp.sum(jax.vmap(lambda x: jnp.real(x.inner(x)))(xs))
+
+gradient = jax.jit(t0.grad(loss))(batch)
+updated = jax.tree.map(lambda x, g: x - 0.01 * g, batch, gradient)
+```
+
+A batch is a pytree container, **not** a new tensor with additional physical
+legs. Single-tensor numerical APIs reject storage with residual batch axes with
+`ValueError` and guidance to use `jax.vmap`. This includes arithmetic, block and
+dense access, norms, contractions, transforms (even identity transforms),
+comparisons, decompositions, and numerical conversions such as `copy`, `astype`,
+and `similar`. To cast or index a batch, map over its array leaves; to compute,
+map the tensor operation with `vmap`. For several batch axes, use nested `vmap`
+so that no batch axis remains inside the single-tensor operation. Keep storage
+last when choosing `in_axes`/`out_axes`; axes placed after storage are not supported.
+
+The same contract applies to symmetric spaces, including quantum-dimension
+weights in norms and `tensor0.grad`/`tensor0.value_and_grad`. `jax.grad` retains
+its coordinate-cotangent convention. JIT, scalar-loss differentiation, JVP/VJP
+with valid tensor tangents/cotangents, and nested `vmap` compose under this storage
+contract; the underlying numerical operation's differentiation restrictions
+still apply. Data-dependent truncation remains an eager operation, not a
+newly supported mapped/JIT operation.
+
+Stacking tensors with different space metadata is rejected by JAX's pytree
+structure matching, even if their storage lengths happen to agree. A local
+mapped function must return the same structure and metadata at every site;
+coordinates, neighbor indexing, and heterogeneous collections remain downstream.
+
+Tensor-valued `jax.jacrev`/`jax.jacfwd` tree-product outputs are **not** a supported
+tensor-batch representation: Jacobian axes generally follow output storage and
+need not satisfy the trailing-storage contract. Such reconstructions can raise
+`ValueError`; coincident dimensions do not give the result tensor semantics.
+For full Jacobians or Hessians, differentiate a function with explicit array
+inputs/outputs and retain the resulting arrays rather than tensor tree products.
 
 ## Current Boundaries
 

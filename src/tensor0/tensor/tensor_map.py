@@ -34,7 +34,9 @@ from ._blocks import (
 from .diagonal import DiagonalTensorMap
 from .storage import (
     VectorStorage,
+    _pytree_vector_storage,
     _require_jax_storage_data,
+    _require_unbatched_storage,
     _validate_vector_storage_data,
 )
 
@@ -74,6 +76,11 @@ class TensorMap:
             ")"
         )
 
+    @property
+    def batch_shape(self) -> tuple[int, ...]:
+        """Leading pytree batch axes, separate from the tensor's space."""
+        return tuple(self.storage.data.shape[:-1])
+
     def copy(self) -> TensorMap:
         data = _require_jax_storage_data(self.storage.data, "copy()")
         return TensorMap(self.space, jnp.array(data, copy=True))
@@ -87,6 +94,7 @@ class TensorMap:
         space: _native.HomSpace | None = None,
         dtype: DTypeLike | None = None,
     ) -> TensorMap:
+        _require_unbatched_storage(self.storage.data, "similar()")
         target_space = self.space if space is None else space
         target_dtype = self.storage.data.dtype if dtype is None else dtype
         return zeros(target_space, dtype=target_dtype)
@@ -173,6 +181,7 @@ class TensorMap:
         return get_sectorstructure(self.space).fusiontree_pairs
 
     def hasblock(self, coupled: object) -> bool:
+        _require_unbatched_storage(self.storage.data, "hasblock()")
         if self.space.sector_spec == _native.Trivial:
             key = _normalize_sector_key(coupled)
             self.space.sector_spec.quantum_dim(key)
@@ -313,6 +322,7 @@ class TensorMap:
     def subblocks(
         self,
     ) -> _SubblocksView:
+        _require_unbatched_storage(self.storage.data, "subblocks()")
         sectorstructure = get_sectorstructure(self.space)
         return _SubblocksView(
             self,
@@ -756,7 +766,12 @@ def _tensormap_unflatten(
     children: tuple[object, ...],
 ) -> TensorMap:
     (data,) = children
-    return TensorMap(aux_data, data)
+    tensor = object.__new__(TensorMap)
+    object.__setattr__(tensor, "space", aux_data)
+    object.__setattr__(
+        tensor, "storage", _pytree_vector_storage(data, storage_dim(aux_data)),
+    )
+    return tensor
 
 
 _tree_util.register_pytree_node(

@@ -12,7 +12,7 @@ from ...structure.layout import get_degeneracystructure, get_sectorstructure
 from ...structure.spaces import hom, sector_spec, storage_dim
 from ...tensor.dense import _trivial_dense_array
 from ...tensor.linalg import _compose
-from ...tensor.storage import _require_jax_storage_data
+from ...tensor.storage import _require_jax_storage_data, _require_unbatched_storage
 from ...tensor.tensor_map import TensorMap
 from ..transforms import (
     _has_shared_permute,
@@ -315,6 +315,8 @@ def tensorcontract(
     if not isinstance(left, TensorMap) or not isinstance(right, TensorMap):
         raise TypeError("left and right must be TensorMap instances")
 
+    _require_unbatched_storage(left.storage.data, "tensorcontract()")
+    _require_unbatched_storage(right.storage.data, "tensorcontract()")
     ranks = (left.numind, right.numind)
     left_axes, right_axes = _normalize_axes(axes, *ranks)
     output_refs = _normalize_output(output, ranks)
@@ -468,6 +470,7 @@ def tensortrace(
     if not isinstance(tensor, TensorMap):
         raise TypeError("tensor must be a TensorMap instance")
 
+    _require_unbatched_storage(tensor.storage.data, "tensortrace()")
     rank = tensor.numind
     trace_axes = _normalize_trace_axes(axes, rank)
     output_axes = _normalize_trace_output(output, rank)

@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import TypeAlias, cast
 
 from ... import _native
+from ...tensor.storage import _require_unbatched_storage
 from ...tensor.tensor_map import TensorMap
 from .primitives import tensorcontract, tensortrace
 
@@ -146,6 +147,8 @@ def _contract_network(
     *,
     order: tuple[_Label, ...] | None,
 ) -> TensorMap:
+    for operand in operands:
+        _require_unbatched_storage(operand.tensor.storage.data, "contract()/ncon()")
     operand_label_groups = _validate_network(
         operands,
         output_labels,
