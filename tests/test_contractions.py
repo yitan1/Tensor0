@@ -2780,8 +2780,10 @@ def test_consumer_layout_matches_original_tree_and_all_input_gradients(
         (U1SU2Irrep, {(0, 0): 1, (0, 1): 1}),
     ],
 )
+@pytest.mark.parametrize("dtype", [jnp.complex64, jnp.complex128])
+@jax.enable_x64()
 def test_nonabelian_consecutive_consumer_layouts_match_unplanned_tree_and_ad(
-    monkeypatch, family, sectors,
+    monkeypatch, family, sectors, dtype,
 ):
     import tensor0.operations.contractions.index_notation as notation
 
@@ -2795,7 +2797,7 @@ def test_nonabelian_consecutive_consumer_layouts_match_unplanned_tree_and_ad(
             for label in group
         )
         seen.update(label for label in group if label > 0)
-        tensors.append(_tensor(hom(legs, ()), jnp.complex64))
+        tensors.append(_tensor(hom(legs, ()), dtype))
 
     original = notation._contract_values
     use_targets = False
@@ -2829,9 +2831,27 @@ def test_nonabelian_consecutive_consumer_layouts_match_unplanned_tree_and_ad(
     run(*inputs)
     planned_stages = tuple(stages)
     assert_allclose(planned, reference)
-    for baseline_node, planned_node in zip(
+    if dtype == jnp.complex128:
+        dense_inputs = [np.asarray(to_dense(tensor)) for tensor in tensors]
+
+        def dense_oracle(leaf_count, output_labels):
+            arguments = []
+            for dense, group in zip(dense_inputs[:leaf_count], labels[:leaf_count], strict=True):
+                arguments.extend((dense, [label + 10 for label in group]))
+            arguments.append([label + 10 for label in output_labels])
+            return np.einsum(*arguments, optimize=False)
+
+        oracle = dense_oracle(4, (-4, -1, -3, -2))
+        output_space = hom((factor, factor), (factor.dual(), factor.dual()))
+        for data in (reference, planned):
+            np.testing.assert_allclose(
+                to_dense(TensorMap(output_space, data)), oracle,
+                rtol=1e-12, atol=1e-12,
+            )
+
+    for leaf_count, (baseline_node, planned_node) in enumerate(zip(
         baseline_stages[:2], planned_stages[:2], strict=True,
-    ):
+    ), start=2):
         baseline_map, baseline_labels = baseline_node.tensor, baseline_node.labels
         planned_map, planned_labels = planned_node.tensor, planned_node.labels
         assert planned_labels != baseline_labels
@@ -2844,7 +2864,18 @@ def test_nonabelian_consecutive_consumer_layouts_match_unplanned_tree_and_ad(
             tuple(positions[label] for label in baseline_labels[1]),
         ))
         assert mapped.space == baseline_map.space
-        assert_allclose(mapped.storage.data, baseline_map.storage.data)
+        actual = np.asarray(mapped.storage.data)
+        expected = np.asarray(baseline_map.storage.data)
+        # Two producer contractions and a two-term unitary recoupling can
+        # cancel components. Use a small normwise roundoff budget for this
+        # short chain, not a componentwise relative tolerance at zero.
+        scale = max(np.linalg.norm(actual, ord=np.inf), np.linalg.norm(expected, ord=np.inf))
+        budget = 8 * np.finfo(actual.real.dtype).eps * scale
+        assert np.linalg.norm(actual - expected, ord=np.inf) <= budget
+        if dtype == jnp.complex128:
+            oracle = dense_oracle(leaf_count, baseline_labels[0] + baseline_labels[1])
+            for tensor in (baseline_map, mapped):
+                np.testing.assert_allclose(to_dense(tensor), oracle, rtol=1e-12, atol=1e-12)
 
     def objective(*data):
         return jnp.real(jnp.sum(run(*data)))

@@ -122,7 +122,7 @@ if os.environ.get("MOCK_CONCURRENCY"):
 deps = [source] + [str(p) for p in root.rglob("*")
                    if p.suffix == ".h" or (source.endswith(".cu") and p.suffix == ".cuh")]
 def escape(path):
-    return path.replace("$", "$$").replace(" ", "\\ ").replace("#", "\\#")
+    return path.replace("$", "$$").replace(" ", "\\\\ ").replace("#", "\\\\#")
 pathlib.Path(sys.argv[sys.argv.index("-MF") + 1]).write_text(
     "tensor0-object: " + " ".join(escape(p) for p in deps) + "\\n")
 if os.environ.get("MOCK_REAL_COMPILER"):
@@ -174,6 +174,16 @@ sys.exit(int(os.environ.get("MOCK_FAIL", "0")) or
 
     run.unit_count = sum(source.endswith(".cc") for source in sources)
     return run, manifest, output
+
+
+def test_mock_compiler_has_no_syntax_warnings(build):
+    _, _, output = build
+    result = subprocess.run(
+        [sys.executable, "-Werror", str(output.parent / "compiler"), "--version"],
+        capture_output=True, text=True, timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stderr == ""
 
 
 def test_backend_invalidation_and_failed_compile(build):
