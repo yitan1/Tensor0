@@ -19,6 +19,17 @@ env:
   JAX_PLATFORMS: cpu
 
 jobs:
+  maintenance:
+    name: Maintenance checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+      - name: Test maintenance rules
+        run: python3 -m unittest discover -s tests/ci -p test_maintenance.py
+      - name: Check entry documents and production imports
+        run: python3 .github/scripts/check_maintenance.py
+
   changes:
     name: Classify daily CI changes
     runs-on: ubuntu-24.04
@@ -125,17 +136,22 @@ jobs:
   result:
     name: CI result
     if: always()
-    needs: [changes, test, typecheck]
+    needs: [changes, maintenance, test, typecheck]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - name: Require the selected verification jobs
         env:
+          MAINTENANCE_RESULT: ${{ needs.maintenance.result }}
           CHANGES_RESULT: ${{ needs.changes.result }}
           RUN_CPU: ${{ needs.changes.outputs.run_cpu }}
           TEST_RESULT: ${{ needs.test.result }}
           TYPECHECK_RESULT: ${{ needs.typecheck.result }}
         run: |
+          if [ "$MAINTENANCE_RESULT" != success ]; then
+            echo 'Maintenance checks failed, were cancelled, or unexpectedly skipped.'
+            exit 1
+          fi
           if [ "$CHANGES_RESULT" != success ]; then
             echo 'Change classification failed or was cancelled.'
             exit 1
