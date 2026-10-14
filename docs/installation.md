@@ -3,14 +3,15 @@
 ## Install from PyPI
 
 The current PyPI release is
-[Tensor0 0.2.0](https://pypi.org/project/tensor0/0.2.0/), published on 2026-10-12.
+[Tensor0 0.3.0](https://pypi.org/project/tensor0/0.3.0/),
+published on 2026-10-14 UTC.
 
-### Published 0.2.0 platform availability
+### Published 0.3.0 platform availability
 
 | Platform | Prebuilt core wheels | Status |
 | --- | --- | --- |
-| Linux x86_64, glibc >=2.28 | CPython 3.11–3.14, manylinux_2_28 | Available and tested |
-| macOS 15+ ARM64 | CPython 3.11–3.14, macosx_15_0_arm64 | Available and tested on hosted macOS 15 |
+| Linux x86_64, glibc >=2.28 | Ordinary CPython 3.12–3.15, manylinux_2_28 | Available and tested |
+| macOS 15+ ARM64 | Ordinary CPython 3.12–3.15, macosx_15_0_arm64 | Available and tested on hosted macOS 15 |
 | Windows | Not provided | Outside the current support scope |
 
 All eight core wheels were built from one shared sdist and passed installed-wheel
@@ -24,19 +25,20 @@ source builds are impossible; neither is it a guarantee that they work.
 Use a virtual environment:
 
 ```bash
-python3.11 -m venv .venv
+python3.12 -m venv .venv
 source .venv/bin/activate
-python -m pip install tensor0==0.2.0
+python -m pip install tensor0==0.3.0
 python -m pip check
 ```
 
 Installing these prebuilt wheels requires **no Rust or C++ compiler** and no CUDA
-toolkit. JAX and JAXLIB **0.10.1** are installed through Tensor0's pinned
+toolkit. JAX and JAXLIB **0.11.2** are installed through Tensor0's pinned
 dependencies. Native handlers use matching vendored XLA FFI headers and reject
 mismatched runtime versions. Do not independently upgrade JAX/JAXLIB.
 
-Python >=3.11 package metadata does not establish support for future interpreters
-or other platforms. Documentation on `main` describes the current checkout;
+Python **>=3.12** is required. Free-threaded Python is unsupported; package
+metadata does not establish support for future interpreters or other platforms.
+Documentation on `main` describes the current checkout;
 consult the matching release documentation when using an older artifact.
 
 ## Source build prerequisites
@@ -52,8 +54,7 @@ supported wheel:
   PyO3 and Rust `numpy` **0.29** are Cargo build dependencies.
 - A supported Python interpreter and access to the pinned Python dependencies
   and Cargo crates, or suitable local caches. The source-build procedure below
-  targets Linux x86_64 and macOS 15+ ARM64. Historical 0.2.0
-  source/wheel validation does not validate the 0.3.0 runtime.
+  targets Linux x86_64 and macOS 15+ ARM64.
 
 Native C++ template compilation is memory-intensive: heavy units can each use
 several GiB. Cargo's default parallelism follows CPU count, not free memory or
@@ -67,10 +68,10 @@ cache behavior and jobserver details.
 
 ## Source install
 
-The checkout targets **0.3.0 (unreleased)**, ordinary CPython **3.12–3.15**
-and exact JAX/JAXLIB **0.11.2**. Free-threaded Python is unsupported. Linux
-x86_64 (glibc >=2.28) and macOS 15+ ARM64 CPU are wheel targets, not a claim
-that the new matrix has passed. Use a fresh environment with Python 3.12+:
+The current release is **0.3.0**, with validated ordinary CPython **3.12–3.15**
+wheels and exact JAX/JAXLIB **0.11.2**. Free-threaded Python is unsupported.
+Linux x86_64 (glibc >=2.28) and macOS 15+ ARM64 CPU passed installed-wheel
+acceptance. Use a fresh environment with Python 3.12+:
 
 ```bash
 git clone https://github.com/yitan1/Tensor0.git
@@ -93,9 +94,9 @@ versions and installed import origins with the smoke check below.
 
 For CUDA development, rebuild the companion from matching source with the
 same actual version as the core and 0.11.2 FFI headers; do not pair a 0.2.0
-addon with this checkout. Repeat exact-byte CPU/GPU acceptance before claiming
-the new pair works. The published command below continues to install **0.2.0**,
-not the unreleased development target.
+addon with this checkout. The published 0.3.0 pair passed exact-byte CPU/GPU
+acceptance; source rebuilds require their own validation. The published command
+below installs that released pair.
 
 This is a non-editable source build. It requires access to Python build/runtime
 dependencies and Cargo crates, or suitable local caches. No CUDA toolkit is
@@ -132,12 +133,12 @@ This is a smoke check, not comprehensive numerical acceptance. See the
 
 ## Experimental CUDA
 
-Version 0.2.0 provides a separate
-[`tensor0-cuda12` companion](https://pypi.org/project/tensor0-cuda12/0.2.0/)
+Version 0.3.0 provides a separate
+[`tensor0-cuda12` companion](https://pypi.org/project/tensor0-cuda12/0.3.0/)
 with an exact matching core version. Install the published pair using:
 
 ```bash
-python -m pip install "tensor0[cuda12]==0.2.0"
+python -m pip install "tensor0[cuda12]==0.3.0"
 python -m pip check
 ```
 

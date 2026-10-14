@@ -5,12 +5,12 @@ Accumulation, Dot and Reduction through XLA FFI. CPU-only builds remain the defa
 CUDA toolkit or CUDA runtime. See [development.md](development.md) for source-build
 switches. This is a correctness-oriented backend, not a performance recommendation.
 
-The current checkout targets **0.3.0 (unreleased)** and exact JAX/JAXLIB
-**0.11.2** on ordinary Python **3.12+**. CUDA 12 retains the existing bounded
-experimental scope below; no new GPU acceptance is asserted. Rebuild both core
-and companion from matching source/version and 0.11.2 headers, then repeat
-exact-byte CPU/GPU acceptance. Historical 0.2.0/JAX 0.10.1 evidence is not
-certification of this new pair. Free-threaded Python is unsupported.
+Release **0.3.0** requires exact JAX/JAXLIB **0.11.2** and Python **>=3.12**,
+with validated ordinary CPython **3.12–3.15** wheels. All four CUDA ABI jobs and
+exact-pair A100 (`sm_80`) acceptance passed, with accepted core bytes unchanged.
+CUDA 12 retains the existing bounded experimental scope below. Source rebuilds
+need matching core/companion versions and 0.11.2 headers, plus fresh exact-byte
+CPU/GPU validation. Free-threaded Python is unsupported.
 
 ## Supported operations
 
@@ -176,7 +176,8 @@ CUDA Graphs.
 ## Tested high-level TensorMap subset
 
 The public-API tests in `tests/tensor/test_cuda_integration.py` ran on an A100
-with JAX/JAXLIB 0.10.1 for the published 0.2.0 acceptance. They compare explicit
+with JAX/JAXLIB 0.11.2 for published 0.3.0 acceptance (**72 passed**).
+Historical 0.2.0 acceptance used JAX/JAXLIB 0.10.1. They compare explicit
 CPU and CUDA placements, check returned arrays' device residency and dtypes,
 and inspect CUDA native targets for
 nontrivial transforms and trace. Small dense/sign/reconstruction oracles supplement
@@ -252,8 +253,8 @@ Compilation platform determines the CPU or CUDA target, including through custom
 partitioning. The unified core always contains CPU execution and the dynamic
 loader. Installing matching `tensor0-cuda12` enables CUDA without rebuilding or
 replacing the core. The published `tensor0[cuda12]` extra pins
-`tensor0-cuda12==0.2.0` and `jax[cuda12]==0.10.1`; both distributions are available
-on PyPI as version `0.2.0`. Published CPU 0.1.0 does not support this discovery contract.
+`tensor0-cuda12==0.3.0` and `jax[cuda12]==0.11.2`; both distributions are available
+on PyPI as version `0.3.0`. Published CPU 0.1.0 does not support this discovery contract.
 
 The addon contains only the C-ABI `tensor0_cuda12/_stride_cuda.so` backend and
 the root MIT license, with external `nvidia-cuda-runtime-cu12>=12.9.79,<13`. Distribution
@@ -262,14 +263,18 @@ before CDLL. Presence probes do not load libraries or query devices. Missing
 addon retains CPU-only registration/statistics; wrong versions or missing ELF,
 runtime, and resident cudart conflicts fail explicitly when registration is
 requested. CPU operations do not need CUDA. Driver/GPU and GPU JAX are needed
-only for execution. For 0.2.0, JAX/JAXLIB must match vendored headers 0.10.1. The 0.3.0
-source target instead requires exact JAX/JAXLIB and headers 0.11.2; the source
-extra pins the matching 0.3.0 companion and `jax[cuda12]==0.11.2`.
+only for execution. Release 0.3.0 requires exact JAX/JAXLIB and vendored headers
+0.11.2. Historical 0.2.0 requires JAX/JAXLIB and headers 0.10.1; do not mix
+binaries or runtime pins between these releases.
 
-This published split remains experimental. The original 0.2.0 core/addon pair
-passed CPU regression and bounded A100 (`sm_80`) acceptance with runtime
-12.9.79 before publication; all published distribution hashes match the accepted
-artifacts. This does not establish compatibility beyond the documented matrix.
+This published split remains experimental. The original 0.3.0 core/addon pair
+passed production CPU regression (**7,318 passed, 865 skipped**) and bounded
+A100 (`sm_80`) acceptance with runtime 12.9.79: **790 primitive tests passed**
+with **10 allowed CPU-only skips**, plus **18 boundary** and **72 TensorMap**
+tests. All published distribution hashes match the accepted artifacts, and
+addon installation left accepted core bytes unchanged. Historical 0.2.0 also
+passed its own bounded acceptance. Neither release establishes compatibility
+beyond the documented matrix or a performance guarantee.
 
 CUDA lowering calls native semantic preparation before emitting compact i64
 metadata. All five operations use the validated semantic result as the host
@@ -408,8 +413,8 @@ universal toolkit compatibility is implied by the optional build.
 
 ### Manual installed-wheel acceptance
 
-CUDA remains experimental. This procedure targets the unreleased 0.3.0 pair;
-it is not a report of completed validation. The core is built with maturin;
+CUDA remains experimental. The released 0.3.0 pair passed this procedure;
+future candidates and source rebuilds require fresh exact-byte evidence. The core is built with maturin;
 the independent setuptools addon initially uses a raw **py3-none-linux_x86_64** tag, targeting
 `sm_80` by default; the candidate route repairs it to **manylinux_2_28_x86_64**.
 Build each wheel from its own extracted sdist outside the checkout. See

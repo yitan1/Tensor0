@@ -4,10 +4,13 @@ User-facing changes are recorded here. Before 1.0, patch releases preserve the
 documented public API; breaking changes require a minor release and migration
 notes. See [Support and compatibility](docs/support.md).
 
-## 0.3.0 — Unreleased
+## 0.3.0 — 2026-10-14
 
-This is the current source-development target, not a published release or a
-claim that the new platform/runtime matrix has passed acceptance.
+Available on [PyPI](https://pypi.org/project/tensor0/0.3.0/), with the optional
+[tensor0-cuda12 companion](https://pypi.org/project/tensor0-cuda12/0.3.0/),
+and as [GitHub Release v0.3.0](https://github.com/yitan1/Tensor0/releases/tag/v0.3.0).
+All eleven published distributions match the original accepted bytes: eight
+core wheels, one core sdist, one repaired Linux addon wheel and one addon sdist.
 
 ### Fixes
 
@@ -27,20 +30,25 @@ claim that the new platform/runtime matrix has passed acceptance.
   vendored XLA FFI headers and native build/runtime guards. Upgrade PyO3 and
   Rust `numpy` to **0.29**; source builds require maturin **>=1.15.0,<2**,
   with **1.15.0** as the fixed validation tool.
-- Target ordinary CPython **3.12–3.15** wheels on Linux **x86_64**, **glibc
-  >=2.28**, and macOS **15+ ARM64 CPU**. Daily Linux CPU CI targets **3.12/3.15**;
-  every release wheel must pass its installed-artifact gates. Free-threaded
-  Python is not supported. Historical 0.2.0 macOS acceptance does not certify
-  the new runtime or wheel matrix.
-- **Python 3.11 migration:** create a Python 3.12+ environment for this source
-  checkout; retain pinned 0.2.0/JAX 0.10.1 when Python 3.11 is required. Rebuild
-  the native core against 0.11.2 headers rather than independently upgrading
-  JAX in an old environment. CUDA users must also rebuild the exact-version
-  companion from matching source, then repeat exact-byte CPU/GPU acceptance.
-  Do not mix 0.2.0 binaries with 0.3.0 source or either runtime pin.
+- Publish validated ordinary CPython **3.12–3.15** wheels on Linux **x86_64**,
+  **glibc >=2.28** (manylinux_2_28), and macOS **15+ ARM64 CPU**. All eight wheel
+  jobs and same-commit CI passed, including hosted macOS 15 acceptance. Daily
+  Linux CPU CI covers **3.12/3.15**. Free-threaded Python is not supported.
+- **Python 3.11 migration:** create a Python 3.12+ environment for this release;
+  retain pinned 0.2.0/JAX 0.10.1 when Python 3.11 is required. Install the 0.3.0
+  wheels with their pinned runtime rather than independently upgrading JAX in
+  an old environment; CUDA users should install the matching 0.3.0 core/addon
+  pair. Source users must rebuild the native core against 0.11.2 headers and,
+  for CUDA, rebuild the exact-version companion from matching source and repeat
+  exact-byte CPU/GPU validation. Do not mix 0.2.0 binaries with 0.3.0 source or
+  either runtime pin.
 - CUDA 12 remains experimental with the existing bounded operation/dtype/AD
-  scope; this upgrade neither expands support nor establishes new GPU
-  acceptance. See [Installation](docs/installation.md),
+  scope. All four CUDA ABI jobs and exact-pair A100 acceptance passed, with
+  accepted core bytes unchanged after addon installation. Production CPU
+  regression passed **7,318 tests** (**865 skipped**); GPU primitives passed
+  **790 tests** (**10 allowed CPU-only skips**), plus **18 boundary** and
+  **72 high-level TensorMap** tests. These results do not expand support or
+  promise performance. See [Installation](docs/installation.md),
   [Development](docs/development.md) and [Releasing](docs/releasing.md).
 
 ## 0.2.0 — 2026-10-12

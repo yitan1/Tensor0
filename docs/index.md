@@ -5,25 +5,24 @@ metadata and JAX-backed tensor storage.
 
 Use this documentation for the current checkout. The public API is still
 evolving, and Tensor0 is not yet a production-ready tensor-network framework.
-[Tensor0 0.2.0 is available on PyPI](https://pypi.org/project/tensor0/0.2.0/),
-published on 2026-10-12. Install with `pip install tensor0==0.2.0` in a virtual
+[Tensor0 0.3.0 is available on PyPI](https://pypi.org/project/tensor0/0.3.0/),
+published on 2026-10-14 UTC. Install with `pip install tensor0==0.3.0` in a virtual
 environment; supported prebuilt wheels require no Rust or C++ compiler.
 
 ## Runtime Compatibility
 
-The released CPU execution baseline supports Linux x86_64 with glibc >=2.28
-and macOS 15+ ARM64, with JAX and JAXLIB 0.10.1. The tested 0.2.0 wheel matrix
-covers CPython 3.11–3.14 on both platforms, built from one shared core sdist;
-Python 3.11 was the 0.2.0 baseline interpreter. The Python >=3.11 metadata does
-not imply support for future interpreters. macOS is CPU-only. See
-[Support and compatibility](support.md) for platform scope.
+Release **0.3.0** requires Python **>=3.12** and exact JAX/JAXLIB **0.11.2**.
+All eight ordinary CPython **3.12–3.15** core wheel jobs passed installed-artifact
+acceptance on Linux x86_64 (manylinux_2_28, glibc >=2.28) and macOS **15+ ARM64**.
+The wheels share one core sdist; daily Linux CPU CI covers **3.12/3.15**.
+macOS is CPU-only and free-threaded Python is unsupported. The matching CUDA
+pair passed bounded A100 acceptance; its experimental scope is unchanged.
+Python metadata does not imply support for arbitrary future interpreters.
 
-The current source checkout targets **0.3.0 (unreleased)**, Python **>=3.12**
-and exact JAX/JAXLIB **0.11.2**. Its intended ordinary CPython **3.12–3.15**
-wheel matrix uses the same CPU platforms; daily Linux CI targets **3.12/3.15**.
-Free-threaded Python is unsupported. These targets do not establish new Linux,
-macOS or CUDA acceptance. See [Installation](installation.md#source-install)
-for Python 3.11 migration and native rebuild requirements, and
+Historical **0.2.0** supports CPython **3.11–3.14** with JAX/JAXLIB **0.10.1**.
+Python 3.11 users must keep that pinned runtime or migrate. See
+[Installation](installation.md#source-install) for migration and native rebuild
+requirements, [Support and compatibility](support.md) for platform scope, and
 [Releasing](releasing.md) for per-wheel acceptance.
 
 The native stride handler is compiled against its exact XLA FFI header version

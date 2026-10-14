@@ -3,10 +3,10 @@
 Tensor0 is developed from a source checkout with Python, Rust, uv, maturin, and
 pytest.
 
-The current checkout targets **0.3.0 (unreleased)**, Python **>=3.12** and exact
+The current release is **0.3.0**, requiring Python **>=3.12** and exact
 JAX/JAXLIB **0.11.2**, with PyO3 and Rust `numpy` **0.29**. Core source builds
 use maturin **>=1.15.0,<2**; validation tooling is fixed to **1.15.0**. Ordinary
-CPython **3.12–3.15** is the intended wheel matrix; free-threaded builds are not
+CPython **3.12–3.15** is the validated wheel matrix; free-threaded builds are not
 supported. Re-sync a Python 3.12+ environment and rebuild the native core after
 runtime/header changes. Rebuild the matching CUDA companion separately if
 needed. Never treat a stale 0.2.0 binary or earlier platform evidence as
@@ -183,11 +183,12 @@ publication. All four hosted macOS 15 jobs passed for the published 0.2.0
 artifacts; the M5 result above is separate source-validation evidence. See
 [Releasing](releasing.md) for the fixed nine-core/eleven-final artifact contract.
 
-The 0.3.0 target shifts this release matrix to ordinary CPython **3.12–3.15**
+Release 0.3.0 shifts this release matrix to ordinary CPython **3.12–3.15**
 and exact JAX/JAXLIB **0.11.2**, with full endpoint suites on **3.12/3.15** and
 bounded intermediate-ABI contracts on **3.13/3.14** as described in
-[Releasing](releasing.md). All eight wheel jobs remain required. Neither the
-historical M5 check nor published 0.2.0 hosted acceptance validates this target.
+[Releasing](releasing.md). All eight wheel jobs and same-commit CI passed for
+published 0.3.0, including all four hosted macOS 15 jobs. Future releases still
+require their own evidence; the historical M5 and 0.2.0 results remain separate.
 
 ## Optional CUDA stride build
 
@@ -214,14 +215,15 @@ repaired addon enters the candidate directory. No NVIDIA runtime/driver is
 bundled and the linker adds no RPATH. Actual repair/ELF inspection, not a
 setuptools retag, must establish compliance. The core continues to use maturin.
 
-The 0.3.0 development target coordinates both Python distributions and Cargo,
+Release 0.3.0 coordinates both Python distributions and Cargo,
 with exact reciprocal dependency pins (the core pin is in its `cuda12` extra).
 The source `tensor0[cuda12]` extra selects the matching addon and
 `jax[cuda12]==0.11.2`; the addon requires external
 `nvidia-cuda-runtime-cu12>=12.9.79,<13`. Published CPU 0.1.0 cannot be paired with
-this addon. Published 0.2.0 artifacts passed exact-pair acceptance; this does
-not validate 0.3.0/JAX 0.11.2 or establish compatibility beyond the documented
-CUDA matrix.
+this addon. Published 0.3.0/JAX 0.11.2 artifacts passed all four CUDA ABI jobs
+and exact-pair A100 acceptance without changing the accepted core bytes.
+Historical 0.2.0 artifacts passed their own exact-pair acceptance. Neither
+establishes compatibility beyond the documented CUDA matrix.
 
 `CXX` defaults to `/usr/bin/c++` and selects NVCC's explicit `-ccbin` host compiler;
 `NVCC_CCBIN` is cleared for that invocation. `NVCC` selects the CUDA compiler,

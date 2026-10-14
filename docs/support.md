@@ -4,7 +4,7 @@ Tensor0 is experimental, pre-1.0 software. Use it with pinned dependencies and
 validate the numerical paths needed by your application; production readiness,
 performance and exhaustive coverage are not promised.
 
-## Published 0.2.0 baseline
+## Historical published 0.2.0 baseline
 
 | Area | Policy |
 | --- | --- |
@@ -19,20 +19,24 @@ The released 0.2.0 package's Python >=3.11 metadata is an eligibility range, not
 future interpreters work. CI results establish only the versions, platforms and
 paths actually executed. Skipped device tests are not acceptance evidence.
 
-## Current source-development target: 0.3.0 (unreleased)
+## Current release: 0.3.0
 
-| Area | Target policy (not acceptance evidence) |
+Published on **2026-10-14 UTC** on [PyPI](https://pypi.org/project/tensor0/0.3.0/)
+with the matching [CUDA companion](https://pypi.org/project/tensor0-cuda12/0.3.0/).
+
+| Area | Policy and validation |
 | --- | --- |
 | Runtime | Exact JAX **0.11.2** and JAXLIB **0.11.2**, matching vendored FFI headers and rebuilt native binaries |
-| Python | Python **>=3.12**; ordinary CPython **3.12–3.15** wheel targets; no free-threaded support |
+| Python | Python **>=3.12**; ordinary CPython **3.12–3.15** validated wheel matrix; no free-threaded support |
 | CPU platforms | Linux **x86_64**, glibc **>=2.28**; macOS **15+ ARM64 CPU** |
-| Verification | Daily Linux CPU CI endpoints **3.12/3.15**; all eight release wheels require installed-artifact acceptance |
+| Verification | All eight Linux manylinux_2_28/macOS 15 ARM64 wheel jobs and same-commit CI passed; daily Linux CPU CI endpoints **3.12/3.15** |
 | Native build tools | Rust **>=1.87**, C++20, PyO3/Rust `numpy` **0.29**, maturin **>=1.15.0,<2** (fixed validation tool **1.15.0**) |
-| CUDA 12 | Existing experimental Linux x86_64 operation/dtype/AD scope only; freshly rebuilt exact-version core/addon pair requires CPU/GPU acceptance |
+| CUDA 12 | Matching **0.3.0** companion; all four ABI jobs and exact-pair A100 (`sm_80`) CPU/GPU acceptance passed within the existing experimental operation/dtype/AD scope |
 
-The new matrix is a target, not a statement that builds, hosted macOS jobs or
-CUDA execution have passed. Published 0.2.0 evidence does not validate 0.3.0 or
-JAX 0.11.2. Python 3.11 users must stay on the pinned 0.2.0 runtime or migrate
+All eleven published distributions match the original accepted bytes. CUDA
+addon installation left the accepted core bytes unchanged. Validation establishes
+only the tested versions, platforms and paths, not broader API or GPU coverage.
+Python 3.11 users must stay on the pinned 0.2.0 runtime or migrate
 to Python 3.12+; see [source installation and migration](installation.md#source-install).
 Python >=3.12 metadata does not promise arbitrary future interpreter support.
 Rebuild native binaries with the exact headers/runtime; upgrading JAX alone is

@@ -2,6 +2,42 @@
 
 ## Current release
 
+**0.3.0 was published on 2026-10-14 UTC**:
+[Core on PyPI](https://pypi.org/project/tensor0/0.3.0/) ·
+[CUDA companion on PyPI](https://pypi.org/project/tensor0-cuda12/0.3.0/) ·
+[GitHub Release v0.3.0](https://github.com/yitan1/Tensor0/releases/tag/v0.3.0).
+All eleven original accepted distributions were published without rebuild:
+eight core wheels, one shared core sdist, one repaired Linux addon wheel and one
+addon sdist. Downloaded PyPI bytes and distribution metadata were verified
+against the accepted artifacts.
+
+The validated wheel matrix is ordinary CPython **3.12–3.15**, Linux **x86_64**
+(manylinux_2_28, **glibc >=2.28**) and macOS **15+ ARM64 CPU**, requiring Python
+**>=3.12** and exact JAX/JAXLIB **0.11.2**. Free-threaded Python is unsupported.
+Completed same-source gates:
+
+- [CPU artifacts run 38489243794](https://github.com/yitan1/Tensor0/actions/runs/38489243794):
+  all eight wheel jobs passed, including hosted macOS 15.
+- [CI run 38489243881](https://github.com/yitan1/Tensor0/actions/runs/38489243881):
+  passed.
+- [CUDA run 38494504235](https://github.com/yitan1/Tensor0/actions/runs/38494504235):
+  all four ABI jobs passed.
+- Production A100 exact-pair acceptance: CPU **7,318 passed, 865 skipped**;
+  GPU primitives **790 passed, 10 allowed CPU-only skips**, plus **18 boundary**
+  and **72 TensorMap** tests. Accepted core bytes remained unchanged after addon
+  installation. CUDA's bounded experimental scope is unchanged.
+- [Publication run 38497815093](https://github.com/yitan1/Tensor0/actions/runs/38497815093):
+  passed; both projects' PyPI files match accepted bytes. A fresh PyPI installation
+  smoke check also passed.
+
+The immutable `v0.3.0` tag identifies source commit
+`974153a7ba26d11d5f6f51d3f8d5d01abecc0f30`. Its candidate-era documentation
+still says `Unreleased`; post-publication documentation on `main` records the
+completed release. Do not move the tag or rebuild the published artifacts to
+update documentation.
+
+## Historical 0.2.0 release
+
 **0.2.0 was published on 2026-10-12**:
 [Core on PyPI](https://pypi.org/project/tensor0/0.2.0/) ·
 [CUDA companion on PyPI](https://pypi.org/project/tensor0-cuda12/0.2.0/) ·
@@ -19,14 +55,13 @@ The following checklist is for **future releases**, not a historical audit.
 Each release needs its own acceptance evidence and explicit maintainer approval.
 Do not tag or publish merely to exercise packaging.
 
-## Next development target
+## Checklist baseline for future releases
 
-**0.3.0 is unreleased.** The checklist below targets exact JAX/JAXLIB **0.11.2**,
+The checklist below uses the current exact JAX/JAXLIB **0.11.2** runtime,
 Python **>=3.12**, ordinary CPython **3.12–3.15**, daily Linux endpoints
-**3.12/3.15**, and all eight Linux/macOS release wheels. It describes required
-future gates, not completed runs. Free-threaded Python is unsupported. Existing
-0.2.0 Linux/macOS and A100 evidence does not validate the upgraded runtime;
-CUDA keeps its experimental scope and requires fresh exact-pair evidence.
+**3.12/3.15**, and all eight Linux/macOS release wheels. Free-threaded Python
+is unsupported. Completed 0.3.0 gates do not validate later artifacts; future
+releases require fresh evidence while CUDA retains its experimental scope.
 
 ## Candidate preparation
 
@@ -47,11 +82,12 @@ CUDA keeps its experimental scope and requires fresh exact-pair evidence.
 ## Build and inspect distributions
 
 The [artifact workflow](https://github.com/yitan1/Tensor0/blob/main/.github/workflows/artifacts.yml)
-is an artifact-only validation route, not PyPI publishing. The **0.3.0 (unreleased)** target wheel
-matrix is ordinary CPython **3.12–3.15** on both Linux x86_64 CPU
+is an artifact-only validation route, not PyPI publishing. The current **0.3.0**
+wheel matrix is ordinary CPython **3.12–3.15** on both Linux x86_64 CPU
 (manylinux_2_28, glibc >=2.28) and macOS **15+ ARM64 CPU**
 (`macosx_15_0_arm64`, not universal2); free-threaded builds are excluded.
-Hosted macOS 15 acceptance passed for **0.2.0 only**, not this new runtime.
+Hosted macOS 15 acceptance passed for **0.3.0**, separately from historical
+0.2.0.
 Verify this matrix anew for each release. Wheels must be built from the extracted
 sdist, inspected and tested in isolated installed environments. Consult the
 actual workflow configuration, run logs and artifacts: a target matrix is not
@@ -212,8 +248,9 @@ Retain those run results and exact-pair GPU evidence separately. Duplicate core
 files in the CUDA artifact are acceptance conveniences, not a second publishing
 input; publish the original verified CPU bytes only once.
 
-The published 0.2.0 distributions use precise pairing pins; Cargo also uses
-version `0.2.0`. Historical CPU 0.1.0 and its immutable artifacts remain untouched.
+The published 0.3.0 distributions use precise pairing pins; Cargo also uses
+version `0.3.0`. Historical 0.2.0 uses its own exact pairing pins. Historical CPU
+0.1.0 and its immutable artifacts remain untouched.
 The extra selects the addon and GPU JAX automatically. For future candidates,
 version selection alone is not publication approval, and earlier combined-wheel
 CPU/A100 acceptance does not validate a new pair.
@@ -252,7 +289,7 @@ legal clearance. Publishing requires separate maintainer approval for both proje
 ## Publish only after approval
 
 The publisher handles a **unified two-project release**, not a CPU-only mode.
-Version 0.2.0 has been published for both Python projects; future releases must
+Version 0.3.0 has been published for both Python projects; future releases must
 complete candidate verification, exact-pair acceptance and explicit maintainer
 approval before dispatch. The literal stable
 `vX.Y.Z` tag must match Python, Cargo and addon source versions at the candidate
@@ -274,7 +311,7 @@ does not reserve the name. The action can upload both projects using the same
 workflow/environment identity only when **both** publishers are configured.
 No API mutation or credential provisioning is performed by the verifier.
 
-Both Trusted Publishers are configured for the published 0.2.0 pair. The GitHub
+Both Trusted Publishers are configured for the published 0.3.0 pair. The GitHub
 `pypi` environment restricts deployments to `main`; it currently has **no required
 reviewers**, so there is no second GitHub environment approval after dispatch.
 Explicit maintainer approval before dispatch remains release policy. A required
