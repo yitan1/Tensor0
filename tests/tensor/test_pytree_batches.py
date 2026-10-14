@@ -169,9 +169,16 @@ def test_diagonal_numeric_boundaries_reject_batches(method, args):
     a = t0.svd_compact(_tensor())[1]
     with pytest.raises(ValueError, match='unbatched storage'):
         getattr(_stack(a, a), method)(*args)
-    for operation in (lambda: a @ _stack(a, a), lambda: a.add(_stack(a, a))):
-        with pytest.raises(ValueError, match='unbatched storage'):
-            operation()
+
+
+@pytest.mark.parametrize('operation', [
+    pytest.param(lambda a, b: a @ b, id='matmul'),
+    pytest.param(lambda a, b: a.add(b), id='add'),
+])
+def test_diagonal_binary_boundaries_reject_right_batches(operation):
+    a = t0.svd_compact(_tensor())[1]
+    with pytest.raises(ValueError, match='unbatched storage'):
+        operation(a, _stack(a, a))
 
 
 @pytest.mark.parametrize('method,args', [

@@ -5,40 +5,16 @@ deterministic examples that can be copied into tests or interactive sessions.
 
 ## Local Checkout Setup
 
-For a non-editable user install and build prerequisites, see
-[Installation](installation.md). The commands below are for contributors;
-[Development](development.md) explains compiler memory budgeting and verification.
-
-From the repository root:
-
-```bash
-uv sync --group dev
-uv run maturin develop
-```
-
-Run the current verification set with:
-
-```bash
-cargo test
-uv run pytest tests -q
-```
+For a user install and build prerequisites, see [Installation](installation.md).
+For contributor checkout setup and compiler memory budgeting, see
+[Local Setup](development.md#local-setup); follow
+[Verification](development.md#verification) for the required checks.
 
 ## Supported Sector Families
 
-Tensor0 currently supports these public sector families and aliases:
-
-- `Trivial` for ordinary tensors without symmetry
-- `U1Irrep`
-- `Z2Irrep`, `Z3Irrep`, `Z4Irrep`
-- `FermionParity`
-- `SU2Irrep`
-- `FermionNumber`
-- `FermionParityU1Irrep`
-- `U1SU2Irrep`
-- `FermionParitySU2Irrep`
-- `FermionParityU1SU2Irrep`
-
-Arbitrary dynamic product sector families are not currently supported.
+Use `Trivial` for ordinary tensors without symmetry. See the
+[API inventory](api.md#sector-families) for all supported sector families and
+aliases. Arbitrary dynamic product sector families are not currently supported.
 
 ## Ordinary Tensors with Trivial Symmetry
 
