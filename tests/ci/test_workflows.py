@@ -133,17 +133,19 @@ def test_release_host_fetch_reuses_shared_sdist_lock_before_offline_fixtures():
     ('success', 'true', 'success', 'failure', False),
     ('success', 'false', 'success', 'skipped', False),
 ])
-def test_ci_result_fails_closed(tmp_path, classification, run_cpu, tests, typing, ok):
+@pytest.mark.parametrize('maintenance', ['success', 'failure', 'cancelled', 'skipped'])
+def test_ci_result_fails_closed(tmp_path, classification, run_cpu, tests, typing, ok, maintenance):
     workflow = (ROOT / '.github/workflows/ci.yml').read_text()
     gate = workflow.split('  result:\n')[1]
     assert 'if: always()' in gate
-    assert 'needs: [changes, test, typecheck]' in gate
+    assert 'needs: [changes, maintenance, test, typecheck]' in gate
     script = textwrap.dedent(gate.split('        run: |\n')[1])
-    env = dict(os.environ, CHANGES_RESULT=classification, RUN_CPU=run_cpu,
+    env = dict(os.environ, MAINTENANCE_RESULT=maintenance,
+               CHANGES_RESULT=classification, RUN_CPU=run_cpu,
                TEST_RESULT=tests, TYPECHECK_RESULT=typing,
                GITHUB_STEP_SUMMARY=str(tmp_path / 'summary'))
     result = subprocess.run(['bash', '-e', '-c', script], env=env, capture_output=True)
-    assert (result.returncode == 0) is ok
+    assert (result.returncode == 0) is (ok and maintenance == 'success')
 
 
 def test_workflow_keeps_required_check_triggers_and_conditional_heavy_jobs():

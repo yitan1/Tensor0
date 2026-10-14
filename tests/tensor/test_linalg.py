@@ -37,6 +37,7 @@ from tensor0.tensor.linalg import (
 from tests.cases import (
     InaccessibleVectorData,
     assert_allclose,
+    dense_contract as _dense_contract,
     float_data_for,
     tensor_map_matmul_cases,
 )
@@ -94,31 +95,6 @@ def _invertible_tensor(target, dtype=jnp.float32):
             values = values + 0.1j * values.T
         blocks[coupled] = values.astype(dtype)
     return tensor0.from_blocks(target, blocks, dtype=dtype)
-
-
-def _dense_contract(left, right, axes, output):
-    left_axes, right_axes = axes
-    result = jnp.tensordot(
-        to_dense(left),
-        to_dense(right),
-        axes=(left_axes, right_axes),
-    )
-    left_contracted = set(left_axes)
-    right_contracted = set(right_axes)
-    canonical_refs = tuple(
-        (0, axis) for axis in range(left.numind) if axis not in left_contracted
-    ) + tuple(
-        (1, axis) for axis in range(right.numind) if axis not in right_contracted
-    )
-    canonical_positions = {
-        ref: position for position, ref in enumerate(canonical_refs)
-    }
-    permutation = tuple(
-        canonical_positions[ref] for group in output for ref in group
-    )
-    if permutation != tuple(range(len(permutation))):
-        result = jnp.transpose(result, permutation)
-    return result
 
 
 def _assert_tensormap_matmul_contract(case):

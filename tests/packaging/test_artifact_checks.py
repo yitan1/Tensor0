@@ -11,26 +11,26 @@ import pytest
 SCRIPT = Path(__file__).resolve().parents[2] / ".github/scripts/check_artifacts.py"
 
 
-@pytest.mark.parametrize("cuda,platform,metadata_platform,companion,bundled,accepted", [
-    (False, "manylinux_2_28_x86_64", "manylinux_2_28_x86_64", False, None, True),
-    (False, "macosx_15_0_arm64", "macosx_15_0_arm64", False, None, True),
-    (False, "macosx_15_0_arm64", "macosx_14_0_arm64", False, None, False),
-    (False, "macosx_14_0_arm64", "macosx_14_0_arm64", False, None, False),
-    (False, "macosx_16_0_arm64", "macosx_16_0_arm64", False, None, False),
-    (False, "macosx_15_0_universal2", "macosx_15_0_universal2", False, None, False),
-    (False, "macosx_15_0_x86_64", "macosx_15_0_x86_64", False, None, False),
-    (False, "manylinux_2_28_aarch64", "manylinux_2_28_aarch64", False, None, False),
-    (True, "linux_x86_64", "linux_x86_64", True, None, False),
-    (True, "manylinux_2_28_x86_64", "manylinux_2_28_x86_64", True, None, True),
-    (True, "linux_x86_64", "manylinux_2_28_x86_64", True, None, False),
-    (True, "linux_x86_64", None, True, None, False),
-    (True, "linux_x86_64", "linux_x86_64", False, None, False),
-    (False, "linux_x86_64", "linux_x86_64", True, None, False),
-    (True, "linux_x86_64", "linux_x86_64", True, "libcudart.so.12", False),
-    (True, "linux_x86_64", "linux_x86_64", True, "libcudart-abcdef.so.12", False),
-    (True, "linux_x86_64", "linux_x86_64", True, "libcuda.so.1", False),
+@pytest.mark.parametrize("cuda,platform,metadata_platform,companion,bundled,error", [
+    (False, "manylinux_2_28_x86_64", "manylinux_2_28_x86_64", False, None, None),
+    (False, "macosx_15_0_arm64", "macosx_15_0_arm64", False, None, None),
+    (False, "macosx_15_0_arm64", "macosx_14_0_arm64", False, None, "Invalid core WHEEL metadata tag"),
+    (False, "macosx_14_0_arm64", "macosx_14_0_arm64", False, None, "Invalid core release wheel tag"),
+    (False, "macosx_16_0_arm64", "macosx_16_0_arm64", False, None, "Invalid core release wheel tag"),
+    (False, "macosx_15_0_universal2", "macosx_15_0_universal2", False, None, "Invalid core release wheel tag"),
+    (False, "macosx_15_0_x86_64", "macosx_15_0_x86_64", False, None, "Invalid core release wheel tag"),
+    (False, "manylinux_2_28_aarch64", "manylinux_2_28_aarch64", False, None, "Invalid core release wheel tag"),
+    (True, "linux_x86_64", "linux_x86_64", True, None, "Invalid companion wheel tag"),
+    (True, "manylinux_2_28_x86_64", "manylinux_2_28_x86_64", True, None, None),
+    (True, "manylinux_2_28_x86_64", "linux_x86_64", True, None, "Invalid companion WHEEL metadata tag"),
+    (True, "manylinux_2_28_x86_64", None, True, None, "Invalid companion WHEEL metadata tag"),
+    (True, "manylinux_2_28_x86_64", "manylinux_2_28_x86_64", False, None, "Missing archive files"),
+    (False, "manylinux_2_28_x86_64", "manylinux_2_28_x86_64", True, None, "CUDA library leaked into core wheel"),
+    (True, "manylinux_2_28_x86_64", "manylinux_2_28_x86_64", True, "libcudart.so.12", "NVIDIA runtime/driver binaries must be supplied separately"),
+    (True, "manylinux_2_28_x86_64", "manylinux_2_28_x86_64", True, "libcudart-abcdef.so.12", "NVIDIA runtime/driver binaries must be supplied separately"),
+    (True, "manylinux_2_28_x86_64", "manylinux_2_28_x86_64", True, "libcuda.so.1", "NVIDIA runtime/driver binaries must be supplied separately"),
 ])
-def test_wheel_contents(tmp_path, cuda, platform, metadata_platform, companion, bundled, accepted):
+def test_wheel_contents(tmp_path, cuda, platform, metadata_platform, companion, bundled, error):
     (tmp_path / "pyproject.toml").write_text('[project]\nversion = "0.3.0.dev0"\nlicense = "MIT AND Apache-2.0"\nlicense-files = ["LICENSE"]\n')
     addon = tmp_path / "crates/tensor0-cuda12"
     addon.mkdir(parents=True)
@@ -62,7 +62,9 @@ def test_wheel_contents(tmp_path, cuda, platform, metadata_platform, companion, 
     command = [sys.executable, "-I", str(SCRIPT), str(wheel)]
     command.append("--cuda" if cuda else "--release-core")
     result = subprocess.run(command, cwd=tmp_path, capture_output=True, text=True, timeout=30)
-    assert (result.returncode == 0) == accepted, result.stdout + result.stderr
+    assert (result.returncode == 0) == (error is None), result.stdout + result.stderr
+    if error is not None:
+        assert error in result.stderr
 
 
 @pytest.mark.parametrize("cuda", [False, True])
