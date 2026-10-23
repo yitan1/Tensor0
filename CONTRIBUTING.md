@@ -6,11 +6,13 @@ Keep changes focused and include a regression test for bug fixes.
 
 ## Review and acceptance
 
-Use a feature branch and one pull request per task, not per commit. Keep pull
-requests focused; separate unrelated refactoring and formatting. The maintainer
-may review locally and merge the PR after the final revision passes required CI;
-merging records approval, without a separate GitHub Approve review. Recheck any
-changes made after local review. Agents must not merge PRs on their own.
+Maintainers may push reviewed, locally tested changes directly to `main`; CI
+runs after the push. Feature branches and pull requests are optional for larger
+changes or collaboration. No permanent development branch is required. When
+using pull requests, keep one per task, not per commit, and separate unrelated
+refactoring and formatting. The maintainer may review locally and merge after
+CI passes, without a separate GitHub Approve review. Recheck changes made after
+local review. Agents must not merge PRs on their own.
 
 Use the PR template to report maintenance cost, verification and changes to
 acceptance standards. Human review must approve new dependencies, public APIs,
