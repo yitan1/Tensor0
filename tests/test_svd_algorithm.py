@@ -6,7 +6,10 @@ import numpy as np
 import pytest
 import tensor0 as t0
 
-jax.config.update('jax_enable_x64', True)
+@pytest.fixture(autouse=True)
+def enable_x64():
+    with jax.enable_x64(True):
+        yield
 
 
 def tensor(empty=False):
