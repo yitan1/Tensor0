@@ -532,6 +532,44 @@ Use `svd_trunc(...)` with `notrunc()`, `truncrank(...)`, `trunctol(...)`,
 `rank(...)` and `cond(...)` are SVD-derived helpers; `rank` counts sector ranks
 with quantum-dimension weighting, and `cond` currently supports the 2-norm.
 
+### Algorithm Selection and Custom Matrix Rules
+
+`svd_compact`, `svd_full`, `svd_vals`, and `svd_trunc` accept a keyword-only
+`algorithm`. `None` preserves the existing JAX default. Explicit choices are
+`"qr"`, `"jacobi"`, and `"divide_and_conquer"`. These select SVD algorithms,
+not ordinary QR factorization or a truncation strategy. Availability depends on
+the installed JAX version and device: unsupported combinations fail at lowering
+rather than silently falling back. In particular, CPU JAX does not support
+Jacobi; CUDA does not support divide-and-conquer in the tested JAX versions.
+
+`matrix_svd(matrix, *, full_matrices=False, compute_uv=True, algorithm=None)`
+exposes the same array-level selection. With vectors enabled it returns
+`(u, s, vh)`; otherwise it returns singular values only.
+
+Only `svd_compact` and `svd_trunc` additionally accept a callable as `algorithm`.
+The callable receives one floating/complex rank-2 sector block of shape `(m,n)`.
+It must return compact `(u,s,vh)` with shapes `(m,k)`, `(k,)`, `(k,n)` where
+`k=min(m,n)`. Vector dtypes must match the block and singular values must have
+its real dtype. Shapes and dtypes are checked without device synchronization.
+The callable must provide nonnegative singular values in descending order,
+orthonormal factors and a valid reconstruction; these numerical obligations are
+not checked at runtime. Tensor0 owns sector iteration, bond construction,
+packing and truncation. No sector mixing or dense tensor conversion is performed.
+An empty tensor may invoke no callable.
+
+Custom callables own their algorithm and differentiation configuration. They
+must support JAX tracing when used under JIT and supply appropriate derivatives
+when used under AD (for example through `custom_jvp`). Bind static settings using
+`functools.partial`; do not pass another competing algorithm selection.
+Full SVD and values-only interfaces reject compact callables because their
+output contracts differ.
+
+Changing algorithms may change singular-vector phases and bases in degenerate
+subspaces. Tensor0 does not align these bases. Reconstruction, orthogonality and
+singular values, not elementwise equality of vectors across drivers, are the
+relevant decomposition checks. No new regularization of derivatives or
+truncation-boundary degeneracies is introduced.
+
 ## Predicates and Comparison
 
 `TensorMap.dtype` and `DiagonalTensorMap.dtype` report the storage dtype.
@@ -882,6 +920,57 @@ need not satisfy the trailing-storage contract. Such reconstructions can raise
 `ValueError`; coincident dimensions do not give the result tensor semantics.
 For full Jacobians or Hessians, differentiate a function with explicit array
 inputs/outputs and retain the resulting arrays rather than tensor tree products.
+
+## Saving and Loading Results
+
+Ordinary, unbatched `TensorMap` values support Python's standard `pickle` module.
+Save tensors together with model parameters and other pickle-compatible results
+using a dictionary, list, tuple, or nested combination:
+
+```python
+import pickle
+import tensor0 as t
+
+h = t.hom([t.Vect(2)], [t.Vect(2)])
+a = t.zeros(h)
+b = t.ones(h)
+results = {
+    "psi": a,
+    "operators": [b, (a,)],
+    "model_params": {"L": 8, "coupling": 1.5},
+    "dmrg_params": {"max_sweeps": 20, "tolerance": 1.e-8},
+}
+with open("results.pkl", "wb") as stream:
+    pickle.dump(results, stream, protocol=pickle.HIGHEST_PROTOCOL)
+
+with open("results.pkl", "rb") as stream:
+    restored = pickle.load(stream)
+psi = restored["psi"]
+model_params = restored["model_params"]
+```
+
+**Load only trusted pickle files.** Unpickling can execute arbitrary code. This
+is not a safe interchange format for untrusted data. Tensor0 adds no file API;
+`pickle.dumps`/`loads` also work for in-memory use.
+
+Reconstruction preserves the full symmetry HomSpace (including factor order,
+duality, sector multiplicities, and the sector family of empty products) and
+packed numerical dtype and values. Each tensor may have a different space or
+dtype. Repeated references to the same TensorMap in one pickle retain their
+identity through pickle's normal memoization. Sharing of spaces or storage
+between distinct tensors is not guaranteed.
+
+Saving is an eager host operation: JAX arrays are copied to NumPy host arrays.
+Loading creates new JAX arrays on the current default device; original device
+placement and sharding are not preserved. This is not a JIT operation. Loading
+rejects a dtype that the current JAX configuration would narrow. In particular,
+enable JAX x64 **before** loading float64, complex128, int64, or uint64 tensors;
+loading never changes global JAX configuration.
+
+Batched TensorMaps are rejected. DiagonalTensorMap serialization is outside this
+contract. Package version differences do not by themselves prevent loading,
+but compatibility across Tensor0, Python, JAX, or NumPy versions is not guaranteed. Keep the producing
+environment and original scientific inputs when long-term reproducibility matters.
 
 ## Current Boundaries
 

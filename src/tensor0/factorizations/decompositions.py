@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from .matrix import matrix_svd, _validate_algorithm
+
+from collections.abc import Callable
 from typing import Literal
 
 from jax import Array
@@ -283,10 +286,12 @@ def _require_endomorphism(tensor: object, function_name: str) -> TensorMap:
 # Singular value decompositions
 
 
-def svd_vals(tensor: TensorMap) -> SectorVector:
+def svd_vals(tensor: TensorMap, *, algorithm=None) -> SectorVector:
+    """Sector singular values with an optional backend algorithm name. See docs/usage.md#algorithm-selection-and-custom-matrix-rules for the contract."""
+    _validate_algorithm(algorithm, allow_callable=False)
     tensor = _require_tensor_map(tensor, "svd_vals")
 
-    sector_ranks, s_blocks, singular_dtype = _singular_value_blocks(tensor)
+    sector_ranks, s_blocks, singular_dtype = _singular_value_blocks(tensor, algorithm=algorithm)
     bond = _compact_bond(tensor)
     _check_svd_sector_ranks(bond, sector_ranks, "svd_vals")
     return SectorVector(
@@ -295,11 +300,13 @@ def svd_vals(tensor: TensorMap) -> SectorVector:
     )
 
 
-def svd_compact(tensor: TensorMap) -> tuple[TensorMap, DiagonalTensorMap, TensorMap]:
+def svd_compact(tensor: TensorMap, *, algorithm=None) -> tuple[TensorMap, DiagonalTensorMap, TensorMap]:
+    """Compact sector SVD; algorithm may be a compact matrix callable. See docs/usage.md#algorithm-selection-and-custom-matrix-rules for the contract."""
+    _validate_algorithm(algorithm, allow_callable=True)
     tensor = _require_tensor_map(tensor, "svd_compact")
 
     sector_ranks, u_blocks, s_blocks, vh_blocks, tensor_dtype, singular_dtype = (
-        _compact_svd_blocks(tensor)
+        _compact_svd_blocks(tensor, algorithm=algorithm)
     )
     bond = _compact_bond(tensor)
     _check_svd_sector_ranks(bond, sector_ranks, "svd_compact")
@@ -322,11 +329,13 @@ def svd_compact(tensor: TensorMap) -> tuple[TensorMap, DiagonalTensorMap, Tensor
     )
 
 
-def svd_full(tensor: TensorMap) -> tuple[TensorMap, TensorMap, TensorMap]:
+def svd_full(tensor: TensorMap, *, algorithm=None) -> tuple[TensorMap, TensorMap, TensorMap]:
+    """Full sector SVD with an optional backend algorithm name. See docs/usage.md#algorithm-selection-and-custom-matrix-rules for the contract."""
+    _validate_algorithm(algorithm, allow_callable=False)
     tensor = _require_tensor_map(tensor, "svd_full")
 
     u_blocks, s_blocks, vh_blocks, tensor_dtype, singular_dtype = _full_svd_blocks(
-        tensor
+        tensor, algorithm=algorithm
     )
     fused_codomain = fuse(tensor.space.codomain)
     fused_domain = fuse(tensor.space.domain)
@@ -393,10 +402,11 @@ def svd_trunc(
     tensor: TensorMap,
     *,
     trunc: object | None = None,
+    algorithm=None,
 ) -> tuple[TensorMap, DiagonalTensorMap, TensorMap, Array]:
     trunc = notrunc() if trunc is None else _ensure_strategy(trunc)
 
-    u, s, vh = svd_compact(tensor)
+    u, s, vh = svd_compact(tensor, algorithm=algorithm)
     values = s.diag()
     keep = _find_truncated_indices(values, trunc)
     error = _truncation_error(values, keep)
@@ -453,7 +463,7 @@ def _compact_bond(tensor: TensorMap) -> _native.ElementarySpace:
 
 
 def _singular_value_blocks(
-    tensor: TensorMap,
+    tensor: TensorMap, *, algorithm=None,
 ) -> tuple[
     list[tuple[tuple[int, ...], int]],
     dict[tuple[int, ...], Array],
@@ -464,7 +474,7 @@ def _singular_value_blocks(
     singular_dtype = jnp.real(jnp.asarray(tensor.storage.data)).dtype
 
     for coupled, block in tensor.blocks():
-        s_block = jnp.linalg.svd(block, compute_uv=False)
+        s_block = matrix_svd(block, compute_uv=False, algorithm=algorithm)
         rank = int(s_block.shape[0])
         singular_dtype = s_block.dtype
         if rank > 0:
@@ -475,7 +485,8 @@ def _singular_value_blocks(
 
 
 def _compact_svd_blocks(
-    tensor: TensorMap,
+    tensor: TensorMap, *,
+    algorithm: str | Callable[[Array], tuple[Array, Array, Array]] | None = None,
 ) -> tuple[
     list[tuple[tuple[int, ...], int]],
     dict[tuple[int, ...], Array],
@@ -492,8 +503,19 @@ def _compact_svd_blocks(
     singular_dtype = jnp.real(jnp.asarray(tensor.storage.data)).dtype
 
     for coupled, block in tensor.blocks():
-        u_block, s_block, vh_block = jnp.linalg.svd(block, full_matrices=False)
-        rank = int(s_block.shape[0])
+        if callable(algorithm):
+            u_block, s_block, vh_block = algorithm(block)
+            rank = min(block.shape)
+            if (u_block.shape != (block.shape[0], rank)
+                    or s_block.shape != (rank,)
+                    or vh_block.shape != (rank, block.shape[1])):
+                raise ValueError('compact SVD callable returned invalid shapes')
+            if (u_block.dtype != block.dtype or vh_block.dtype != block.dtype
+                    or s_block.dtype != block.real.dtype):
+                raise TypeError('compact SVD callable must preserve matrix and real singular-value dtypes')
+        else:
+            u_block, s_block, vh_block = matrix_svd(block, algorithm=algorithm)
+            rank = int(s_block.shape[0])
         singular_dtype = s_block.dtype
         if rank > 0:
             sector_ranks.append((coupled, rank))
@@ -505,7 +527,7 @@ def _compact_svd_blocks(
 
 
 def _full_svd_blocks(
-    tensor: TensorMap,
+    tensor: TensorMap, *, algorithm=None,
 ) -> tuple[
     dict[tuple[int, ...], Array],
     dict[tuple[int, ...], Array],
@@ -520,7 +542,7 @@ def _full_svd_blocks(
     singular_dtype = jnp.real(jnp.asarray(tensor.storage.data)).dtype
 
     for coupled, block in tensor.blocks():
-        u_block, s_values, vh_block = jnp.linalg.svd(block, full_matrices=True)
+        u_block, s_values, vh_block = matrix_svd(block, full_matrices=True, algorithm=algorithm)
         singular_dtype = s_values.dtype
         u_blocks[coupled] = u_block
         s_blocks[coupled] = _diagonal_block(block.shape[0], block.shape[1], s_values)

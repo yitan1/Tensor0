@@ -1,3 +1,4 @@
+from .matrix import matrix_svd
 from .decompositions import (
     cond,
     eigh_full,
@@ -28,6 +29,7 @@ __all__ = [
     "qr_compact",
     "rank",
     "right_orth",
+    "matrix_svd",
     "svd_compact",
     "svd_full",
     "svd_trunc",

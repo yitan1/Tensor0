@@ -64,6 +64,11 @@ class TensorMap:
         object.__setattr__(self, "space", space)
         object.__setattr__(self, "storage", vector_storage)
 
+    def __reduce__(self):
+        from ._pickle import reduce_tensor
+
+        return reduce_tensor(self)
+
     def __repr__(self) -> str:
         dtype = getattr(self.storage.data, "dtype", "unknown")
         return (

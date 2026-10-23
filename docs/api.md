@@ -131,6 +131,7 @@ against these lists.
 - `eigh_full`
 - `eigh_trunc`
 - `is_hermitian`
+- `matrix_svd`
 - `svd_vals`
 - `svd_compact`
 - `svd_full`
